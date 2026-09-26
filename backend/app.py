@@ -11,11 +11,16 @@ uzak fonksiyonlar yerel entrypoint'e sadece düz Python tipleri döndürür
 (PLAN.md kuralı).
 """
 
+import asyncio
+import contextlib
 import hashlib
+import hmac
 import json
 import os
 import pathlib
+import shutil
 import subprocess
+import tempfile
 import time
 
 import modal
@@ -430,15 +435,14 @@ def _track_beats_inline(song_id: str, device: str = "cuda") -> dict:
     beat_times = [round(float(value), 3) for value in beats]
     downbeat_times = [round(float(value), 3) for value in downbeats]
 
+    # beats.json'daki bpm de analyze ile AYNI yöntemi kullanmalı: regresyon.
+    # Burada medyan aralık vardı ve beats.json 130.43 derken chords.json 128.0
+    # diyordu (beat_this zamanları 20 ms ızgarasında, medyan snap ediyor).
     bpm = None
     if len(beat_times) >= 2:
-        gaps = [
-            beat_times[i + 1] - beat_times[i] for i in range(len(beat_times) - 1)
-        ]
-        gaps.sort()
-        median_gap = gaps[len(gaps) // 2]
-        if median_gap > 0:
-            bpm = round(60.0 / median_gap, 2)
+        estimate = _bpm_from_beats(beat_times)
+        if estimate > 0:
+            bpm = round(estimate, 2)
 
     # Gerçek doğrulama burada: build'deki sentetik testin aksine bu gerçek
     # müzik. Sonuç anlamsızsa sessizce librosa yedeğine düşmek yerine açık
@@ -496,6 +500,12 @@ def probe(song_id: str, fallback_title: str = "") -> dict:
     30 MB / 10 dk kapısı burada, GPU'ya girmeden CPU tarafında kapanır.
     """
     volume.reload()
+    return _probe_input(song_id, fallback_title)
+
+
+def _probe_input(song_id: str, fallback_title: str = "") -> dict:
+    """probe()'un gövdesi, reload'suz. API konteyneri de bunu çağırıyor
+    (imajında ffmpeg var, ayrı bir konteyner açmaya gerek yok)."""
     path = _find_input(song_id)
     size = path.stat().st_size
 
@@ -637,6 +647,7 @@ def separate(song_id: str) -> dict:
         print(f"[model] sources={sources} samplerate={samplerate} channels={channels}")
 
         # --- decode: ffmpeg -> float32 PCM (torchaudio I/O YOK) -----------
+        decode_started = time.time()
         proc = _run(
             [
                 "ffmpeg", "-nostdin", "-v", "error", "-i", str(input_path),
@@ -644,6 +655,7 @@ def separate(song_id: str) -> dict:
                 "-ar", str(samplerate), "-ac", str(channels), "-",
             ]
         )
+        decode_seconds = round(time.time() - decode_started, 2)
         audio = np.frombuffer(proc.stdout, dtype="<f4").reshape(-1, channels).T.copy()
         wav = torch.from_numpy(audio)
         duration = round(wav.shape[1] / samplerate, 3)
@@ -703,16 +715,22 @@ def separate(song_id: str) -> dict:
         print(f"[clip] ortak tepe={clip_peak:.4f} -> ortak scale={clip_scale:.4f}")
 
         written = []
+        flac_seconds = 0.0
+        aac_seconds = 0.0
+        commit_seconds = 0.0
         for index, name in enumerate(sources):
             stem = stems[index] / clip_scale
 
             flac_path = master_dir / f"{name}.flac"
+            step = time.time()
             sf.write(
                 str(flac_path), stem.T.numpy(), samplerate,
                 subtype=FLAC_SUBTYPE, format="FLAC",
             )
+            flac_seconds += time.time() - step
 
             m4a_path = stems_dir / f"{name}.m4a"
+            step = time.time()
             _run(
                 [
                     "ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(flac_path),
@@ -721,12 +739,15 @@ def separate(song_id: str) -> dict:
                     "-movflags", "+faststart", str(m4a_path),
                 ]
             )
+            aac_seconds += time.time() - step
             written.append(name)
             print(f"[yaz] {name}: tepe {raw_peaks[name]:.4f} -> flac + m4a")
             # İlerleme bütçesi: ayrıştırma 0-70, analiz 70-100.
+            step = time.time()
             _write_status(
                 song_id, progress=20 + int(50 * len(written) / len(sources))
             )
+            commit_seconds += time.time() - step
 
         result = {
             "id": song_id,
@@ -740,6 +761,16 @@ def separate(song_id: str) -> dict:
             "gpu_seconds": gpu_seconds,
             "model_load_seconds": model_load_seconds,
             "total_seconds": round(time.time() - started, 2),
+            # Encode optimizasyonu kararı için ölçüm: GPU konteynerinde
+            # geçen sürenin nereye gittiği. CPU'ya taşınabilir olan yalnızca
+            # aac_seconds; flac ve commit tensörlerin yanında kalmak zorunda.
+            "timing": {
+                "decode": round(decode_seconds, 2),
+                "apply_model": gpu_seconds,
+                "flac_write": round(flac_seconds, 2),
+                "aac_encode": round(aac_seconds, 2),
+                "status_commits": round(commit_seconds, 2),
+            },
         }
         # --- beat/downbeat (eğitilmiş model, ÖZGÜN MIX üzerinde) ----------
         # Aynı GPU konteynerinde: ayrı bir T4 konteyneri açmaktan ucuz.
@@ -763,6 +794,7 @@ def separate(song_id: str) -> dict:
         _write_status(
             song_id, state="analyzing", progress=70, error=None, stems=written,
             samplerate=samplerate, channels=channels, gpu_seconds=gpu_seconds,
+            timing=result["timing"],
         )
         # Analizi ayrı bir CPU konteynerine devret: T4 burada biter, analiz
         # süresi GPU olarak faturalanmaz.
@@ -1429,6 +1461,516 @@ def analyze(song_id: str, beats_source: str = "auto") -> dict:
     except Exception as exc:
         _write_status(song_id, state="error", error=f"{type(exc).__name__}: {exc}")
         raise
+
+
+# --------------------------------------------------------------------------
+# API (FastAPI, CPU, torch YOK)
+# --------------------------------------------------------------------------
+
+API_SECRET_NAME = "stem-mikser"
+DOWNLOAD_TTL = 600  # imzalı indirme linki 10 dakika geçerli
+RELOAD_TTL = 2.0  # iki metadata reload'u arasındaki en kısa süre
+DOWNLOAD_FORMATS = ("m4a", "flac", "wav")
+LOCAL_ORIGINS = (
+    "http://localhost:8000", "http://127.0.0.1:8000",
+    "http://localhost:5500", "http://127.0.0.1:5500",
+    "http://localhost:3000", "http://127.0.0.1:3000",
+)
+
+
+def _check_api_imports():
+    """Build: fastapi/starlette gerçekten uyumlu mu, app kurulabiliyor mu."""
+    import fastapi
+    import starlette
+    from fastapi import FastAPI
+
+    print(f"fastapi {fastapi.__version__} / starlette {starlette.__version__}")
+
+    try:
+        import multipart  # python-multipart'in modul adi
+    except ImportError:
+        import python_multipart as multipart  # yeni surumlerdeki ad
+    print(f"python-multipart: {getattr(multipart, '__version__', 'surum yok')}")
+
+    probe_app = FastAPI()
+
+    @probe_app.get("/x")
+    def _x():
+        return {"ok": True}
+
+    if not [r for r in probe_app.routes if getattr(r, "path", "") == "/x"]:
+        raise RuntimeError(
+            "FastAPI route kaydi calismiyor; fastapi/starlette surumleri uyumsuz"
+        )
+
+    from fastapi.middleware.cors import CORSMiddleware  # noqa: F401
+    from starlette.responses import JSONResponse, Response  # noqa: F401
+
+    print("API import zinciri tamam")
+
+
+api_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("ffmpeg")
+    .pip_install(
+        # fastapi starlette'e ÜST SINIR koymuyor (starlette>=0.46.0). starlette
+        # 1.0.0 Mart 2026'da, fastapi 0.141.1 Temmuz 2026'da çıktı; yani 1.x'e
+        # karşı test edilmiş, 0.4x'e çakmak yanlış olurdu. Uyumu build'de
+        # _check_api_imports doğruluyor.
+        "fastapi==0.141.1",
+        "starlette==1.7.0",
+        "python-multipart==0.0.32",
+    )
+    .run_function(_check_api_imports)
+)
+
+
+class _VolumeGate:
+    """volume.reload() ile dosya okumalarını birbirinden ayırır.
+
+    Modal dokümanı: "You can only reload a Volume when there are no open files
+    on the Volume" - açık dosya varken reload 'volume busy' ile patlıyor, ve
+    reload sürerken volume o konteynere BOŞ görünüyor. max_inputs=8 ile bir
+    istek dosya okurken başkası reload çağırabileceği için bu bir yazıcı/okuyucu
+    kilidi gerektiriyor: reload yazıcı, dosya okumaları okuyucu.
+    """
+
+    def __init__(self, ttl: float = RELOAD_TTL):
+        self._lock = asyncio.Lock()
+        self._readers = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._last_reload = 0.0
+        self._ttl = ttl
+        self.reload_count = 0
+
+    @contextlib.asynccontextmanager
+    async def reading(self):
+        # Kilit yalnızca sayaç artarken tutuluyor; reload sürerken yeni
+        # okuyucu giremez, ama okuyucular birbirini beklemez.
+        async with self._lock:
+            self._readers += 1
+            self._idle.clear()
+        try:
+            yield
+        finally:
+            self._readers -= 1
+            if self._readers <= 0:
+                self._readers = 0
+                self._idle.set()
+
+    async def refresh(self, force: bool = False) -> bool:
+        now = time.time()
+        if not force and now - self._last_reload < self._ttl:
+            return False
+        async with self._lock:
+            if not force and time.time() - self._last_reload < self._ttl:
+                return False
+            # Açık okuma bitene kadar bekle: aksi halde reload 'volume busy'
+            # verir ya da okuyan istek boş volume görür.
+            await self._idle.wait()
+            await volume.reload.aio()
+            self._last_reload = time.time()
+            self.reload_count += 1
+            return True
+
+
+def _parse_range(header: str, size: int):
+    """'bytes=a-b' -> (start, end) kapsayıcı. None: tamamını gönder.
+
+    Karşılanamaz aralıkta ValueError atar (çağıran 416 döndürür).
+    """
+    if not header:
+        return None
+    header = header.strip()
+    if not header.lower().startswith("bytes="):
+        return None
+    spec = header.split("=", 1)[1].split(",")[0].strip()
+    start_text, _, end_text = spec.partition("-")
+    # Sayı ayrıştırma ile geçerlilik kontrolü AYRI: ayrıştırılamayan başlık
+    # yok sayılır (tamamını gönder), karşılanamaz aralık 416 olur. İkisini
+    # aynı try içinde yapmak "bytes=-0" gibi durumlarda kendi ValueError'ımı
+    # kendi except'ime yutturuyordu.
+    try:
+        if not start_text:
+            suffix_length = int(end_text)
+            start = end = None
+        else:
+            suffix_length = None
+            start = int(start_text)
+            end = int(end_text) if end_text else size - 1
+    except ValueError:
+        return None  # ayrıştırılamadı: aralığı yok say, tamamını gönder
+
+    if suffix_length is not None:
+        if suffix_length <= 0:
+            raise ValueError("karsilanamaz son ek")
+        start = max(size - suffix_length, 0)
+        end = size - 1
+    if start >= size or start > end:
+        raise ValueError("karsilanamaz aralik")
+    return start, min(end, size - 1)
+
+
+def _read_slice(path: pathlib.Path, start: int = 0, length: int = -1) -> bytes:
+    """Dosyanın bir dilimini okur ve tanıtıcıyı HEMEN kapatır.
+
+    Açık tanıtıcı bırakmamak bilinçli: volume üzerinde açık dosya varken
+    reload patlıyor. Dosyalar en fazla ~45 MB (30 MB girdi sınırı), bellekte
+    tutmak sorun değil.
+    """
+    with path.open("rb") as handle:
+        if start:
+            handle.seek(start)
+        return handle.read() if length < 0 else handle.read(length)
+
+
+def _sign_download(key: str, song_id: str, name: str, fmt: str, exp: int) -> str:
+    message = f"{song_id}|{name}|{fmt}|{exp}".encode("utf-8")
+    return hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def _wav_from_flac(flac_path: pathlib.Path) -> bytes:
+    """FLAC master'dan WAV üretir.
+
+    FLAC önce konteyner-yerel bir dizine kopyalanıyor: ffmpeg volume üzerindeki
+    dosyayı saniyeler boyunca açık tutarsa eşzamanlı bir reload patlar.
+    """
+    with tempfile.TemporaryDirectory() as workdir:
+        local_flac = pathlib.Path(workdir) / "master.flac"
+        with flac_path.open("rb") as source, local_flac.open("wb") as target:
+            shutil.copyfileobj(source, target)
+        proc = _run(
+            [
+                "ffmpeg", "-nostdin", "-v", "error", "-i", str(local_flac),
+                "-f", "wav", "-c:a", "pcm_s16le", "-",
+            ]
+        )
+        return proc.stdout
+
+
+@app.function(
+    image=api_image,
+    volumes={DATA_DIR: volume},
+    secrets=[
+        modal.Secret.from_name(
+            API_SECRET_NAME, required_keys=["API_TOKEN", "SIGNING_KEY"]
+        )
+    ],
+    timeout=600,
+    # min_containers YOK: boştayken maliyet sıfır. Soğuk başlangıçta ilk istek
+    # birkaç saniye sürer.
+)
+@modal.concurrent(max_inputs=8)
+@modal.asgi_app(label="stem-mikser")
+def api():
+    """Oynatıcının konuştuğu API. Tüm uç noktalar Bearer token ister."""
+    import fastapi
+    from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import JSONResponse, Response
+
+    token = os.environ["API_TOKEN"]
+    signing_key = os.environ["SIGNING_KEY"]
+
+    origins = [
+        item.strip()
+        for item in os.environ.get("ALLOWED_ORIGINS", "").split(",")
+        if item.strip()
+    ]
+    allowed_origins = origins + list(LOCAL_ORIGINS)
+    print(f"[api] izin verilen origin'ler: {allowed_origins}")
+
+    gate = _VolumeGate()
+    web = FastAPI(title="Stem Mikser", docs_url=None, redoc_url=None)
+    web.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Range"],
+        expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
+        max_age=3600,
+    )
+
+    def require_token(authorization: str = Header(default="")):
+        if not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Bearer token gerekli")
+        if not hmac.compare_digest(authorization[7:], token):
+            raise HTTPException(status_code=401, detail="Gecersiz token")
+        return True
+
+    auth = Depends(require_token)
+
+    async def load_status(song_id: str):
+        path = _song_dir(song_id) / "status.json"
+        if not await asyncio.to_thread(path.exists):
+            return None
+        raw = await asyncio.to_thread(_read_slice, path)
+        return json.loads(raw.decode("utf-8"))
+
+    async def require_status(song_id: str) -> dict:
+        status = await load_status(song_id)
+        if status is None:
+            await gate.refresh(force=True)
+            status = await load_status(song_id)
+        if status is None:
+            raise HTTPException(status_code=404, detail="Sarki bulunamadi")
+        return status
+
+    # ---------------- sağlık -------------------------------------------------
+
+    @web.get("/health")
+    async def health(_=auth):
+        return {
+            "ok": True,
+            "allowed_origins": allowed_origins,
+            "reload_count": gate.reload_count,
+            "fastapi": fastapi.__version__,
+            "download_ttl": DOWNLOAD_TTL,
+        }
+
+    # ---------------- yükleme -----------------------------------------------
+
+    @web.post("/songs")
+    async def create_song(
+        request: Request,
+        file: UploadFile = File(...),
+        _=auth,
+    ):
+        declared = request.headers.get("content-length")
+        if declared and int(declared) > MAX_UPLOAD_BYTES + 1024 * 1024:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Dosya cok buyuk (sinir {MAX_UPLOAD_BYTES // 1024**2} MB)",
+            )
+
+        digest = hashlib.sha256()
+        chunks = []
+        total = 0
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Dosya cok buyuk: sinir "
+                           f"{MAX_UPLOAD_BYTES // 1024**2} MB",
+                )
+            digest.update(chunk)
+            chunks.append(chunk)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="Bos dosya")
+
+        song_id = digest.hexdigest()
+
+        # Aynı dosya daha önce işlendiyse tekrar işlemiyoruz.
+        await gate.refresh()
+        existing = await load_status(song_id)
+        if existing and existing.get("state") != "error":
+            return {"id": song_id, "existing": True, "state": existing.get("state")}
+
+        suffix = pathlib.PurePosixPath(file.filename or "").suffix.lower()
+        extension = suffix.lstrip(".") or "bin"
+        target = _song_dir(song_id) / f"input.{extension}"
+
+        def write_input():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("wb") as handle:
+                for piece in chunks:
+                    handle.write(piece)
+
+        await asyncio.to_thread(write_input)
+        await volume.commit.aio()
+
+        # ffprobe API konteynerinin İÇİNDE: imajda ffmpeg var, 10 dk kapısı
+        # GPU'ya girmeden burada kapanıyor.
+        title = pathlib.PurePosixPath(file.filename or song_id[:12]).stem
+        status = await asyncio.to_thread(_probe_input, song_id, title)
+        if status.get("state") == "error":
+            raise HTTPException(status_code=400, detail=status.get("error"))
+
+        separate.spawn(song_id)
+        return {"id": song_id, "existing": False, "state": "queued",
+                "title": status.get("title"), "duration": status.get("duration")}
+
+    # ---------------- liste / durum -----------------------------------------
+
+    @web.get("/songs")
+    async def list_songs(_=auth):
+        await gate.refresh()
+        root = pathlib.Path(DATA_DIR) / "songs"
+
+        def collect():
+            if not root.is_dir():
+                return []
+            found = []
+            for entry in sorted(root.iterdir()):
+                status_path = entry / "status.json"
+                if not status_path.is_file():
+                    continue
+                try:
+                    data = json.loads(status_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                found.append(
+                    {
+                        "id": data.get("id", entry.name),
+                        "title": data.get("title"),
+                        "state": data.get("state"),
+                        "duration": data.get("duration"),
+                        "progress": data.get("progress"),
+                        "created_at": data.get("created_at"),
+                    }
+                )
+            return found
+
+        songs = await asyncio.to_thread(collect)
+        songs.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+        return {"songs": songs}
+
+    @web.get("/songs/{song_id}")
+    async def get_song(song_id: str, _=auth):
+        await gate.refresh()
+        status = await require_status(song_id)
+        payload = {"status": status, "chords": None}
+        if status.get("state") == "done":
+            chords_path = _song_dir(song_id) / "chords.json"
+            if await asyncio.to_thread(chords_path.exists):
+                raw = await asyncio.to_thread(_read_slice, chords_path)
+                payload["chords"] = json.loads(raw.decode("utf-8"))
+        return payload
+
+    # ---------------- stem servisi (Range) ----------------------------------
+
+    @web.get("/songs/{song_id}/stems/{name}.m4a")
+    async def get_stem(song_id: str, name: str, request: Request, _=auth):
+        if "/" in name or "." in name or not name.isalnum():
+            raise HTTPException(status_code=400, detail="Gecersiz stem adi")
+        path = _song_dir(song_id) / "stems" / f"{name}.m4a"
+
+        if not await asyncio.to_thread(path.exists):
+            await gate.refresh(force=True)  # başka konteyner yeni commit etmiş olabilir
+            if not await asyncio.to_thread(path.exists):
+                raise HTTPException(status_code=404, detail="Stem bulunamadi")
+
+        size = (await asyncio.to_thread(path.stat)).st_size
+        base_headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600"}
+
+        try:
+            span = _parse_range(request.headers.get("range", ""), size)
+        except ValueError:
+            return Response(
+                status_code=416,
+                headers={**base_headers, "Content-Range": f"bytes */{size}"},
+            )
+
+        # Okuma boyunca reload engelleniyor; tanıtıcı _read_slice içinde kapanıyor.
+        async with gate.reading():
+            if span is None:
+                body = await asyncio.to_thread(_read_slice, path)
+                return Response(
+                    content=body, media_type="audio/mp4", headers=base_headers
+                )
+            start, end = span
+            body = await asyncio.to_thread(_read_slice, path, start, end - start + 1)
+
+        return Response(
+            content=body,
+            status_code=206,
+            media_type="audio/mp4",
+            headers={**base_headers, "Content-Range": f"bytes {start}-{end}/{size}"},
+        )
+
+    # ---------------- imzalı indirme ----------------------------------------
+
+    @web.post("/songs/{song_id}/download-link")
+    async def download_link(song_id: str, request: Request,
+                            name: str, format: str = "m4a", _=auth):
+        if format not in DOWNLOAD_FORMATS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"format {'/'.join(DOWNLOAD_FORMATS)} olmali",
+            )
+        if "/" in name or "." in name or not name.isalnum():
+            raise HTTPException(status_code=400, detail="Gecersiz stem adi")
+        await require_status(song_id)
+
+        expires = int(time.time()) + DOWNLOAD_TTL
+        signature = _sign_download(signing_key, song_id, name, format, expires)
+        base = str(request.base_url).rstrip("/")
+        url = (
+            f"{base}/songs/{song_id}/download/{name}"
+            f"?format={format}&exp={expires}&sig={signature}"
+        )
+        # <a> etiketi header gonderemedigi icin token yerine imzali URL.
+        return {"url": url, "expires_at": expires, "ttl": DOWNLOAD_TTL}
+
+    @web.get("/songs/{song_id}/download/{name}")
+    async def download(song_id: str, name: str, format: str = "m4a",
+                       exp: int = 0, sig: str = ""):
+        # Bu uç nokta BİLEREK token istemiyor; yetki imzada.
+        if format not in DOWNLOAD_FORMATS:
+            raise HTTPException(status_code=400, detail="Gecersiz format")
+        if "/" in name or "." in name or not name.isalnum():
+            raise HTTPException(status_code=400, detail="Gecersiz stem adi")
+        expected = _sign_download(signing_key, song_id, name, format, exp)
+        if not sig or not hmac.compare_digest(sig, expected):
+            raise HTTPException(status_code=403, detail="Imza gecersiz")
+        if exp < int(time.time()):
+            raise HTTPException(status_code=403, detail="Link suresi gecmis")
+
+        song_dir = _song_dir(song_id)
+        if format == "m4a":
+            source = song_dir / "stems" / f"{name}.m4a"
+            media = "audio/mp4"
+        else:
+            source = song_dir / "master" / f"{name}.flac"
+            media = "audio/flac" if format == "flac" else "audio/wav"
+
+        if not await asyncio.to_thread(source.exists):
+            await gate.refresh(force=True)
+            if not await asyncio.to_thread(source.exists):
+                raise HTTPException(status_code=404, detail="Dosya bulunamadi")
+
+        async with gate.reading():
+            if format == "wav":
+                body = await asyncio.to_thread(_wav_from_flac, source)
+            else:
+                body = await asyncio.to_thread(_read_slice, source)
+
+        return Response(
+            content=body,
+            media_type=media,
+            headers={
+                "Content-Disposition":
+                    f'attachment; filename="{name}.{format}"',
+                "Content-Length": str(len(body)),
+            },
+        )
+
+    # ---------------- yeniden analiz / silme --------------------------------
+
+    @web.post("/songs/{song_id}/reanalyze")
+    async def reanalyze(song_id: str, beats: str = "auto", _=auth):
+        status = await require_status(song_id)
+        if not status.get("stems"):
+            raise HTTPException(
+                status_code=409, detail="Sarki henuz ayristirilmamis"
+            )
+        call = analyze.spawn(song_id, beats)
+        return {"id": song_id, "call_id": str(call.object_id), "state": "analyzing"}
+
+    @web.delete("/songs/{song_id}")
+    async def delete_song(song_id: str, _=auth):
+        await require_status(song_id)
+        await volume.remove_file.aio(f"songs/{song_id}", recursive=True)
+        await volume.commit.aio()
+        await gate.refresh(force=True)
+        return JSONResponse({"id": song_id, "deleted": True})
+
+    return web
 
 
 # --------------------------------------------------------------------------

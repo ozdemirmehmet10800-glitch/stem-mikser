@@ -116,6 +116,180 @@ kayma ayrıca ölçülüp raporlanır (`downbeat'lerin beat indeksi mod 4`).
 Sentetik üretilmiş bir akor dizisiyle şablonları, kök bonusunu, viterbi'yi,
 downbeat fazını, birleştirmeyi ve JSON şeklini doğrular.
 
+## Aşama 3 – API
+
+### Secret (bir kez)
+
+Token ve imzalama anahtarını üret (PowerShell 5.1, kriptografik RNG):
+
+```powershell
+$b = New-Object byte[] 32; (New-Object System.Security.Cryptography.RNGCryptoServiceProvider).GetBytes($b); ($b | ForEach-Object { $_.ToString('x2') }) -join ''
+```
+
+İki kez çalıştır: biri `API_TOKEN`, biri `SIGNING_KEY`. Sonra secret'ı oluştur
+(`ALLOWED_ORIGINS` kendi GitHub Pages origin'in — kodda tutulmuyor ki public
+repoda kullanıcı adın bulunmasın):
+
+```powershell
+.\.venv\Scripts\modal.exe secret create stem-mikser API_TOKEN=<token> SIGNING_KEY=<anahtar> ALLOWED_ORIGINS=https://<kullanici-adin>.github.io
+```
+
+Değiştirmek için sonuna `--force` ekle.
+
+### Geliştirme
+
+```powershell
+.\.venv\Scripts\modal.exe serve backend\app.py
+```
+
+Geçici bir URL basar ve kod değişince yeniden yükler. Kalıcı URL için aşama
+sonunda `modal deploy` (aşağıda).
+
+### Test komutları (PowerShell 5.1)
+
+**`curl` değil `curl.exe` yazmak zorunlu:** PowerShell 5.1'de `curl`,
+`Invoke-WebRequest`'in takma adıdır ve `-D`, `-r`, `-F` gibi bayrakları
+tanımaz. Ayrıca URL'de `&` varsa **çift tırnak şart**, yoksa PowerShell onu
+komut ayırıcı sanar.
+
+Token'sız istek 401 vermeli:
+
+```powershell
+curl.exe -i "<URL>/health"
+```
+
+Token'lı sağlık kontrolü (izin verilen origin'leri de gösterir):
+
+```powershell
+curl.exe -s -H "Authorization: Bearer <token>" "<URL>/health"
+```
+
+Şarkı yükleme (sha256 aynıysa mevcut id döner, yeniden işlenmez):
+
+```powershell
+curl.exe -s -H "Authorization: Bearer <token>" -F "file=@sarki.mp3" "<URL>/songs"
+```
+
+Liste ve tek şarkı:
+
+```powershell
+curl.exe -s -H "Authorization: Bearer <token>" "<URL>/songs"
+```
+
+```powershell
+curl.exe -s -H "Authorization: Bearer <token>" "<URL>/songs/<id>"
+```
+
+Range isteği — `206` ve `Content-Range` görmelisin:
+
+```powershell
+curl.exe -s -D - -o NUL -H "Authorization: Bearer <token>" -H "Range: bytes=0-1023" "<URL>/songs/<id>/stems/vocals.m4a"
+```
+
+Karşılanamaz aralık `416` vermeli:
+
+```powershell
+curl.exe -s -D - -o NUL -H "Authorization: Bearer <token>" -H "Range: bytes=99999999-" "<URL>/songs/<id>/stems/vocals.m4a"
+```
+
+İmzalı indirme linki üret:
+
+```powershell
+curl.exe -s -X POST -H "Authorization: Bearer <token>" "<URL>/songs/<id>/download-link?name=vocals&format=wav"
+```
+
+Dönen `url`'yi **token olmadan** indir (çift tırnak şart, `&` var):
+
+```powershell
+curl.exe -s -o vocals.wav "<imzali-url>"
+```
+
+Bozuk imza `403` vermeli:
+
+```powershell
+curl.exe -s -o NUL -w "%{http_code}`n" "<URL>/songs/<id>/download/vocals?format=wav&exp=9999999999&sig=deadbeef"
+```
+
+Yeniden analiz ve silme:
+
+```powershell
+curl.exe -s -X POST -H "Authorization: Bearer <token>" "<URL>/songs/<id>/reanalyze"
+```
+
+```powershell
+curl.exe -s -X DELETE -H "Authorization: Bearer <token>" "<URL>/songs/<id>"
+```
+
+### Duman testi betiği
+
+Tek tek `curl.exe` çalıştırmak yerine hepsini birden koşan betik:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tests\api_smoke.ps1 -BaseUrl <URL>
+```
+
+Önce token'ı dosyaya yaz (betik onu okur ve **hiçbir yerde göstermez**;
+komut satırına da girmez, curl'e `-K` ile geçici yapılandırma dosyası verilir,
+böylece işlem listesinde de görünmez):
+
+```powershell
+Set-Content -Path "$env:USERPROFILE\stem-mikser-token.txt" -Value '<token>' -NoNewline
+```
+
+Süresi geçmiş ama **doğru imzalı** link kontrolü için imzalama anahtarı da
+gerekiyor (imza `exp`'i kapsadığı için anahtar olmadan geçerli bir "süresi
+geçmiş" imza üretilemez). Yoksa o kontrol ATLANDI olarak işaretlenir:
+
+```powershell
+Set-Content -Path "$env:USERPROFILE\stem-mikser-signing-key.txt" -Value '<anahtar>' -NoNewline
+```
+
+Kontroller: token'sız 401, token'lı `/health`, şarkı listesi, durum + akorlar,
+Range (206 + `Content-Range`, hem baştan hem ortadan dilim), karşılanamaz
+Range (416), imzalı link üretimi, WAV'ın token olmadan inmesi (`RIFF`/`WAVE`
+sihirli sayısı doğrulanır), bozuk imza (403), süresi geçmiş imza (403), var
+olmayan id ile DELETE (404).
+
+**Mevcut şarkı silinmez** — DELETE yalnızca var olmayan bir id ile denenir.
+
+Yükleme testi opsiyonel:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tests\api_smoke.ps1 -BaseUrl <URL> -UploadFile sarki.mp3
+```
+
+Zaten işlenmiş bir dosya verin: `existing: true` döner, GPU harcanmaz. Betik
+aynı dosyayı iki kez yükleyip sha256 tekilleştirmesini de doğrular.
+
+Betik BOM'lu UTF-8 kaydedilmiştir — PowerShell 5.1 BOM'suz UTF-8'i ANSI sanıp
+Türkçe karakterleri bozuyor. Konsolda yine bozuk görünürse:
+`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`
+
+### Eşzamanlılık notu
+
+API `modal.concurrent(max_inputs=8)` ile çalışıyor: oynatıcı 6 stem'i aynı
+anda çekiyor, eşzamanlılık olmasa 6 konteyner açılırdı.
+
+Bu yüzden `volume.reload()` bir yazıcı/okuyucu kilidiyle korunuyor. Modal
+dokümanı: *"You can only reload a Volume when there are no open files"* —
+açık dosya varken reload `volume busy` ile patlıyor ve reload sürerken volume
+o konteynere **boş** görünüyor. Dolayısıyla:
+
+- Dosyalar belleğe okunup tanıtıcı hemen kapatılıyor (en fazla ~45 MB)
+- WAV üretiminde FLAC önce konteyner-yerel dizine kopyalanıyor, ffmpeg volume
+  üzerinde dosya açık tutmuyor
+- `reload` açık okumalar bitene kadar bekliyor, reload sürerken yeni okuma
+  giremiyor, ve metadata reload'ları 2 saniyeden sık yapılmıyor
+
+### API yardımcılarının yerel testi
+
+```powershell
+.\.venv\Scripts\python.exe tests\test_api_local.py
+```
+
+Range ayrıştırma, HMAC imzalama ve yazıcı/okuyucu kilidini Modal'a bağlanmadan
+doğrular (FastAPI bağlantısı `modal serve` + `curl.exe` ile test edilir).
+
 ## Geliştirme / deploy
 
 ```powershell
