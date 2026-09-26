@@ -32,6 +32,56 @@ MAX_DURATION_SEC = 10 * 60  # 10 dakika
 AAC_BITRATE = "160k"
 FLAC_SUBTYPE = "PCM_24"  # 24-bit kayıpsız master
 
+# --- Aşama 2: analiz parametreleri --------------------------------------
+ANALYSIS_SR = 22050  # librosa'nın chroma_cqt varsayılanı
+HOP_LENGTH = 512
+BEATS_PER_BAR = 4  # 4/4 varsayımı
+# Akor KALİTESİNİ belirleyen stem'ler: drums, vocals VE bass hariç.
+# Bass dışarıda, çünkü evrik akorlarda (Ab/C) bas kökü yanlış gösteriyor:
+# Ab majör C üzerinde çalındığında bas C'yi işaret edip akoru C/Cm okutuyordu.
+QUALITY_STEMS = ("piano", "guitar", "other")
+# Enerji kapısı ve librosa yedek beat takibi için kullanılan tam harmonik karışım
+HARMONIC_STEMS = ("bass", "piano", "guitar", "other")
+BASS_STEM = "bass"
+
+NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+FLAT_NAMES = ("C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B")
+NO_CHORD = "N"
+
+# Bas chroma'daki kök ağırlığının şablon skoruna katkısı. 0.4 iken evrik
+# akorları bozuyordu (Ab/C -> C), 0.0 iken de kalite hataları çıktı: referansta
+# Eb olan yerde Ab/Eb, Fm olan yerde Db/F. 0.15 bas=kök yorumunu hafifçe
+# destekliyor ama evriği ezmiyor.
+ROOT_WEIGHT = 0.15
+# Slash akor cezası: evrik akorlar kök konumundan çok daha nadir. Slash
+# yalnızca ÜST stem'ler kök konumu yorumuna açıkça karşı çıkıyorsa yazılır -
+# yani üst stem'lerde bas notasının ağırlığı kökün ağırlığını bu kadar
+# aşıyorsa. Ceza olmadan akorların %23'ü slash çıkıyordu.
+SLASH_PENALTY = 0.12
+# Tona diyatonik akorlara verilen küçük sabit bonus. Skorlar birbirine yakınsa
+# (üçlü zayıf) kararı çevirir, üçlü netse çeviremez - "üçlü zayıfken diyatonik
+# akora öncelik ver" davranışı buradan çıkıyor. Fm yerine F okunması bu vaka.
+KEY_WEIGHT = 0.08
+# Viterbi geçiş matrisinde kendinde kalma olasılığı (akorlar yapışkan olsun)
+SELF_TRANSITION = 0.85
+# Benzerlikleri olasılığa çevirirken keskinleştirme üssü.
+# 12 ve üzeri sentetik testte diziyi birebir buluyor; 4 ve 8 akor kaçırıyor.
+# Yüksek tutmak gürültüye duyarlılığı artırır, 12 en düşük güvenli değer.
+SHARPEN = 12.0
+# Beat enerjisi, 90. yüzdeliğin bu katından düşükse akor yok (N)
+N_ENERGY_RATIO = 0.10
+# N durumunun sabit skoru: hiçbir triad bunu geçemiyorsa "akor yok".
+# (N'in spektral şablonu yok; gerekçe _chord_states docstring'inde.)
+N_SCORE = 0.5
+
+# --- beat_this (CPJKU), eğitilmiş beat/downbeat modeli -------------------
+# MIT lisans. torch>=2 istiyor -> 2.5.1 uyumlu. torchaudio'yu --no-deps ile
+# atlıyoruz: beat_this/inference.py torchaudio'yu module düzeyinde import
+# etmiyor, resampling icin soxr kullaniyor; biz de dosya okuma yapan
+# File2Beats yerine kendi ffmpeg cozumumuzu Audio2Beats'e veriyoruz.
+BEAT_THIS_CHECKPOINT = "final0"
+BEAT_THIS_SR = 22050  # Audio2Beats icinde de bu orana resample ediliyor
+
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 # --------------------------------------------------------------------------
@@ -42,6 +92,61 @@ volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 # dahil etme ihtiyacı doğmasın.
 # --------------------------------------------------------------------------
 SCALAR_TYPES = (str, int, float, bool, type(None))
+
+# --------------------------------------------------------------------------
+# torchaudio kuralı
+#
+# torchaudio artık imajda KURULU. Sebep: beat_this/inference.py ->
+# beat_this/preprocessing.py zinciri modül düzeyinde onu import ediyor ve
+# LogMelSpect sınıfı mel spektrogram dönüşümü için kullanıyor - bu Audio2Beats
+# yolunda, yani kaçınılmaz. Bu bir I/O kullanımı değil: mel dönüşümü saf torch
+# hesabı, ses kodeki/backend'i devreye girmiyor. PLAN.md'nin endişesi yeni
+# sürümlerdeki I/O backend sorunlarıydı, dönüşümler değil.
+#
+# Kural bu yüzden "torchaudio kurulu olmasın"dan "BİZİM kodumuz torchaudio
+# I/O kullanmasın"a döndü ve aşağıdaki kontrol bunu her import'ta doğruluyor.
+# Sürümü torch ile birebir eşleşiyor (2.5.1); torchaudio 2.5.1 zaten
+# torch==2.5.1'i tam pinliyor.
+#
+# İğneler parça birleştirmeyle kuruluyor ki bu dosyadaki tanım satırının
+# kendisi kontrole yakalanmasın.
+# --------------------------------------------------------------------------
+_TA = "torch" + "audio"
+FORBIDDEN_TORCHAUDIO = (
+    _TA + ".load", _TA + ".save", _TA + ".info",
+    "import " + _TA, "from " + _TA,
+)
+
+
+def _check_no_torchaudio_io(source: str):
+    """Kaynakta torchaudio I/O kullanımı varsa bulguları döndürür."""
+    hits = []
+    for lineno, line in enumerate(source.splitlines(), 1):
+        code = line.split("#", 1)[0]
+        for needle in FORBIDDEN_TORCHAUDIO:
+            if needle in code:
+                hits.append(f"satir {lineno}: {needle}")
+    return hits
+
+
+def _self_check_torchaudio():
+    """Her import'ta kendi kaynağımızı tarar. Dönüş: taranan satır sayısı."""
+    try:
+        source = pathlib.Path(__file__).read_text(encoding="utf-8")
+    except Exception as exc:  # kaynak mount edilmemişse
+        print(f"[uyari] kendi kaynagim okunamadi, I/O kurali dogrulanamadi: {exc}")
+        return None
+    hits = _check_no_torchaudio_io(source)
+    if hits:
+        raise RuntimeError(
+            "PLAN.md kurali ihlali - kodumuz ses I/O icin torchaudio kullaniyor: "
+            + "; ".join(hits)
+            + ". Okuma ffmpeg, yazma soundfile/ffmpeg ile yapilmali."
+        )
+    return len(source.splitlines())
+
+
+_SELF_CHECK_LINES = _self_check_torchaudio()
 
 
 def _assert_plain(value, path: str = "return"):
@@ -73,13 +178,39 @@ light_image = modal.Image.debian_slim(python_version="3.11").apt_install("ffmpeg
 
 
 def _warm_weights():
-    """Build aşaması: htdemucs_6s ağırlıklarını imaja gömer ve doğrular."""
-    import importlib.util
+    """Build aşaması: sürümleri doğrular, ağırlıkları imaja gömer."""
+    import numpy as np
+    import torch
 
-    # torchaudio'ya gizli bir bağımlılık varsa build'de patlasın, çalışma
-    # anında değil (PLAN.md: torchaudio I/O kullanmıyoruz, kurulu da değil).
-    if importlib.util.find_spec("torchaudio") is not None:
-        raise RuntimeError("torchaudio imaja sizmis; ses I/O icin istenmiyor")
+    # 1) Sürümler: torch 2.5.1 sabit kalmalı ve torchaudio onunla birebir
+    #    eşleşmeli. torchaudio yanlış sürümü çekip torch'u yükseltirse
+    #    demucs'un checkpoint yüklemesi (weights_only değişikliği) kırılır.
+    torch_version = str(torch.__version__).split("+")[0]
+    if torch_version != "2.5.1":
+        raise RuntimeError(f"torch surumu kaydi: beklenen 2.5.1, bulunan {torch_version}")
+
+    audio_module = __import__(_TA)
+    audio_version = str(audio_module.__version__).split("+")[0]
+    if audio_version != torch_version:
+        raise RuntimeError(
+            f"{_TA} {audio_version} ile torch {torch_version} eslesmiyor"
+        )
+    print(f"torch {torch_version} / {_TA} {audio_version} eslesiyor")
+
+    # 2) Kendi kaynağımız I/O kuralına uyuyor mu? (import anında tarandı)
+    if _SELF_CHECK_LINES is None:
+        raise RuntimeError(
+            "build sirasinda kaynak taranamadi; I/O kurali dogrulanamadi"
+        )
+    print(f"I/O kurali: {_SELF_CHECK_LINES} satir tarandi, ihlal yok")
+
+    # 3) Import zinciri gerçekten çalışıyor mu?
+    import beat_this.inference  # noqa: F401
+    import beat_this.preprocessing  # noqa: F401
+    import demucs.apply  # noqa: F401
+    import demucs.pretrained  # noqa: F401
+
+    print("importlar tamam: beat_this.inference, beat_this.preprocessing, demucs")
 
     from demucs.pretrained import get_model
 
@@ -87,6 +218,65 @@ def _warm_weights():
     print(f"model: {MODEL_NAME}")
     print(f"sources: {list(model.sources)}")
     print(f"samplerate: {model.samplerate}  audio_channels: {model.audio_channels}")
+
+    # beat_this: ağırlığı indir VE gerçekten çalıştır. Boru hattı burada,
+    # build aşamasında doğrulanıyor; çalışma anında sürpriz olmasın.
+    from beat_this.inference import Audio2Beats
+
+    audio2beats = Audio2Beats(
+        checkpoint_path=BEAT_THIS_CHECKPOINT, device="cpu", dbn=False
+    )
+
+    # Girdi biçimi beat_this kaynağından doğrulandı (inference.py,
+    # Audio2Frames.signal2spect): 1B sinyal doğrudan kabul ediliyor; 2B ise
+    # (örnek, kanal) varsayılıp signal.mean(1) ile mono'ya indiriliyor; sr
+    # 22050 değilse soxr ile çevriliyor; sonra torch.float32 tensöre alınıyor.
+    # Biz 1B float32 @ 22050 veriyoruz, yani hiçbir dönüşüm tetiklenmiyor.
+    seconds = 12.0
+    t = np.arange(int(seconds * BEAT_THIS_SR)) / BEAT_THIS_SR
+    rng = np.random.default_rng(0)
+    signal = np.zeros_like(t)
+    # 120 BPM: her vuruşta perküsif gürültü patlaması + akor sesi
+    for index in range(int(seconds * 2)):
+        start = int(index * 0.5 * BEAT_THIS_SR)
+        stop = min(start + 2200, signal.size)
+        if stop <= start:
+            continue
+        envelope = np.exp(-12.0 * np.arange(stop - start) / BEAT_THIS_SR)
+        strength = 1.0 if index % 4 == 0 else 0.5  # downbeat daha güçlü
+        signal[start:stop] += strength * envelope * rng.standard_normal(stop - start)
+    for freq in (220.0, 277.2, 329.6):  # A minör üçlüsü
+        signal += 0.3 * np.sin(2 * np.pi * freq * t)
+    probe_signal = (signal / np.abs(signal).max() * 0.9).astype(np.float32)
+
+    if probe_signal.ndim != 1 or probe_signal.dtype != np.float32:
+        raise RuntimeError(
+            f"duman testi girdisi yanlis bicimde: ndim={probe_signal.ndim} "
+            f"dtype={probe_signal.dtype} (1B float32 bekleniyor)"
+        )
+
+    # Build'de aranan: hata vermeden çalışsın ve doğru tipte diziler dönsün.
+    # Beat sayısı 0 ise build PATLAMIYOR: model gerçek müzikle eğitildi,
+    # sentetik bir sinyalde eşiği geçmemesi kurulumun bozuk olduğunu
+    # göstermez. Gerçek doğrulama track_beats içinde, gerçek şarkıda yapılıyor.
+    beats, downbeats = audio2beats(probe_signal, BEAT_THIS_SR)
+    for name, values in (("beats", beats), ("downbeats", downbeats)):
+        array = np.asarray(values)
+        if array.ndim != 1:
+            raise RuntimeError(f"{name} 1B dizi degil: shape={array.shape}")
+        if array.size and not np.issubdtype(array.dtype, np.floating):
+            raise RuntimeError(f"{name} kayan noktali degil: dtype={array.dtype}")
+
+    print(
+        f"beat_this[{BEAT_THIS_CHECKPOINT}] duman testi: "
+        f"{len(beats)} beat, {len(downbeats)} downbeat, tipler dogru"
+    )
+    if len(beats) == 0:
+        print(
+            "[uyari] sentetik sinyalde 0 beat bulundu. Kurulum ve girdi bicimi "
+            "dogrulandi; model gercek muzikle egitildigi icin bu beklenebilir. "
+            "Gercek dogrulama: modal run backend/app.py::beats_only"
+        )
 
     # Ağırlıklar gerçekten /weights altına indi mi?
     found = []
@@ -121,15 +311,35 @@ separate_image = (
         "numpy==1.26.4",
         "demucs==4.1.0",
         "soundfile==0.13.1",
-        # torchaudio BİLEREK kurulmuyor: demucs 4.1.0'da yalnızca "train"
-        # extra'sının bağımlılığı, inference için gerekmiyor.
     )
+    # beat_this'in bağımlılıkları, elle sabitlenmiş. Ses I/O için değil, mel
+    # spektrogram dönüşümü için gereken ses kütüphanesi de burada: sürümü
+    # torch ile birebir eşleşiyor (2.5.1, torch==2.5.1'i tam pinliyor).
+    .pip_install(
+        "torchaudio==2.5.1",
+        "einops==0.8.2",
+        "rotary-embedding-torch==0.9.1",  # torch>=2.4 istiyor, 2.5.1 uyumlu
+        "soxr==1.1.0",  # cp311 wheel'i var
+        "tqdm==4.67.1",
+    )
+    # --no-deps: torchaudio çekmesin. Bağımlılıkları yukarıda verdik.
+    .pip_install("beat-this==1.1.0", extra_options="--no-deps")
     # Ağırlıklar build'de bu iki yola inecek ve imaja gömülecek.
     .env({"HF_HOME": WEIGHTS_DIR, "TORCH_HOME": WEIGHTS_DIR})
     .run_function(_warm_weights)
     # Build'den SONRA offline'a al: soğuk başlangıçta sessizce yeniden indirme
     # olursa gürültüsüzce yavaşlamak yerine hata versin.
     .env({"HF_HUB_OFFLINE": "1"})
+)
+
+# Analiz imajı: torch YOK, GPU YOK. librosa 1.0.0 çıktı ama python>=3.12 +
+# numpy>=2.1 istiyor ve büyük sürüm atlaması API riski taşıyor; 0.11.0
+# separate_image ile aynı numpy'yi (1.26.4) kullanabiliyor.
+analyze_image = modal.Image.debian_slim(python_version="3.11").pip_install(
+    "librosa==0.11.0",
+    "numpy==1.26.4",
+    "numba==0.62.1",  # numpy<2.4 kısıtı 1.26.4 ile uyumlu
+    "soundfile==0.13.1",
 )
 
 app = modal.App(APP_NAME)
@@ -181,6 +391,97 @@ def _run(cmd: list) -> subprocess.CompletedProcess:
         err = proc.stderr.decode("utf-8", "replace") if proc.stderr else ""
         raise RuntimeError(f"{cmd[0]} basarisiz (kod {proc.returncode}): {err[-2000:]}")
     return proc
+
+
+def _decode_mono(path: pathlib.Path, samplerate: int):
+    """ffmpeg ile mono float32 numpy dizisi. torchaudio I/O yok."""
+    import numpy as np
+
+    proc = _run(
+        [
+            "ffmpeg", "-nostdin", "-v", "error", "-i", str(path),
+            "-f", "f32le", "-acodec", "pcm_f32le",
+            "-ar", str(samplerate), "-ac", "1", "-",
+        ]
+    )
+    return np.frombuffer(proc.stdout, dtype="<f4").copy()
+
+
+def _track_beats_inline(song_id: str, device: str = "cuda") -> dict:
+    """beat_this'i ÖZGÜN MIX üzerinde çalıştırıp beats.json yazar.
+
+    Stem'ler değil orijinal karışım veriliyor: model tam mix üzerinde
+    eğitildi, davul/vokal ipuçlarını da kullanıyor.
+    """
+    from beat_this.inference import Audio2Beats
+
+    started = time.time()
+    input_path = _find_input(song_id)
+    # 1B mono float32 @ 22050 - Audio2Frames.signal2spect'in beklediği biçim,
+    # hiçbir iç dönüşüm (mono indirme / resample) tetiklenmiyor.
+    signal = _decode_mono(input_path, BEAT_THIS_SR)
+    duration = len(signal) / BEAT_THIS_SR
+
+    audio2beats = Audio2Beats(
+        checkpoint_path=BEAT_THIS_CHECKPOINT, device=device, dbn=False
+    )
+    beats, downbeats = audio2beats(signal, BEAT_THIS_SR)
+
+    beat_times = [round(float(value), 3) for value in beats]
+    downbeat_times = [round(float(value), 3) for value in downbeats]
+
+    bpm = None
+    if len(beat_times) >= 2:
+        gaps = [
+            beat_times[i + 1] - beat_times[i] for i in range(len(beat_times) - 1)
+        ]
+        gaps.sort()
+        median_gap = gaps[len(gaps) // 2]
+        if median_gap > 0:
+            bpm = round(60.0 / median_gap, 2)
+
+    # Gerçek doğrulama burada: build'deki sentetik testin aksine bu gerçek
+    # müzik. Sonuç anlamsızsa sessizce librosa yedeğine düşmek yerine açık
+    # hata veriyoruz - yoksa kayma sorununu yanlış yerde arardık.
+    if not beat_times:
+        raise ValueError(
+            f"beat_this {duration:.1f} sn'lik kayitta hic beat bulamadi. "
+            "Girdi bicimi 1B float32 @ 22050 (dogru); model ya da agirlik "
+            "yuklemesi bozuk olabilir."
+        )
+    if bpm is None or not (60.0 <= bpm <= 200.0):
+        raise ValueError(
+            f"beat_this anlamsiz tempo buldu: bpm={bpm} "
+            f"({len(beat_times)} beat / {duration:.1f} sn). "
+            "60-200 araligi bekleniyor."
+        )
+    coverage = (beat_times[-1] - beat_times[0]) / duration if duration else 0.0
+    if coverage < 0.5:
+        print(
+            f"[uyari] beat'ler kaydin yalnizca %{100 * coverage:.0f}'ini "
+            "kapsiyor; parcanin bir bolumunde ritim bulunamamis olabilir"
+        )
+
+    data = {
+        "beats": beat_times,
+        "downbeats": downbeat_times,
+        "bpm": bpm,
+        "duration": round(duration, 3),
+        "coverage": round(coverage, 3),
+        "source": "beat_this",
+        "checkpoint": BEAT_THIS_CHECKPOINT,
+        "device": device,
+        "seconds": round(time.time() - started, 2),
+    }
+    path = _song_dir(song_id) / "beats.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    volume.commit()
+    print(
+        f"[beat_this] {len(beat_times)} beat, {len(downbeat_times)} downbeat, "
+        f"bpm={bpm}, {data['seconds']} sn"
+    )
+    return data
 
 
 # --------------------------------------------------------------------------
@@ -251,6 +552,39 @@ def probe(song_id: str, fallback_title: str = "") -> dict:
 @app.function(image=light_image, volumes={DATA_DIR: volume}, timeout=60)
 def get_status(song_id: str):
     return _assert_plain(_read_status(song_id))
+
+
+# --------------------------------------------------------------------------
+# GPU: yalnızca beat/downbeat takibi
+#
+# Ayrı fonksiyon, çünkü zaten ayrıştırılmış şarkılar için 12 dakikalık bir
+# yeniden ayrıştırmaya girmeden sadece beats.json üretebilmek gerekiyor.
+# --------------------------------------------------------------------------
+
+
+@app.function(
+    image=separate_image,
+    gpu="T4",
+    volumes={DATA_DIR: volume},
+    timeout=600,
+    max_containers=1,  # min_containers YOK
+)
+def track_beats(song_id: str) -> dict:
+    volume.reload()
+    try:
+        data = _track_beats_inline(song_id, device="cuda")
+    except Exception as exc:
+        _write_status(song_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        raise
+    return _assert_plain(
+        {
+            "id": song_id,
+            "beat_count": len(data["beats"]),
+            "downbeat_count": len(data["downbeats"]),
+            "bpm": data["bpm"],
+            "seconds": data["seconds"],
+        }
+    )
 
 
 # --------------------------------------------------------------------------
@@ -389,8 +723,9 @@ def separate(song_id: str) -> dict:
             )
             written.append(name)
             print(f"[yaz] {name}: tepe {raw_peaks[name]:.4f} -> flac + m4a")
+            # İlerleme bütçesi: ayrıştırma 0-70, analiz 70-100.
             _write_status(
-                song_id, progress=80 + int(20 * len(written) / len(sources))
+                song_id, progress=20 + int(50 * len(written) / len(sources))
             )
 
         result = {
@@ -406,14 +741,690 @@ def separate(song_id: str) -> dict:
             "model_load_seconds": model_load_seconds,
             "total_seconds": round(time.time() - started, 2),
         }
+        # --- beat/downbeat (eğitilmiş model, ÖZGÜN MIX üzerinde) ----------
+        # Aynı GPU konteynerinde: ayrı bir T4 konteyneri açmaktan ucuz.
+        #
+        # Hata yakalanıyor ve yükseltilmiyor: ayrıştırma bu noktada bitti ve
+        # pahalı olan oydu. Beat takibi patlarsa stem'leri çöpe atmak yerine
+        # beats.json'suz devam ediyoruz; analyze librosa yedeğine düşer.
+        # Kesin doğrulama isteyen yol ayrı: track_beats / beats_only.
+        try:
+            beats_data = _track_beats_inline(song_id, device="cuda")
+            result["beat_count"] = len(beats_data["beats"])
+            result["downbeat_count"] = len(beats_data["downbeats"])
+            result["beat_bpm"] = beats_data["bpm"]
+            result["beat_seconds"] = beats_data["seconds"]
+            result["beat_error"] = None
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            print(f"[beat_this] BASARISIZ, librosa yedegine dusulecek: {message}")
+            result["beat_error"] = message
+
         _write_status(
-            song_id, progress=100, error=None, stems=written,
+            song_id, state="analyzing", progress=70, error=None, stems=written,
             samplerate=samplerate, channels=channels, gpu_seconds=gpu_seconds,
         )
-        # Aşama 2 (analiz) gelene kadar ayrıştırma son adım; durumu done'a
-        # çekiyoruz. Aşama 2'de burası "analyzing" olup analyze tetiklenecek.
-        _write_status(song_id, state="done")
+        # Analizi ayrı bir CPU konteynerine devret: T4 burada biter, analiz
+        # süresi GPU olarak faturalanmaz.
+        call = analyze.spawn(song_id)
+        result["analyze_call_id"] = str(call.object_id)
+        print(f"[analyze] spawn edildi: {result['analyze_call_id']}")
         return _assert_plain(result)
+
+    except Exception as exc:
+        _write_status(song_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        raise
+
+
+# --------------------------------------------------------------------------
+# Akor analizi - saf fonksiyonlar
+#
+# Bunlar Modal'a bağlı değil; tests/test_chords_local.py bunları sentetik
+# sesle yerelde çağırıyor. numpy/librosa importları fonksiyon içinde: bu modül
+# light_image konteynerlerinde de import ediliyor ve orada numpy yok.
+# --------------------------------------------------------------------------
+
+
+def _chord_states():
+    """25 durum döndürür: 12 majör + 12 minör + N.
+
+    (states, templates) — states[k] = (kök pitch class, minör mü) ya da N için
+    None. templates (25, 12); ilk 24 satır L2-normalize triad şablonu.
+
+    N satırı BİLEREK sıfır: N'in spektral şablonu yok. Düz (uniform) bir
+    şablon denendi ve işe yaramadı — chroma_cqt çıktısı hiçbir zaman seyrek
+    olmadığı için (gürültü tabanı ~0.28) düz şablonun kosinüsü en iyi triad'ı
+    neredeyse her beat'te geçiyordu (0.736 vs 0.723) ve her şey N çıkıyordu.
+    N artık _chord_path içinde sabit bir skor (N_SCORE) + düşük enerji eşiği
+    ile ele alınıyor: "akor yok" bir spektral şekil değil, sinyal yokluğu ya
+    da hiçbir triad'ın yeterince iyi oturmaması demek.
+    """
+    import numpy as np
+
+    states = []
+    rows = []
+    for is_minor, intervals in ((False, (0, 4, 7)), (True, (0, 3, 7))):
+        for root in range(12):
+            vector = np.zeros(12, dtype=float)
+            for interval in intervals:
+                vector[(root + interval) % 12] = 1.0
+            rows.append(vector / np.linalg.norm(vector))
+            states.append((root, is_minor))
+
+    rows.append(np.zeros(12, dtype=float))  # N: şablonu yok
+    states.append(None)
+
+    return states, np.vstack(rows)
+
+
+def _chord_tones(root: int, is_minor: bool):
+    """Triad'ın pitch class'ları: kök, üçlü, beşli."""
+    return (root % 12, (root + (3 if is_minor else 4)) % 12, (root + 7) % 12)
+
+
+def _diatonic_states(tonic: int, is_minor: bool):
+    """Tonun diyatonik triadları.
+
+    Minörde doğal minörün yanına armonik minörün V MAJÖR akoru da eklendi
+    (Fm'de C majör) - popüler müzikte dominant çoğunlukla majör çalınıyor.
+    """
+    if is_minor:
+        degrees = (
+            (0, True),    # i    Fm
+            (3, False),   # III  Ab
+            (5, True),    # iv   Bbm
+            (7, True),    # v    Cm
+            (8, False),   # VI   Db
+            (10, False),  # VII  Eb
+            (7, False),   # V    C majör (armonik minör)
+        )
+    else:
+        degrees = (
+            (0, False),   # I
+            (2, True),    # ii
+            (4, True),    # iii
+            (5, False),   # IV
+            (7, False),   # V
+            (9, True),    # vi
+        )
+    return {((tonic + semitones) % 12, minor) for semitones, minor in degrees}
+
+
+# Beşliler çemberi konumu (majör tonikler). Negatif = bemollü ton.
+_CIRCLE_OF_FIFTHS = {0: 0, 7: 1, 2: 2, 9: 3, 4: 4, 11: 5, 6: 6,
+                     1: -5, 8: -4, 3: -3, 10: -2, 5: -1}
+
+
+def _key_uses_flats(tonic: int, is_minor: bool) -> bool:
+    """Ton bemollü mü? Minörde ilgili majöre bakılır (Fm -> Ab -> bemol)."""
+    relative_major = (tonic + 3) % 12 if is_minor else tonic
+    return _CIRCLE_OF_FIFTHS[relative_major] < 0
+
+
+def _key_name(tonic: int, is_minor: bool) -> str:
+    names = FLAT_NAMES if _key_uses_flats(tonic, is_minor) else NOTE_NAMES
+    return f"{names[tonic]}{'m' if is_minor else ''}"
+
+
+def _detect_key(states_per_beat, durations):
+    """Süre ağırlıklı diyatonik kapsamadan tonu tahmin eder.
+
+    Skor = (diyatonik akorlarda geçen süre) + (tonik akorunda geçen süre).
+    Tonik terimi şart: Fm ile ilgili majörü Ab'nin diyatonik kümeleri
+    neredeyse aynı, onları yalnızca tonik akorunun süresi ayırıyor.
+    """
+    best = None
+    for tonic in range(12):
+        for is_minor in (False, True):
+            diatonic = _diatonic_states(tonic, is_minor)
+            covered = 0.0
+            tonic_duration = 0.0
+            for state, duration in zip(states_per_beat, durations):
+                if state is None:
+                    continue
+                if state in diatonic:
+                    covered += duration
+                if state == (tonic, is_minor):
+                    tonic_duration += duration
+            score = covered + tonic_duration
+            if best is None or score > best[0]:
+                best = (score, tonic, is_minor)
+    return best[1], best[2]
+
+
+def _chord_label(state, names, bass_pitch=None) -> str:
+    """Akor etiketi; bas notası kök değil ama akor tonuysa slash akor."""
+    if state is None:
+        return NO_CHORD
+    root, is_minor = state
+    base = f"{names[root]}{'m' if is_minor else ''}"
+    if bass_pitch is None or bass_pitch == root:
+        return base
+    if bass_pitch in _chord_tones(root, is_minor):
+        return f"{base}/{names[bass_pitch]}"
+    # Bas akor tonu değil (geçiş notası, gürültü): slash yazmıyoruz.
+    return base
+
+
+def _beat_bounds(beat_frames, n_frames: int):
+    """Beat frame'lerini sync() için artan sınır dizisine çevirir.
+
+    Sonuç len(bounds)-1 segment verir: [beat i, beat i+1), sonuncusu ses sonuna.
+    """
+    import numpy as np
+
+    bounds = sorted({int(f) for f in beat_frames if 0 <= int(f) < n_frames})
+    if not bounds or bounds[-1] != n_frames:
+        bounds.append(n_frames)
+    return np.array(bounds, dtype=int)
+
+
+def _sync_median(feature, bounds):
+    import librosa
+    import numpy as np
+
+    return librosa.util.sync(feature, bounds, aggregate=np.median, pad=False)
+
+
+def _bpm_from_beats(beat_times) -> float:
+    """Vuruş zamanlarının vuruş indeksine DOĞRUSAL REGRESYONundan tempo.
+
+    Medyan aralık yuvarlanmış veriyle çalışmıyor. beat_this çıktısını kendi
+    50 fps (20 ms) ızgarasına oturtuyor, yani aralıklar yalnızca 0.46 / 0.48
+    gibi ayrık değerler alıyor ve medyan bpm'i 60/(k*0.02) kümesine
+    hapsediyor: 120.0, 125.0, 130.43... Gerçek 127 BPM'de medyan 0.46'ya
+    düşüp 130.43 veriyordu. Regresyonun eğimi periyodun kendisi olduğu için
+    ızgara gürültüsü tüm parça boyunca ortalanıyor.
+    """
+    import numpy as np
+
+    times = np.asarray(beat_times, dtype=float)
+    if times.size < 2:
+        return 0.0
+    gaps = np.diff(times)
+    positive = gaps[gaps > 0]
+    if positive.size == 0:
+        return 0.0
+    rough_period = float(np.median(positive))
+    if rough_period <= 0:
+        return 0.0
+
+    # Vuruş indeksi: her aralığı kaba periyoda bölerek. Atlanmış bir vuruş
+    # varsa adım 2 olur, indeks kaymaz.
+    indices = [0.0]
+    for gap in gaps:
+        step = max(1, int(round(float(gap) / rough_period)))
+        indices.append(indices[-1] + step)
+
+    slope = float(np.polyfit(np.asarray(indices), times, 1)[0])
+    if slope <= 0:
+        return 0.0
+    return 60.0 / slope
+
+
+def _half_bar_starts(downbeat_indices, beat_count: int,
+                     beats_per_bar: int = BEATS_PER_BAR):
+    """Akor değişimine izin verilen beat indeksleri: 1. ve 3. vuruşlar.
+
+    Bu şarkıda akorlar en sık yarım ölçüde değişiyor; viterbi'yi beat yerine
+    yarım ölçü segmentlerinde çalıştırmak ölçü içinde 3 akor çıkmasını
+    yapısal olarak engelliyor.
+    """
+    starts = {0}
+    half = beats_per_bar // 2
+    for index in downbeat_indices:
+        if 0 <= index < beat_count:
+            starts.add(int(index))
+            if index + half < beat_count:
+                starts.add(int(index) + half)
+    return sorted(starts)
+
+
+def _snap_to_beats(times, beat_times, end_time: float):
+    """Her downbeat'i en yakın beat zamanına oturtur.
+
+    Böylece downbeats her zaman beats'in alt kümesi kalıyor - hem çizelge hem
+    ön yüz buna güveniyor.
+    """
+    import numpy as np
+
+    grid = np.asarray(beat_times, dtype=float)
+    if grid.size == 0:
+        return []
+    snapped = []
+    for value in times:
+        value = float(value)
+        if value < 0.0 or value >= end_time:
+            continue
+        snapped.append(round(float(grid[int(np.argmin(np.abs(grid - value)))]), 3))
+    # Aynı beat'e oturan birden fazla downbeat olabilir; tekille ve sırala.
+    return sorted(set(snapped))
+
+
+def _chord_path(
+    chroma_beats,
+    bass_chroma_beats,
+    beat_energy,
+    *,
+    root_weight: float = ROOT_WEIGHT,
+    self_transition: float = SELF_TRANSITION,
+    sharpen: float = SHARPEN,
+    n_energy_ratio: float = N_ENERGY_RATIO,
+    n_score: float = N_SCORE,
+    diatonic=None,
+    key_weight: float = 0.0,
+):
+    """Beat başına akor durumları (viterbi ile yumuşatılmış).
+
+    Dönüş: her beat için (kök, minör mü) demeti ya da N için None.
+    """
+    import librosa
+    import numpy as np
+
+    states, templates = _chord_states()
+    n_index = states.index(None)
+
+    # Chroma'nın gürültü tabanını kaldır: her beat'te medyanı çıkar, negatifi
+    # kes. chroma_cqt her bin'e enerji yaydığı için bu yapılmazsa triad
+    # şablonları birbirinden ayrışamıyor.
+    cleaned = np.asarray(chroma_beats, dtype=float)
+    cleaned = np.clip(cleaned - np.median(cleaned, axis=0, keepdims=True), 0.0, None)
+
+    # Kosinüs benzerliği: chroma'yı birim uzunluğa getir, şablonlar zaten birim.
+    norms = np.maximum(np.linalg.norm(cleaned, axis=0, keepdims=True), 1e-9)
+    scores = templates @ (cleaned / norms)  # (25, T); N satırı 0
+
+    # Kök notası bonusu: bas chroma'da akorun kökünün ağırlığı.
+    bass_l1 = bass_chroma_beats / np.maximum(
+        bass_chroma_beats.sum(axis=0, keepdims=True), 1e-9
+    )
+    if root_weight:
+        bonus = np.zeros_like(scores)
+        for index, state in enumerate(states):
+            if state is not None:
+                bonus[index] = bass_l1[state[0]]
+        scores = scores + root_weight * bonus
+
+    # Tona diyatonik akorlara küçük sabit bonus. Yakın skorları çevirir,
+    # net bir üçlüyü çevirmez.
+    if diatonic and key_weight:
+        for index, state in enumerate(states):
+            if state is not None and state in diatonic:
+                scores[index] += key_weight
+
+    # N'in skoru sabit: hiçbir triad bu eşiği geçemiyorsa "akor yok".
+    scores[n_index] = n_score
+
+    # Düşük enerjili beat'ler doğrudan N'e.
+    if beat_energy is not None and np.size(beat_energy):
+        reference = float(np.percentile(beat_energy, 90))
+        quiet = np.asarray(beat_energy) < n_energy_ratio * max(reference, 1e-12)
+        if quiet.any():
+            scores[:, quiet] = 0.0
+            scores[n_index, quiet] = 1.0
+
+    # Benzerlik -> olasılık: negatifleri kes, keskinleştir, kolonları normalize et.
+    prob = np.clip(scores, 0.0, None) ** sharpen + 1e-12
+    prob = prob / prob.sum(axis=0, keepdims=True)
+
+    transition = librosa.sequence.transition_loop(len(states), self_transition)
+    path = librosa.sequence.viterbi(prob, transition)
+    return [states[int(index)] for index in path]
+
+
+def _choose_downbeat_phase(beat_labels, bass_energy, beats_per_bar: int = BEATS_PER_BAR):
+    """4 fazdan hangisinin ölçü başı olduğunu seçer.
+
+    Birincil ölçüt: akor değişimlerinin ölçü başına düşme sayısı (en çok olan
+    kazanır). Eşitlikte bas enerjisi karar verir.
+    """
+    import numpy as np
+
+    changes = [
+        i for i in range(1, len(beat_labels)) if beat_labels[i] != beat_labels[i - 1]
+    ]
+    energy = None if bass_energy is None else np.asarray(bass_energy, dtype=float)
+
+    best_phase = 0
+    best_key = None
+    for phase in range(beats_per_bar):
+        on_bar = [i for i in range(len(beat_labels)) if (i - phase) % beats_per_bar == 0]
+        change_hits = sum(1 for i in changes if (i - phase) % beats_per_bar == 0)
+        if energy is not None and energy.size and on_bar:
+            valid = [i for i in on_bar if i < energy.size]
+            mean_energy = float(np.mean(energy[valid])) if valid else 0.0
+        else:
+            mean_energy = 0.0
+        key = (change_hits, mean_energy)
+        if best_key is None or key > best_key:
+            best_key = key
+            best_phase = phase
+    return best_phase
+
+
+def _merge_chords(beat_labels, beat_times, end_time: float):
+    """Ardışık aynı akorları tek aralığa birleştirir."""
+    chords = []
+    for index, label in enumerate(beat_labels):
+        start = float(beat_times[index])
+        if index + 1 < len(beat_times):
+            end = float(beat_times[index + 1])
+        else:
+            end = float(end_time)
+        if end <= start:
+            continue
+        if chords and chords[-1]["label"] == label:
+            chords[-1]["end"] = round(end, 3)
+        else:
+            chords.append(
+                {"start": round(start, 3), "end": round(end, 3), "label": label}
+            )
+    return chords
+
+
+def analyze_core(
+    quality,
+    bass,
+    sr: int,
+    *,
+    beats=None,
+    downbeats=None,
+    root_weight: float = ROOT_WEIGHT,
+    self_transition: float = SELF_TRANSITION,
+    sharpen: float = SHARPEN,
+    n_energy_ratio: float = N_ENERGY_RATIO,
+    n_score: float = N_SCORE,
+    key_weight: float = KEY_WEIGHT,
+    slash_penalty: float = SLASH_PENALTY,
+) -> dict:
+    """chords.json içeriğini üretir.
+
+    quality: piano+guitar+other toplamı (BASS HARİÇ) - akor kalitesini bu
+             belirler, böylece evrik akorlarda bas kökü yanlış göstermiyor.
+    bass:    bass stem'i - slash akorun bas notası ve downbeat yedeği için.
+    beats/downbeats: beat_this'ten gelen zamanlar (saniye). None ise librosa
+             beat_track + kural tabanlı downbeat yedeğine düşülür.
+    """
+    import librosa
+    import numpy as np
+
+    if sr != ANALYSIS_SR:
+        quality = librosa.resample(quality, orig_sr=sr, target_sr=ANALYSIS_SR)
+        bass = librosa.resample(bass, orig_sr=sr, target_sr=ANALYSIS_SR)
+        sr = ANALYSIS_SR
+
+    length = min(quality.shape[-1], bass.shape[-1])
+    quality = np.ascontiguousarray(quality[:length], dtype=np.float32)
+    bass = np.ascontiguousarray(bass[:length], dtype=np.float32)
+    mix = quality + bass  # enerji kapısı ve librosa yedeği için tam karışım
+    end_time = float(length) / sr
+
+    # --- beat'ler -----------------------------------------------------------
+    raw_beat_times = None
+    if beats:
+        raw_beat_times = np.asarray(
+            [float(t) for t in beats if 0.0 <= float(t) < end_time], dtype=float
+        )
+        beats_source = "beat_this"
+        beat_frames = librosa.time_to_frames(
+            raw_beat_times, sr=sr, hop_length=HOP_LENGTH
+        )
+    else:
+        tempo, beat_frames = librosa.beat.beat_track(
+            y=mix, sr=sr, hop_length=HOP_LENGTH
+        )
+        beats_source = "librosa"
+
+    if len(beat_frames) < 2:
+        raise ValueError("Beat bulunamadi; kayit cok kisa veya ritmi belirsiz.")
+
+    # --- öznitelikler -------------------------------------------------------
+    chroma = librosa.feature.chroma_cqt(y=quality, sr=sr, hop_length=HOP_LENGTH)
+    bass_chroma = librosa.feature.chroma_cqt(y=bass, sr=sr, hop_length=HOP_LENGTH)
+    rms = librosa.feature.rms(y=mix, hop_length=HOP_LENGTH)[0]
+    bass_rms = librosa.feature.rms(y=bass, hop_length=HOP_LENGTH)[0]
+
+    n_frames = min(chroma.shape[1], bass_chroma.shape[1], rms.size, bass_rms.size)
+    bounds = _beat_bounds(beat_frames, n_frames)
+    if bounds.size < 2:
+        raise ValueError("Beat sinirlari olusturulamadi.")
+
+    beat_times = librosa.frames_to_time(bounds[:-1], sr=sr, hop_length=HOP_LENGTH)
+
+    # bpm HAM beat zamanlarından. beat_times frame ızgarasına (23,2 ms)
+    # yuvarlandığı için medyan aralık en yakın frame sayısına snap ediyordu:
+    # 127 BPM'de beat 20,35 frame -> medyan 20 frame (0,4644 sn) -> 129,2 bpm.
+    bpm = _bpm_from_beats(
+        raw_beat_times if raw_beat_times is not None and raw_beat_times.size >= 2
+        else beat_times
+    )
+
+    common = dict(
+        root_weight=root_weight, self_transition=self_transition,
+        sharpen=sharpen, n_energy_ratio=n_energy_ratio, n_score=n_score,
+    )
+
+    def sync_all(segment_bounds):
+        return (
+            _sync_median(chroma[:, :n_frames], segment_bounds),
+            _sync_median(bass_chroma[:, :n_frames], segment_bounds),
+            _sync_median(rms[np.newaxis, :n_frames], segment_bounds)[0],
+            _sync_median(bass_rms[np.newaxis, :n_frames], segment_bounds)[0],
+        )
+
+    def detect(chroma_seg, bass_chroma_seg, energy_seg, seg_times):
+        """İki geçiş: ton bonusu olmadan ton tahmini, sonra bonusla akorlar."""
+        first_pass = _chord_path(chroma_seg, bass_chroma_seg, energy_seg, **common)
+        seg_durations = [
+            float(seg_times[i + 1] - seg_times[i]) if i + 1 < len(seg_times)
+            else max(end_time - float(seg_times[i]), 0.0)
+            for i in range(len(seg_times))
+        ]
+        tonic_, minor_ = _detect_key(first_pass, seg_durations)
+        states_ = _chord_path(
+            chroma_seg, bass_chroma_seg, energy_seg,
+            diatonic=_diatonic_states(tonic_, minor_), key_weight=key_weight,
+            **common
+        )
+        return states_, tonic_, minor_
+
+    beat_chroma, beat_bass_chroma, beat_energy, bass_energy = sync_all(bounds)
+
+    # --- downbeat'ler -------------------------------------------------------
+    # Yarım ölçü segmentasyonu downbeat'leri gerektiriyor, kural tabanlı
+    # downbeat ise etiketleri gerektiriyor. beat_this downbeat verdiyse
+    # döngü yok; vermediyse beat düzeyinde bir ön geçişle etiket üretiyoruz.
+    if downbeats:
+        downbeat_times = _snap_to_beats(downbeats, beat_times, end_time)
+        downbeat_source = "beat_this"
+    else:
+        pre_states, pre_tonic, pre_minor = detect(
+            beat_chroma, beat_bass_chroma, beat_energy, beat_times
+        )
+        pre_names = FLAT_NAMES if _key_uses_flats(pre_tonic, pre_minor) else NOTE_NAMES
+        pre_labels = [_chord_label(state, pre_names) for state in pre_states]
+        phase = _choose_downbeat_phase(pre_labels, bass_energy)
+        downbeat_times = [
+            round(float(beat_times[i]), 3)
+            for i in range(len(beat_times))
+            if (i - phase) % BEATS_PER_BAR == 0
+        ]
+        downbeat_source = "kural"
+
+    # --- segmentasyon: yarım ölçü (1. ve 3. vuruş) --------------------------
+    # Akorlar bu tür parçalarda en sık yarım ölçüde değişiyor. Viterbi'yi
+    # beat yerine yarım ölçü segmentlerinde çalıştırmak ölçü içinde 3 akor
+    # çıkmasını yapısal olarak engelliyor.
+    beat_index_of = {round(float(t), 3): i for i, t in enumerate(beat_times)}
+    downbeat_indices = [
+        beat_index_of[round(float(t), 3)]
+        for t in downbeat_times
+        if round(float(t), 3) in beat_index_of
+    ]
+
+    segment_mode = "beat"
+    segment_bounds = bounds
+    segment_times = beat_times
+    if len(downbeat_indices) >= 2:
+        starts = _half_bar_starts(downbeat_indices, len(beat_times))
+        if len(starts) >= 2:
+            segment_bounds = _beat_bounds([bounds[i] for i in starts], n_frames)
+            segment_times = librosa.frames_to_time(
+                segment_bounds[:-1], sr=sr, hop_length=HOP_LENGTH
+            )
+            segment_mode = "yarim-olcu"
+
+    if segment_mode == "beat":
+        chroma_seg, bass_chroma_seg, energy_seg, bass_energy_seg = (
+            beat_chroma, beat_bass_chroma, beat_energy, bass_energy
+        )
+    else:
+        chroma_seg, bass_chroma_seg, energy_seg, bass_energy_seg = sync_all(
+            segment_bounds
+        )
+
+    states, tonic, key_is_minor = detect(
+        chroma_seg, bass_chroma_seg, energy_seg, segment_times
+    )
+
+    # --- etiketleme: tonun yazımı + slash akorlar ---------------------------
+    names = FLAT_NAMES if _key_uses_flats(tonic, key_is_minor) else NOTE_NAMES
+    bass_floor = 0.0
+    if bass_energy_seg.size:
+        bass_floor = 0.15 * float(np.percentile(bass_energy_seg, 90))
+    bass_pitches = np.argmax(bass_chroma_seg, axis=0)
+
+    # Slash cezası: evrik akorlar kök konumundan çok daha nadir, o yüzden
+    # slash için kanıt eşiği yüksek. Kanıt BAS chroma'sında aranıyor: bas
+    # segment boyunca köke değil o notaya OTURMUŞ olmalı, yani bas
+    # chroma'sında adayın ağırlığı kökün ağırlığını slash_penalty kadar
+    # aşmalı.
+    #
+    # Üst stem'lerin chroma'sına bakmayı denedim, işe yaramadı: gerçek bir
+    # evrimde üst stem'ler kökü hâlâ içeriyor (Ab/C'de piyano C-Eb-Ab çalar),
+    # dolayısıyla ağırlık farkı ~0 ve gerçek evrimler de bastırılıyordu -
+    # test_inversion_end_to_end bunu yakaladı. Geçici bas notaları ise yarım
+    # ölçü medyanında zaten eriyor, bu yüzden bas kanıtı ayırt edici.
+    bass_l1 = bass_chroma_seg / np.maximum(
+        bass_chroma_seg.sum(axis=0, keepdims=True), 1e-9
+    )
+
+    labels = []
+    for index, state in enumerate(states):
+        pitch = None
+        audible = index < bass_energy_seg.size and bass_energy_seg[index] >= bass_floor
+        if audible and state is not None:
+            candidate = int(bass_pitches[index])
+            root = state[0]
+            if candidate == root:
+                pitch = candidate
+            elif candidate in _chord_tones(*state):
+                margin = float(bass_l1[candidate, index] - bass_l1[root, index])
+                if margin > slash_penalty:
+                    pitch = candidate
+        labels.append(_chord_label(state, names, pitch))
+
+    return {
+        "bpm": round(bpm, 2),
+        "beats": [round(float(t), 3) for t in beat_times],
+        "downbeats": downbeat_times,
+        "chords": _merge_chords(labels, segment_times, end_time),
+        "key": _key_name(tonic, key_is_minor),
+        "beats_source": beats_source,
+        "downbeats_source": downbeat_source,
+        "segment_mode": segment_mode,
+    }
+
+
+# --------------------------------------------------------------------------
+# CPU: analiz
+# --------------------------------------------------------------------------
+
+
+@app.function(image=analyze_image, volumes={DATA_DIR: volume}, timeout=600)
+def analyze(song_id: str, beats_source: str = "auto") -> dict:
+    """beats_source: "auto" (beats.json varsa onu kullan) veya "librosa"."""
+    import numpy as np
+    import soundfile as sf
+
+    started = time.time()
+    volume.reload()
+    song_dir = _song_dir(song_id)
+    master_dir = song_dir / "master"
+
+    try:
+        _write_status(song_id, state="analyzing", progress=75, error=None)
+
+        # Akor KALİTESİ: piano+guitar+other (bass, drums, vocals HARİÇ).
+        # Bass ayrı okunuyor: slash akorun bas notası ve downbeat yedeği için.
+        parts = {}
+        samplerate = None
+        for name in QUALITY_STEMS + (BASS_STEM,):
+            path = master_dir / f"{name}.flac"
+            if not path.exists():
+                raise FileNotFoundError(f"{name}.flac yok; once ayristirma gerekiyor")
+            data, file_sr = sf.read(str(path), dtype="float32", always_2d=True)
+            if samplerate is None:
+                samplerate = int(file_sr)
+            elif int(file_sr) != samplerate:
+                raise ValueError(f"{name}.flac ornekleme hizi farkli: {file_sr}")
+            parts[name] = data.mean(axis=1)
+
+        length = min(part.shape[0] for part in parts.values())
+        quality = np.sum([parts[name][:length] for name in QUALITY_STEMS], axis=0)
+        bass = parts[BASS_STEM][:length]
+
+        # beats.json (beat_this) varsa kullan.
+        beats = None
+        downbeats = None
+        beats_path = song_dir / "beats.json"
+        if beats_source == "librosa":
+            print("[analiz] beats.json yok sayildi (--beats librosa)")
+        elif beats_path.exists():
+            beats_data = json.loads(beats_path.read_text(encoding="utf-8"))
+            beats = beats_data.get("beats") or None
+            downbeats = beats_data.get("downbeats") or None
+            print(
+                f"[analiz] beats.json: {len(beats or [])} beat, "
+                f"{len(downbeats or [])} downbeat, kaynak={beats_data.get('source')}"
+            )
+        else:
+            print("[analiz] beats.json YOK -> librosa yedegine dusuluyor")
+
+        print(f"[analiz] kalite={list(QUALITY_STEMS)} sr={samplerate} ornek={length}")
+        _write_status(song_id, progress=85)
+
+        data = analyze_core(
+            quality, bass, int(samplerate), beats=beats, downbeats=downbeats
+        )
+
+        chords_path = song_dir / "chords.json"
+        chords_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        volume.commit()
+
+        summary = {
+            "id": song_id,
+            "bpm": data["bpm"],
+            "key": data["key"],
+            "beats_source": data["beats_source"],
+            "downbeats_source": data["downbeats_source"],
+            "segment_mode": data["segment_mode"],
+            "slash_count": sum(1 for c in data["chords"] if "/" in c["label"]),
+            "beat_count": len(data["beats"]),
+            "downbeat_count": len(data["downbeats"]),
+            "chord_count": len(data["chords"]),
+            "labels": sorted({chord["label"] for chord in data["chords"]}),
+            "analyze_seconds": round(time.time() - started, 2),
+        }
+        print(f"[analiz] {summary}")
+        _write_status(
+            song_id, state="done", progress=100, error=None,
+            bpm=data["bpm"], key=data["key"], chord_count=len(data["chords"]),
+            analyze_seconds=summary["analyze_seconds"],
+        )
+        return _assert_plain(summary)
 
     except Exception as exc:
         _write_status(song_id, state="error", error=f"{type(exc).__name__}: {exc}")
@@ -431,6 +1442,103 @@ def _sha256(path: pathlib.Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+BARS_PER_LINE = 4
+
+
+def _bars_from_chords(data: dict):
+    """chords.json'ı (ölçü başlangıcı, o ölçüde duyulan akorlar) listesine çevirir."""
+    downbeats = data.get("downbeats") or []
+    chords = data.get("chords") or []
+    if not downbeats:
+        return []
+
+    end_time = chords[-1]["end"] if chords else downbeats[-1]
+    bars = []
+    for index, start in enumerate(downbeats):
+        stop = downbeats[index + 1] if index + 1 < len(downbeats) else end_time
+        if stop <= start:
+            continue
+        labels = []
+        for chord in chords:
+            # Ölçüyle kesişen her akor; ardışık aynı etiketi tekrar yazmıyoruz.
+            if chord["end"] > start + 1e-6 and chord["start"] < stop - 1e-6:
+                if not labels or labels[-1] != chord["label"]:
+                    labels.append(chord["label"])
+        bars.append((float(start), labels or ["-"]))
+    return bars
+
+
+def _mmss(seconds: float) -> str:
+    total = int(seconds)
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def _format_chord_chart(data: dict, bars_per_line: int = BARS_PER_LINE) -> str:
+    """Okunabilir akor çizelgesi: satır başına 4 ölçü, başında dakika:saniye."""
+    bars = _bars_from_chords(data)
+    header = f"bpm: {data.get('bpm')}"
+    if not bars:
+        return f"{header}\n(downbeat bulunamadi, cizelge cizilemedi)"
+
+    cells = ["  ".join(labels) for _start, labels in bars]
+    width = max(5, max(len(cell) for cell in cells))
+
+    lines = [header, f"olcu sayisi: {len(bars)}", ""]
+    for offset in range(0, len(bars), bars_per_line):
+        chunk = bars[offset : offset + bars_per_line]
+        stamp = _mmss(chunk[0][0]).ljust(6)
+        row = "".join(
+            f"| {cells[offset + i].ljust(width)}" for i in range(len(chunk))
+        )
+        lines.append(f"{stamp}{row}|")
+    return "\n".join(lines)
+
+
+def _wait_for_done(song_id: str, timeout: int = 600, interval: int = 3) -> dict:
+    """status.json'ı done veya error olana kadar yoklar."""
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        status = get_status.remote(song_id) or {}
+        state = status.get("state")
+        if state != last:
+            print(f"  durum: {state}  ilerleme: {status.get('progress')}")
+            last = state
+        if state in ("done", "error"):
+            return status
+        time.sleep(interval)
+    raise SystemExit(f"Zaman asimi: {song_id} hala {last}")
+
+
+def _download(song_id: str, out: str, masters: bool) -> pathlib.Path:
+    """Stem'leri ve chords.json'ı PC'ye indirir."""
+    dest_root = pathlib.Path(out) / song_id
+    prefixes = ["stems", "master"] if masters else ["stems"]
+    print(f"\nindiriliyor -> {dest_root}  ({', '.join(prefixes)}, chords.json)")
+
+    for prefix in prefixes:
+        for entry in volume.listdir(f"songs/{song_id}/{prefix}"):
+            dest = dest_root / prefix / pathlib.PurePosixPath(entry.path).name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with dest.open("wb") as handle:
+                for chunk in volume.read_file(entry.path):
+                    handle.write(chunk)
+            print(f"  {dest}  ({dest.stat().st_size / 1024**2:.2f} MB)")
+
+    for name in ("chords.json", "beats.json", "status.json"):
+        dest = dest_root / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with dest.open("wb") as handle:
+                for chunk in volume.read_file(f"songs/{song_id}/{name}"):
+                    handle.write(chunk)
+        except FileNotFoundError:
+            print(f"  {name} yok, atlandi")
+            continue
+        print(f"  {dest}")
+    return dest_root
 
 
 @app.local_entrypoint()
@@ -458,6 +1566,12 @@ def main(path: str, out: str = "out", force: bool = False, masters: bool = True)
     existing = get_status.remote(song_id)
     if existing and existing.get("state") == "done" and not force:
         print("bu dosya zaten islenmis (durum: done). Yeniden islemek icin --force.")
+        if not existing.get("bpm"):
+            print(
+                "  not: bu sarki eski bir analizden geliyor. Egitilmis "
+                "beat/downbeat icin:\n"
+                "  modal run backend/app.py::beats_only --path <dosya>"
+            )
     else:
         ext = src.suffix.lower().lstrip(".") or "bin"
         remote_input = f"songs/{song_id}/input.{ext}"
@@ -473,21 +1587,118 @@ def main(path: str, out: str = "out", force: bool = False, masters: bool = True)
 
         print("ayristirma (T4)...")
         result = separate.remote(song_id)
-        print("\n===== sonuc =====")
+        print("\n===== ayristirma sonucu =====")
         for key, value in result.items():
             print(f"{key}: {value}")
 
-    # --- stem'leri PC'ye indir ---
-    dest_root = pathlib.Path(out) / song_id
-    prefixes = ("stems", "master") if masters else ("stems",)
-    print(f"\nindiriliyor -> {dest_root}  ({', '.join(prefixes)})")
-    for prefix in prefixes:
-        for entry in volume.listdir(f"songs/{song_id}/{prefix}"):
-            dest = dest_root / prefix / pathlib.PurePosixPath(entry.path).name
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            with dest.open("wb") as handle:
-                for chunk in volume.read_file(entry.path):
-                    handle.write(chunk)
-            print(f"  {dest}  ({dest.stat().st_size / 1024**2:.2f} MB)")
+        # separate, analyze'i spawn edip cikti; analiz ayri bir CPU
+        # konteynerinde suruyor.
+        print("\nanaliz (CPU) bekleniyor...")
+        status = _wait_for_done(song_id)
+        print(f"durum: {status.get('state')}  bpm: {status.get('bpm')}  "
+              f"akor sayisi: {status.get('chord_count')}")
+        if status.get("state") == "error":
+            raise SystemExit(f"Analiz hatasi: {status.get('error')}")
+
+    dest_root = _download(song_id, out, masters)
+
+    chords_file = dest_root / "chords.json"
+    if chords_file.exists():
+        print("\n===== akor cizelgesi =====")
+        print(_format_chord_chart(json.loads(chords_file.read_text(encoding="utf-8"))))
 
     print("\nBitti.")
+
+
+def _resolve_song_id(song_id: str, path: str) -> str:
+    if not song_id and not path:
+        raise SystemExit("--song-id veya --path vermelisin")
+    if song_id:
+        return song_id
+    src = pathlib.Path(path).expanduser()
+    if not src.is_file():
+        raise SystemExit(f"Dosya bulunamadi: {src}")
+    resolved = _sha256(src)
+    print(f"sha256: {resolved}")
+    return resolved
+
+
+@app.local_entrypoint()
+def beats_only(song_id: str = "", path: str = "", out: str = "out",
+               reanalyze: bool = True):
+    """Yalnızca beat_this'i çalıştırır (T4), ayrıştırmayı TEKRARLAMAZ.
+
+    Zaten "done" olan şarkılar için beats.json üretmenin yolu bu; ana akış
+    ayrıştırmayı atladığı için beats.json hiç oluşmuyordu.
+
+    modal run backend/app.py::beats_only --path sarki.mp3
+    """
+    song_id = _resolve_song_id(song_id, path)
+
+    existing = get_status.remote(song_id)
+    if not existing:
+        raise SystemExit(f"{song_id} icin kayit yok; once ayristirma gerekiyor.")
+
+    print("beat/downbeat takibi (T4, beat_this, ozgun mix uzerinde)...")
+    summary = track_beats.remote(song_id)
+    print("\n===== beat sonucu =====")
+    for key, value in summary.items():
+        print(f"{key}: {value}")
+
+    if not reanalyze:
+        return
+    if not existing.get("stems"):
+        print("\nstem yok, analiz atlandi.")
+        return
+
+    print("\nanaliz (CPU, GPU yok)...")
+    _run_analysis(song_id, out)
+
+
+@app.local_entrypoint()
+def analyze_only(song_id: str = "", path: str = "", out: str = "out",
+                 beats: str = "auto"):
+    """Yalnızca analizi yeniden çalıştırır - GPU'ya hiç dokunmaz.
+
+    modal run backend/app.py::analyze_only --song-id <sha256>
+    modal run backend/app.py::analyze_only --path sarki.mp3
+    modal run backend/app.py::analyze_only --path sarki.mp3 --beats librosa
+    """
+    song_id = _resolve_song_id(song_id, path)
+
+    existing = get_status.remote(song_id)
+    if not existing:
+        raise SystemExit(f"{song_id} icin kayit yok; once ayristirma gerekiyor.")
+    if not existing.get("stems"):
+        raise SystemExit(
+            f"{song_id} henuz ayristirilmamis (durum: {existing.get('state')})."
+        )
+
+    print(f"analiz (CPU, GPU yok, beats={beats})...")
+    _run_analysis(song_id, out, beats_source=beats)
+
+
+def _run_analysis(song_id: str, out: str, beats_source: str = "auto"):
+    summary = analyze.remote(song_id, beats_source)
+    print("\n===== analiz sonucu =====")
+    for key, value in summary.items():
+        print(f"{key}: {value}")
+
+    dest_root = pathlib.Path(out) / song_id
+    dest_root.mkdir(parents=True, exist_ok=True)
+    # chords.json + beats.json: ham beat zamanlarını yerelde inceleyebilmek
+    # icin beats.json da iniyor (stem/master indirilmiyor).
+    for name in ("chords.json", "beats.json"):
+        dest = dest_root / name
+        try:
+            with dest.open("wb") as handle:
+                for chunk in volume.read_file(f"songs/{song_id}/{name}"):
+                    handle.write(chunk)
+        except FileNotFoundError:
+            print(f"  {name} yok, atlandi")
+            continue
+        print(f"  {dest}")
+
+    chords_file = dest_root / "chords.json"
+    print("\n===== akor cizelgesi =====")
+    print(_format_chord_chart(json.loads(chords_file.read_text(encoding="utf-8"))))

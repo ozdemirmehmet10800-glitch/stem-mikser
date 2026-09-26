@@ -11,6 +11,8 @@ Bu metni proje köküne PLAN.md olarak kaydet. Her yeni oturumda önce PLAN.md'y
 - Modal'ın API'si sürümler arasında değişti (web_endpoint → fastapi_endpoint, keep_warm → min_containers, concurrency_limit → max_containers gibi). Hafızana güvenme; kurulu modal sürümünü ve güncel dokümanı kontrol et.
 - Geliştirme sırasında `modal serve`, kalıcı kurulum için `modal deploy` kullan.
 - Sisteme global bir şey kurman gerekirse önce sor.
+- torchaudio KURULU OLABİLİR ama BİZİM kodumuz ses I/O'su için onu kullanmaz. Yasak olan `torchaudio.load/save/info` (yeni sürümlerde backend sorunları var); `torchaudio.transforms` gibi saf torch dönüşümleri yasak değil ve üçüncü parti paketler (beat_this'in LogMelSpect'i) bunları kullanabilir. Kurulduğunda sürümü torch ile birebir eşleşmek zorunda. Bu kural `backend/app.py` içinde her import'ta kaynak taramasıyla, build'de de sürüm assert'iyle doğrulanıyor.
+- Bir paketin bağımlılığını değerlendirirken tek dosyaya bakma, IMPORT ZİNCİRİNİ takip et. `beat_this/inference.py` torchaudio import etmiyor ama import ettiği `beat_this/preprocessing.py` ediyor; buna dayanarak `--no-deps` kurulumu yapıldı ve build hata verdi.
 - Uzak (Modal) fonksiyonlar yerel entrypoint'e ASLA torch/numpy nesnesi döndürmez. Sadece düz Python tipleri (str, int, float, bool, list, dict, None) ya da dosya yolları/bayt dizileri döner. `torch.__version__` gibi değerler bile (TorchVersion) yerel ortamda torch kurulu olmadığı için DeserializationError'a yol açar; dönüş öncesi str()/int()/float()/bool() ile açıkça çevir.
 
 ## Mimari
@@ -48,7 +50,7 @@ T4 üzerinde nvidia-smi çıktısını ve torch.cuda.is_available() sonucunu dö
 - İmaj: debian_slim, Python 3.11, apt ile ffmpeg; torch, torchaudio ve demucs birbiriyle uyumlu sürümlere SABİTLENMİŞ olsun.
 - htdemucs_6s ağırlıkları imajın BUILD aşamasında indirilsin (run_function); soğuk başlangıçta tekrar indirilmesin.
 - Demucs CLI yerine demucs.pretrained.get_model + demucs.apply.apply_model kullan.
-- Ses okuma/yazma için torchaudio I/O KULLANMA (yeni sürümlerde backend sorunları var). Okurken ffmpeg ile 44.1 kHz stereo float'a çevir, yazarken soundfile veya ffmpeg kullan.
+- Ses okuma/yazma için torchaudio I/O KULLANMA (yeni sürümlerde backend sorunları var). Okurken ffmpeg ile 44.1 kHz stereo float'a çevir, yazarken soundfile veya ffmpeg kullan. (Paketin kurulu olması sorun değil; kuralın tam hali yukarıdaki çalışma kurallarında.)
 - Çıktı: her stem için FLAC master + AAC .m4a (stereo, 44.1 kHz, 160 kbps).
 - Test için local entrypoint: `modal run backend/app.py --path sarki.mp3` işlesin ve stem'leri PC'ye indirsin.
 
@@ -61,6 +63,78 @@ T4 üzerinde nvidia-smi çıktısını ve torch.cuda.is_available() sonucunu dö
 - Akor adları diyez ile (C, C#m, F, Fm...). Ton tespitine göre bemol/diyez seçimi opsiyonel bonus.
 - chords.json: { "bpm", "beats": [...], "downbeats": [...], "chords": [{"start","end","label"}] }; ardışık aynı akorlar birleştirilmiş.
 - Test: mevcut bir şarkıda yalnızca analizi, GPU'suz, `modal run` ile tekrar çalıştırabileyim.
+
+## Aşama 2 – revizyon notları (tamamlandı, gerçek şarkıda doğrulama bekliyor)
+Bir önceki turda limitle kesilen dört iş bitti:
+
+- [x] Slash kararı `analyze_core`'a bağlandı (`SLASH_PENALTY = 0.12`).
+- [x] Akor segmentasyonu yarım ölçüye geçti (`_half_bar_starts`), `segment_mode`
+      alanı chords.json'a yazılıyor.
+- [x] bpm artık `beat_this`'in HAM beat zamanlarından. Doğrulandı: aynı 127 BPM
+      ızgarası frame'e yuvarlandığında 129.2, ham hesapla 127.12 veriyor.
+- [x] `_download` artık `beats.json`'ı da indiriyor.
+- [x] `ROOT_WEIGHT` 0.15 sonrası testler: 82/82 geçiyor.
+
+### Slash kanıtı BAS chroma'sından, üst stem'lerden DEĞİL
+İlk deneme "üst stem'lerde bas notasının ağırlığı kökün ağırlığını aşıyorsa
+slash yaz" şeklindeydi ve gerçek evrimleri de bastırdı: gerçek bir evrimde üst
+stem'ler kökü hâlâ içeriyor (Ab/C'de piyano C-Eb-Ab çalar), ağırlık farkı ~0
+çıkıyor. `test_inversion_end_to_end` bunu yakaladı. Kural şuna döndü: bas
+chroma'sında adayın ağırlığı kökün ağırlığını `SLASH_PENALTY` kadar aşmalı -
+yani bas segment boyunca köke değil o notaya oturmuş olmalı. Geçici bas
+notaları yarım ölçü medyanında zaten eriyor.
+
+### Yerelde gerçek şarkı çalıştırılamıyor
+PC'de ffmpeg yok, `soundfile` AAC okumuyor, `audioread` backend'siz. İndirilmiş
+m4a stem'ler yerelde decode edilemiyor, bu yüzden gerçek kayıt üzerindeki her
+doğrulama Modal'dan geçmek zorunda. Yerel test yalnızca sentetik sesle
+(tests/test_chords_local.py) ve inen chords.json'la
+(tests/compare_reference.py) çalışıyor.
+
+### Referans karşılaştırması
+Yalnızca ilk 27 ölçü geçerli: `sarki.mp3` kesilmiş bir montaj (~1:51),
+Moises'taki tam sürüm 5:40. Revizyon öncesi skor: tam 7/26 (%27), kısmi 11/26,
+yanlış 8/26; ton Fm doğru, ölçü hizası düzelmiş (mod 4 = [0]), akorların %23'ü
+slash, 59 ölçünün 8'inde 3 akor.
+
+## Sonraki iyileştirmeler (Aşama 2'den devredilen, acil değil)
+Tek şarkıya daha fazla ayar aşırı uyum riski taşıdığı için bunlar bilinçli
+olarak ertelendi. Referans skoru bırakıldığı yer: tam 11/26 (%42), kısmi 7/26,
+yanlış 8/26; ton Fm doğru, ölçü hizası doğru, ton dışı akor yok, ölçü içinde
+3 akor yok, slash oranı %23.
+
+### Eb/Db yerine Ab veya Ab/Eb okunması (15-21. ölçüler)
+Referans bu yarım ölçülerde Eb ya da Db diyor, biz Ab / Ab/Eb diyoruz. Bas
+doğru (Eb), üst stem'ler Ab'de kalıyor. Muhtemel sebep: önceki akorun Ab'si
+ped/gitar sustain'i olarak sürüyor; Ab (Ab-C-Eb) ile Eb (Eb-G-Bb) Eb notasını
+paylaşıyor, bas Eb'ye inince etiket Ab/Eb çıkıyor.
+
+Hangi stem'in sebep olduğu ÖLÇÜLMEDİ: stem başına chroma gerekiyor, o da
+yerelde çıkarılamıyor (aşağıdaki engel). Tespit tarifi: `master/*.flac`
+indirilip her stem için ayrı `chroma_cqt`, 0:26-0:38 aralığında yarım ölçü
+medyanları; Ab (8) ve Eb (3) ağırlıklarını stem başına karşılaştır.
+
+BASİT BİR DÜZELTMESİ YOK: akla gelen çözüm basın etkisini (`ROOT_WEIGHT`)
+artırmak, ama bu doğrudan yeni kazandığımız evrik akorlarla (14/16/18/20.
+ölçülerde Ab/C) ters düşüyor. Gerçek çözüm muhtemelen eğitilmiş bir akor
+modeli ya da onset ağırlıklı chroma.
+
+### 7'li akorlar
+Şablon seti 24 triad, bu yüzden `Dbmaj7`, `Bbm7`, `Cm7` triad'a yuvarlanıyor
+(25-27. ölçüler). Şablon setine 7'li aileler eklenebilir ama durum sayısı
+25'ten ~60'a çıkar; viterbi geçiş matrisi ve N skoru yeniden ayarlanmalı.
+
+### Eğitilmiş akor modeli
+Şablon + viterbi yerine eğitilmiş bir akor tanıma modeli. `beat_this`
+beat/downbeat tarafında kural tabanlı yaklaşımı açık ara geçti (2 vuruşluk
+ölçü kayması tek hamlede düzeldi); akor tarafında da aynı sıçrama beklenir.
+
+### Engel: yerelde gerçek şarkı çalıştırılamıyor
+PC'de ffmpeg yok, `soundfile` AAC okumuyor, `audioread` backend'siz. `soundfile`
+FLAC okuyabildiği için `master/*.flac` bir kez indirilirse (GPU'suz:
+`modal run backend/app.py --path sarki.mp3`, ~200 MB) akor ayarı tamamen
+yerelde, Modal'a hiç dokunmadan yapılabilir hale gelir. Ayar işine geri
+dönülürse ilk adım bu olmalı.
 
 ## Aşama 3 – API
 Tüm uç noktalar Bearer token ister. Token ve imzalama anahtarı Modal Secret'ta durur; secret oluşturma komutunu bana ver.

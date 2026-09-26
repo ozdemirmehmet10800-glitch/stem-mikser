@@ -56,6 +56,66 @@ indirilir.
 Sınırlar: en fazla **30 MB** ve **10 dakika**. İkisi de GPU'ya girilmeden CPU
 tarafında kontrol edilir; aşılırsa anlamlı bir hata döner.
 
+**Aşama 2 – yalnızca analizi yeniden çalıştır (GPU'ya hiç dokunmaz):**
+
+```powershell
+.\.venv\Scripts\modal.exe run backend\app.py::analyze_only --path sarki.mp3
+```
+
+`--song-id <sha256>` ile de çağrılabilir. Akor/ölçü parametrelerini ucuza
+denemek için bu yol kullanılır; mevcut FLAC master'lardan okur.
+
+Her iki komut da bitişte terminale okunabilir bir akor çizelgesi basar
+(satır başına 4 ölçü, satır başında dakika:saniye, üstte bpm):
+
+```
+bpm: 117.45
+olcu sayisi: 38
+
+0:00  | C    | Am   | F    | G    |
+0:08  | C    | Am   | F    | G  C |
+```
+
+Bir ölçü içinde akor değişiyorsa ikisi de yazılır (`| G  C |`).
+
+**Yalnızca beat/downbeat takibi (T4, ayrıştırmayı tekrarlamaz):**
+
+```powershell
+.\.venv\Scripts\modal.exe run backend\app.py::beats_only --path sarki.mp3
+```
+
+Zaten işlenmiş şarkılar için `beats.json` üretmenin yolu bu — ana akış
+ayrıştırmayı atladığı için `beats.json` hiç oluşmaz. Bitişte analizi de
+yeniden çalıştırır (`--no-reanalyze` ile kapatılabilir).
+
+Beat/downbeat'i eğitilmiş model yerine librosa'nın kural tabanlı yoluyla
+karşılaştırmak için:
+
+```powershell
+.\.venv\Scripts\modal.exe run backend\app.py::analyze_only --path sarki.mp3 --beats librosa
+```
+
+**Referansla ölçü ölçü karşılaştırma:**
+
+```powershell
+.\.venv\Scripts\python.exe tests\compare_reference.py
+```
+
+En son inen `out\*\chords.json`'u gömülü Moises referansıyla karşılaştırır.
+`chords.json`, `beats.json` ve `status.json` her indirmede `out\<sha>\`
+altına iner.
+Ölçü hizalaması **yalnızca tam ölçü** cinsinden aranır; vuruş düzeyindeki
+kayma ayrıca ölçülüp raporlanır (`downbeat'lerin beat indeksi mod 4`).
+
+**Akor mantığının yerel testi (Modal'a bağlanmaz, ücretsiz, saniyeler):**
+
+```powershell
+.\.venv\Scripts\python.exe tests\test_chords_local.py
+```
+
+Sentetik üretilmiş bir akor dizisiyle şablonları, kök bonusunu, viterbi'yi,
+downbeat fazını, birleştirmeyi ve JSON şeklini doğrular.
+
 ## Geliştirme / deploy
 
 ```powershell
@@ -92,9 +152,20 @@ de çalışır.
 | `demucs` | 4.1.0 | `htdemucs_6s`, `torch>=2.1` |
 | `numpy` | 1.26.4 | numpy 2 ile eski ekosistem kodunda kırılma riski |
 | `soundfile` | 0.13.1 | FLAC yazımı; libsndfile wheel içinde geliyor |
-| `torchaudio` | **kurulmuyor** | demucs 4.1.0'da yalnızca `train` extra'sının bağımlılığı; ses I/O ffmpeg + soundfile ile yapılıyor |
+| `librosa` | 0.11.0 | akor/beat analizi. 1.0.0 `python>=3.12` + `numpy>=2.1` istiyor ve büyük sürüm atlaması API riski taşıyor; 0.11.0 aynı numpy 1.26.4 ile çalışıyor |
+| `numba` | 0.62.1 | librosa'nın bağımlılığı; `numpy<2.4` kısıtı 1.26.4 ile uyumlu |
+| `beat-this` | 1.1.0 | eğitilmiş beat/downbeat modeli (CPJKU, MIT). `--no-deps` ile kurulup bağımlılıkları elle sabitlenir |
+| `rotary-embedding-torch` | 0.9.1 | beat-this bağımlılığı; `torch>=2.4` istiyor |
+| `soxr` | 1.1.0 | beat-this bağımlılığı; cp311 wheel'i var |
+| `einops` / `tqdm` | 0.8.2 / 4.67.1 | beat-this bağımlılıkları |
+| `torchaudio` | 2.5.1 | demucs için gerekmiyor ama beat_this'in import zinciri (`inference.py` → `preprocessing.py`) modül düzeyinde import ediyor ve `LogMelSpect` mel dönüşümü için kullanıyor. **Bizim kodumuz ses I/O'su için kullanmıyor** — okuma ffmpeg, yazma soundfile. Sürüm torch ile birebir eşleşiyor. |
 
-`htdemucs_6s` ağırlıkları imajın **build** aşamasında `/weights` altına
+`htdemucs_6s` ve `beat_this` ağırlıkları imajın **build** aşamasında `/weights` altına
 indirilir (`HF_HOME` + `TORCH_HOME`), soğuk başlangıçta tekrar inmez.
 Build'den sonra imaj `HF_HUB_OFFLINE=1` ile işaretlenir; sessiz bir yeniden
 indirme olursa gürültüsüzce yavaşlamak yerine hata verir.
+
+Build ayrıca şunları assert eder: torch sürümü 2.5.1, torchaudio sürümü torch
+ile eşleşiyor, `beat_this.inference` / `beat_this.preprocessing` / `demucs`
+import'ları çalışıyor, ve kendi kaynağımızda torchaudio I/O kullanımı yok.
+Son kontrol her import'ta da çalışıyor (`_self_check_torchaudio`).
