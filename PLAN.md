@@ -160,6 +160,33 @@ Aşama 1 ölçümü: 4 dakikalık şarkıda faturalanan T4 ~117-147 sn, bunun
 
 $30/ay ücretsiz kredi: en pahalı kipte bile ayda ~600 şarkı.
 
+### KARAR: hibrit yol (htdemucs_ft elendi)
+Gitar ve piyano kaybedilmeyecek, bu yüzden `htdemucs_ft` kullanılmıyor.
+Yerine iki aşamalı hibrit:
+
+1. Vokal, Roformer tabanlı bir vokal modeliyle ayrılır.
+2. Kalan (enstrümantal) `htdemucs_6s` ile bölünür; drums/bass/guitar/piano/
+   other oradan gelir. 6 kanal korunur, vokal kalitesi artar.
+
+Ağırlık lisansı (araştırıldı):
+
+| Bileşen | Lisans | Durum |
+|---|---|---|
+| BS-RoFormer (lucidrains) | MIT | Yalnızca mimari + eğitim kodu, AĞIRLIK YOK |
+| MSST (ZFTurbo) | MIT | Kod MIT; ağırlıkları kendisi barındırmıyor, dışarı bağlantı veriyor |
+| **KimberleyJSN/melbandroformer** | **MIT** | **Ağırlıklar HuggingFace'te, MIT. Birinci tercih.** |
+
+Yani hibrit yolun lisans tarafı temiz: Demucs MIT, Mel-Band Roformer
+ağırlıkları MIT.
+
+### Ölçülmesi gerekenler
+- Roformer'ın T4'teki süresi (Demucs'a ek olarak geliyor, onun yerine
+  geçmiyor - toplam GPU süresi artacak).
+- Enstrümantali `htdemucs_6s`'e vermek, orijinal mix'i vermeye göre
+  gitar/piyano kalitesini bozuyor mu? Vokal artığı kalmadığı için
+  iyileşmesi de mümkün, kötüleşmesi de. ÖLÇÜLMELİ, varsayılmamalı.
+- Yukarıdaki maliyet tablosu bu yol için yeniden hesaplanacak.
+
 ### Dikkat
 - `htdemucs_ft` 6 stem DEĞİL 4 stem veriyor (gitar/piyano yok). Hi-Fi'ı
   6 stem'le birleştirmek istiyorsak yol `htdemucs_6s` + `shifts` olmalı;
@@ -174,7 +201,7 @@ $30/ay ücretsiz kredi: en pahalı kipte bile ayda ~600 şarkı.
 ## Aşama 10 – Ek ayrıştırma (araştırma sonucu)
 Öncelik 4. **Gerçekçi kapsam beklenenden dar.**
 
-### Yapılabilir: davul alt parçaları
+### Davul alt parçaları (DÜŞÜK ÖNCELİK, en sona)
 | Model | Parçalar | Lisans | Not |
 |---|---|---|---|
 | DrumSep (mdx23c, jarredou) | kick / snare / toms / hihat / cymbals | MSST deposunda lisans BELİRTİLMEMİŞ - kullanmadan önce netleşmeli | SDR: kick 16.66, snare 11.53, toms 12.33 |
@@ -183,11 +210,18 @@ $30/ay ücretsiz kredi: en pahalı kipte bile ayda ~600 şarkı.
 
 ### YAPILAMAZ: açık model yok
 Araştırma sonucu açıkça olumsuz:
-- **Ana vokal / arka vokal ayrımı:** açık, ağırlıkları yayınlanmış bir model
-  YOK. MedleyVox bu işe en yakın akademik çalışma ama yazarları "önceden
-  eğitilmiş ağırlıkları yükleme planımız yok" diyor ve depoda lisans da
-  belirtilmemiş. Kendimiz eğitmek Aşama 10'un kapsamını kat kat aşar.
-  Bu özelliği sunan servisler (Moises, LALAL.AI) kapalı modeller kullanıyor.
+- **Ana vokal / arka vokal ayrımı:** UVR topluluğunun karaoke modeli
+  (`mel_band_roformer_karaoke_aufr33_viperx`) bu işi YAPIYOR ve ağırlıkları
+  yaygın dağıtılıyor - ama **LİSANSI YOK**. Temmuz 2026'da UVR deposunda
+  açılan soru (issue #2295) tam bunu soruyor ve **yanıtsız**: soran kişi
+  "ne HuggingFace aynasında ne de duyuru metninde bir lisans ya da kullanım
+  şartı bulamadım" diyor. Depo public olduğu için lisansı belirsiz ağırlığa
+  bağlanmak risk; ağırlığı yeniden dağıtmasak (build'de indirsek) bile
+  belirsizlik sürüyor. KULLANMADAN ÖNCE lisans netleşmeli.
+  MedleyVox akademik alternatif ama yazarları "önceden eğitilmiş ağırlıkları
+  yükleme planımız yok" diyor ve orada da lisans belirtilmemiş.
+  Bu özelliği sunan ticari servisler (Moises, LALAL.AI) kapalı model
+  kullanıyor.
 - **Akustik / elektro gitar, solo / ritim gitar:** ayrı model YOK.
 - **Nefesli (brass/wind):** model YOK.
 - **Yaylı (strings):** model YOK.
