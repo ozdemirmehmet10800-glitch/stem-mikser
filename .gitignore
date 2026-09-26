@@ -1,0 +1,20 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Yerel test çıktıları
+out/
+stems_out/
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.ogg
+*.opus
+
+# Editör / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

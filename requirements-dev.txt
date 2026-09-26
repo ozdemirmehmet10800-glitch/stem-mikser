@@ -1,0 +1,3 @@
+# Sadece PC'de (deploy/geliştirme) gerekli. Modal konteynerlerinin
+# bağımlılıkları backend/app.py içindeki Image tanımlarında durur.
+modal==1.5.5
