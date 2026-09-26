@@ -7,6 +7,7 @@ import { Engine, STEM_ORDER, STEM_LABELS, gainToDb } from "./engine.js";
 import { Mixer } from "./mixer.js";
 import { ChordStrip, formatTime } from "./chords.js";
 import { MediaBridge } from "./media.js";
+import { WakeLock } from "./wakelock.js";
 
 const POLL_MS = 3000;
 
@@ -28,6 +29,7 @@ let rafHandle = 0;
 let seeking = false;
 let currentSong = null;
 let media = null;
+const wakeLock = new WakeLock();
 let lastPositionSync = -1;
 
 // ---------------------------------------------------------------- yardımcı
@@ -266,6 +268,7 @@ function startLoop() {
       setPlayIcon(false);
       media.stopKeeper();
       media.setPlaybackState(false);
+      wakeLock.release();
     }
     // Kilit ekranı konumu: saniyede bir yeter, her karede değil.
     if (time - lastPositionSync > 1 || time < lastPositionSync) {
@@ -348,6 +351,7 @@ async function startPlayback() {
   setPlayIcon(true);
   media.setPlaybackState(true);
   media.updatePosition();
+  wakeLock.request();
 }
 
 function stopPlayback() {
@@ -356,6 +360,7 @@ function stopPlayback() {
   media.stopKeeper();
   media.setPlaybackState(false);
   media.updatePosition();
+  wakeLock.release();
 }
 
 el("play").addEventListener("click", async () => {
