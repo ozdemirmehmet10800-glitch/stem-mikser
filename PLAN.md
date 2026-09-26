@@ -97,6 +97,110 @@ Moises'taki tam sürüm 5:40. Revizyon öncesi skor: tam 7/26 (%27), kısmi 11/2
 yanlış 8/26; ton Fm doğru, ölçü hizası düzelmiş (mod 4 = [0]), akorların %23'ü
 slash, 59 ölçünün 8'inde 3 akor.
 
+## Aşama 7 – Metronom
+Öncelik 1. Bağımsız, diğer üçüne engel değil.
+
+- Tık sesi Web Audio'da ÜRETİLECEK (kısa gürültü patlaması + zarf); ses
+  dosyası indirilmeyecek. Downbeat farklı perde/seviyede vurgulanır.
+- Zamanlama: `beats.json` / `chords.json`'daki vuruşlar. rAF ile tık
+  ZAMANLANMAZ - ileriye bakan bir zamanlayıcı (25 ms'de bir uyanıp 100 ms
+  ilerisini `AudioContext` saatine yazan) kullanılacak. rAF sekme
+  arkaplandayken yavaşlıyor ve tık kayıyor.
+- Alt bölüm: 0.5x (vuruşun biri atlanır), 1x, 2x (vuruş aralarına ara nokta
+  eklenir). Ses seviyesi + `StereoPannerNode` ile sağ-sol.
+- Seek/duraklat sonrası yeniden hizalanmalı; zamanlayıcı `engine.currentTime`
+  ile `ctx.currentTime` arasındaki eşlemeyi kullanır.
+- Bilinen sınır: `beat_this` çıktısı kendi 50 fps ızgarasında, yani tıklar
+  gerçek vuruştan en fazla ±10 ms sapar. Kulakla fark edilmez ama biliniyor.
+- Aşama 8 gelince metronom esnetilmiş zaman çizgisini takip etmeli.
+
+## Aşama 8 – Hız ve ton değiştirme
+Öncelik 2. ÖNCE ÖLÇÜM, sonra karar.
+
+### Kütüphane ve lisans (araştırıldı)
+| Kütüphane | Lisans | Durum |
+|---|---|---|
+| `signalsmith-stretch` | **MIT** | Birinci tercih. C++11, `web/` altında WASM + AudioWorklet, npm'de. Zaman esnetmesi 0.75x-1.5x aralığında en iyi. |
+| `SoundTouchJS` | **MPL-2.0** | Yedek. LGPL'den MPL'ye geçmiş. AudioWorklet destekli; `pitch`, `pitchSemitones`, `playbackRate` ayrı AudioParam'lar. |
+| Rubber Band | **GPLv2+ / ticari** | KULLANILMAYACAK. Depo public; GPL bulaşıcı, tüm projeyi GPL'e zorlar. Ticari lisans ücretli. |
+
+### Sıra
+1. **Önce ölçüm.** Telefonda 6 AudioWorklet esnetici aynı anda çalışabiliyor
+   mu? Ayrı bir ölçüm sayfası: kanal sayısını 1'den 6'ya çıkarıp ses kesilmesi
+   (underrun) ve CPU yükü ölçülecek. Karar bu sayılara göre verilecek.
+2. Yetiyorsa: her kanal `source -> stretch -> gain -> master`. Hız ve ton
+   bağımsız; ton yarım ses adımlarıyla (±6 veya ±12).
+3. Yetmiyorsa plan B: sunucuda render. Maliyeti var (her ayar değişiminde
+   yeniden render + indirme), anlık geri bildirim kayboluyor. Ancak ölçüm
+   kötü çıkarsa değerlendirilecek.
+
+### Bağlı işler
+- Akor şeridi tona göre transpoze edilecek. Yazım (bemol/diyez) yeni tona
+  göre yeniden seçilmeli - `_key_uses_flats` mantığı ön yüze taşınacak.
+- Metronom ve akor şeridi esnetilmiş zaman çizgisini takip etmeli.
+- bpm göstergesi hız çarpanıyla güncellenecek.
+
+## Aşama 9 – Hi-Fi modu (daha kaliteli ayrıştırma)
+Öncelik 3. Yüklerken seçilir, `status.json`'a yazılır.
+
+### Seçenekler ve ÖLÇÜLEN maliyete dayalı tahmin
+Demucs MIT (kod ve ağırlıklar). `htdemucs_ft` dokümanda "4 kat daha uzun
+sürer, biraz daha iyi olabilir" diyor - kazanç mütevazı. `--shifts N`
+işlemi N kat yavaşlatıyor.
+
+Aşama 1 ölçümü: 4 dakikalık şarkıda faturalanan T4 ~117-147 sn, bunun
+~19 sn'si `apply_model`. Yalnızca `apply_model` ölçekleniyor:
+
+| Kip | apply_model | Faturalanan T4 | Şarkı başı |
+|---|---|---|---|
+| Şimdiki (`htdemucs_6s`) | ~19 sn | ~117-147 sn | ~$0.022-0.028 |
+| `shifts=2` | ~38 sn | ~136-166 sn | ~$0.025-0.031 |
+| `htdemucs_ft` | ~76 sn | ~174-204 sn | ~$0.032-0.038 |
+| `htdemucs_ft` + `shifts=2` | ~152 sn | ~250-280 sn | ~$0.046-0.052 |
+
+$30/ay ücretsiz kredi: en pahalı kipte bile ayda ~600 şarkı.
+
+### Dikkat
+- `htdemucs_ft` 6 stem DEĞİL 4 stem veriyor (gitar/piyano yok). Hi-Fi'ı
+  6 stem'le birleştirmek istiyorsak yol `htdemucs_6s` + `shifts` olmalı;
+  yoksa Hi-Fi'da gitar/piyano kaybolur. Bu bir TASARIM KARARI, sormadan
+  seçilmeyecek.
+- `separate` timeout'u 900 sn. 10 dakikalık şarkı + en pahalı kip ~600 sn'ye
+  çıkıyor, sınıra yaklaşıyor. Hi-Fi'da timeout artırılmalı.
+- Çıktı boyutu değişmiyor, depolama maliyeti aynı.
+- Aşama 3'te eklenen zamanlama enstrümantasyonu gerçek sayıları verecek;
+  tahminler onunla değiştirilecek.
+
+## Aşama 10 – Ek ayrıştırma (araştırma sonucu)
+Öncelik 4. **Gerçekçi kapsam beklenenden dar.**
+
+### Yapılabilir: davul alt parçaları
+| Model | Parçalar | Lisans | Not |
+|---|---|---|---|
+| DrumSep (mdx23c, jarredou) | kick / snare / toms / hihat / cymbals | MSST deposunda lisans BELİRTİLMEMİŞ - kullanmadan önce netleşmeli | SDR: kick 16.66, snare 11.53, toms 12.33 |
+| DrumSep (htdemucs, inagoy) | aynı | aynı belirsizlik | |
+| LarsNet | kick / snare / toms / hihat / cymbals | Ağırlıklar **CC BY-NC 4.0** | Kişisel kullanım uygun; ağırlıklar YENİDEN DAĞITILAMAZ, ticari kullanım yok |
+
+### YAPILAMAZ: açık model yok
+Araştırma sonucu açıkça olumsuz:
+- **Ana vokal / arka vokal ayrımı:** açık, ağırlıkları yayınlanmış bir model
+  YOK. MedleyVox bu işe en yakın akademik çalışma ama yazarları "önceden
+  eğitilmiş ağırlıkları yükleme planımız yok" diyor ve depoda lisans da
+  belirtilmemiş. Kendimiz eğitmek Aşama 10'un kapsamını kat kat aşar.
+  Bu özelliği sunan servisler (Moises, LALAL.AI) kapalı modeller kullanıyor.
+- **Akustik / elektro gitar, solo / ritim gitar:** ayrı model YOK.
+- **Nefesli (brass/wind):** model YOK.
+- **Yaylı (strings):** model YOK.
+
+Yani Aşama 10 gerçekte "davul alt parçaları" demek. Diğerleri için dürüst
+cevap: açık kaynak dünyasında karşılığı yok.
+
+### Eğer yapılırsa
+- Ayrı bir GPU fonksiyonu; mevcut `drums.flac`'ı girdi alır, 5 alt parça
+  üretir. Mevcut 6 kanalı bozmaz, isteğe bağlı bir katman olur.
+- Ön yüzde davul kanalı açılıp alt kanallara ayrılabilir (Moises'taki gibi).
+- Ek GPU süresi ve depolama: 5 stem daha, ölçülmeli.
+
 ## Sonraki iyileştirmeler (Aşama 2'den devredilen, acil değil)
 Tek şarkıya daha fazla ayar aşırı uyum riski taşıdığı için bunlar bilinçli
 olarak ertelendi. Referans skoru bırakıldığı yer: tam 11/26 (%42), kısmi 7/26,
