@@ -304,6 +304,63 @@ doğrular (FastAPI bağlantısı `modal serve` + `curl.exe` ile test edilir).
 `deploy` kalıcı kurulum için kullanılır. Deploy sonrası sistem PC kapalıyken
 de çalışır.
 
+## Aşama 4 – oynatıcı (ön yüz)
+
+Build adımı yok: vanilla HTML/CSS/JS, ES modülleri.
+
+```
+frontend/
+  index.html
+  css/styles.css
+  js/settings.js   API adresi + token (localStorage)
+  js/api.js        fetch sarmalayıcı, hata türü ayrımı
+  js/engine.js     Web Audio: transport ve kazanç grafiği
+  js/mixer.js      kanal şeridi (fader / solo / mute)
+  js/chords.js     akor şeridi
+  js/app.js        yapıştırıcı
+```
+
+### Gerçek API ile çalıştırma
+
+```powershell
+.\.venv\Scripts\python.exe -m http.server 8000 --directory frontend
+```
+
+`http://localhost:8000` adresini aç, ayarlara API adresini ve token'ı gir.
+Bu adres API'nin `LOCAL_ORIGINS` listesinde olduğu için CORS sorunu çıkmaz.
+
+### Sahte sunucuyla çalıştırma (Modal'a dokunmadan)
+
+İndirilmiş stem'lerle (`out/<sha>/`) tam bir test ortamı. Kredi harcanmaz,
+gerçek token hiçbir yere girmez. İki kabuk:
+
+```powershell
+.\.venv\Scripts\python.exe tests\mock_server.py
+```
+
+```powershell
+.\.venv\Scripts\python.exe -m http.server 8000 --directory frontend
+```
+
+Ayarlara `http://127.0.0.1:8001` ve token olarak `mock-token` gir.
+
+### Tasarım kararları
+
+- Stem'ler Bearer token istediği için `<audio src>` kullanılamıyor (header
+  gönderemez). Akış: `fetch` → `ArrayBuffer` → `decodeAudioData` → `AudioBuffer`.
+- Altı kaynak da **aynı** `ctx.currentTime` değerinde başlatılıyor; tek
+  AudioContext içinde örnek hassasiyetinde hizalı kalıyorlar.
+- AudioContext ilk kullanıcı hareketinde açılıyor (masaüstü Chrome'da da
+  autoplay politikası var).
+- Mute her zaman öncelikli; herhangi bir solo aktifse yalnızca solo kanallar
+  duyulur. Kazanç değişimleri `setTargetAtTime` ile, tık sesi olmuyor.
+- Akor şeridi DOM (canvas değil): metin, tıklama isabet testi ve
+  erişilebilirlik bedava geliyor. `pxPerSec` downbeat aralıklarının
+  medyanından türetiliyor, bpm'den değil.
+- Şarkı bitince çalma durur ve başa sarılır.
+- Hata mesajları türe göre ayrı: token hatası (401) ile CORS/ağ hatası
+  karıştırılmıyor; CORS mesajı sayfanın kendi origin'ini de gösteriyor.
+
 ## Modal Volume düzeni
 
 ```

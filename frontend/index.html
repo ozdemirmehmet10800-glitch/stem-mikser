@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Stem Mikser</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ============ KİTAPLIK ============ -->
+  <section class="view" id="view-library">
+    <header class="topbar">
+      <h1>Şarkı</h1>
+      <button class="icon-btn" id="open-settings" title="Ayarlar" aria-label="Ayarlar">
+        <svg viewBox="0 0 24 24"><path d="M12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5zm7.4-2.6l1.8-1.4-1.9-3.3-2.1.8a7.4 7.4 0 0 0-1.6-.9L15.2 6h-3.8l-.4 2.1a7.4 7.4 0 0 0-1.6.9l-2.1-.8-1.9 3.3 1.8 1.4a7.6 7.6 0 0 0 0 1.8l-1.8 1.4 1.9 3.3 2.1-.8c.5.4 1 .7 1.6.9l.4 2.1h3.8l.4-2.1c.6-.2 1.1-.5 1.6-.9l2.1.8 1.9-3.3-1.8-1.4a7.6 7.6 0 0 0 0-1.8z"/></svg>
+      </button>
+    </header>
+
+    <div class="library-actions">
+      <label class="btn btn-primary" id="upload-label">
+        <svg viewBox="0 0 24 24" class="plus"><path d="M11 5h2v14h-2z"/><path d="M5 11h14v2H5z"/></svg>
+        <span>Şarkı ekle</span>
+        <input type="file" id="upload-input" accept="audio/*" hidden>
+      </label>
+      <button class="btn" id="refresh-list">Yenile</button>
+    </div>
+
+    <div id="upload-status" class="upload-status" hidden></div>
+    <div id="library-message" class="message" hidden></div>
+    <ul class="song-list" id="song-list"></ul>
+  </section>
+
+  <!-- ============ OYNATICI ============ -->
+  <section class="view" id="view-player" hidden>
+    <header class="topbar player-topbar">
+      <button class="icon-btn" id="back-to-library" title="Listeye dön" aria-label="Listeye dön">
+        <svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4-4.6-4.6z"/></svg>
+      </button>
+      <div class="player-title" id="player-title">—</div>
+      <div class="player-meta" id="player-meta"></div>
+    </header>
+
+    <!-- akor şeridi -->
+    <div class="chordstrip" id="chordstrip">
+      <div class="chordstrip-playhead"></div>
+      <div class="chordstrip-track" id="chordstrip-track"></div>
+      <div class="chordstrip-empty" id="chordstrip-empty">Akor bilgisi yok</div>
+    </div>
+
+    <!-- kanallar -->
+    <div class="channels" id="channels"></div>
+
+    <div id="player-message" class="message" hidden></div>
+
+    <!-- alt çubuk -->
+    <footer class="transport">
+      <div class="seek-row">
+        <span class="time" id="time-current">0:00</span>
+        <input type="range" class="seek" id="seek" min="0" max="1000" value="0" step="1"
+               aria-label="Şarkı konumu">
+        <span class="time time-remaining" id="time-remaining">-0:00</span>
+      </div>
+      <div class="transport-row">
+        <div class="master">
+          <svg viewBox="0 0 24 24" class="vol"><path d="M4 9v6h4l5 5V4L8 9H4zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
+          <input type="range" id="master" min="0" max="150" value="100"
+                 aria-label="Ana ses">
+          <span class="master-value" id="master-value">0.0 dB</span>
+        </div>
+        <button class="play-btn" id="play" aria-label="Oynat">
+          <svg viewBox="0 0 24 24" id="play-icon"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+        <div class="transport-right">
+          <button class="btn btn-small" id="rewind">Başa sar</button>
+        </div>
+      </div>
+    </footer>
+  </section>
+
+  <!-- ============ AYARLAR ============ -->
+  <section class="view" id="view-settings" hidden>
+    <header class="topbar">
+      <button class="icon-btn" id="close-settings" title="Kapat" aria-label="Kapat">
+        <svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4-4.6-4.6z"/></svg>
+      </button>
+      <h1>Ayarlar</h1>
+    </header>
+
+    <form class="settings-form" id="settings-form">
+      <label class="field">
+        <span>API adresi</span>
+        <input type="url" id="setting-url" placeholder="https://...modal.run" required
+               autocomplete="off" spellcheck="false">
+      </label>
+      <label class="field">
+        <span>Token</span>
+        <input type="password" id="setting-token" placeholder="API_TOKEN" required
+               autocomplete="off" spellcheck="false">
+        <small>Yalnızca bu tarayıcıda saklanır (localStorage). Kodda hiçbir sır yok.</small>
+      </label>
+      <div class="settings-buttons">
+        <button type="submit" class="btn btn-primary">Kaydet</button>
+        <button type="button" class="btn" id="test-connection">Bağlantıyı sına</button>
+      </div>
+      <div id="settings-message" class="message" hidden></div>
+    </form>
+  </section>
+
+  <!-- yükleniyor katmanı -->
+  <div class="overlay" id="overlay" hidden>
+    <div class="overlay-box">
+      <div class="spinner"></div>
+      <div class="overlay-text" id="overlay-text">Yükleniyor…</div>
+      <div class="overlay-bars" id="overlay-bars"></div>
+    </div>
+  </div>
+
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

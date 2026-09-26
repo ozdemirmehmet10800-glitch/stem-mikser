@@ -1,0 +1,292 @@
+"""Sahte API sunucusu - yalniz yerel gelistirme icin.
+
+Amac: oynatici arayuzunu Modal'a hic dokunmadan, kredi harcamadan ve gercek
+token'i hicbir yere girmeden test edebilmek. Indirilmis stem'leri (out/<sha>/)
+gercek API ile ayni uclardan servis eder.
+
+Calistirma:
+    .\\.venv\\Scripts\\python.exe tests\\mock_server.py
+    (varsayilan: http://127.0.0.1:8001, token "mock-token")
+
+Sonra ayri bir kabukta on yuzu servis edin:
+    .\\.venv\\Scripts\\python.exe -m http.server 8000 --directory frontend
+
+Tarayicida http://localhost:8000, ayarlara:
+    adres  http://127.0.0.1:8001
+    token  mock-token
+"""
+
+import argparse
+import hashlib
+import hmac
+import json
+import pathlib
+import re
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+OUT_DIR = ROOT / "out"
+TOKEN = "mock-token"
+SIGNING_KEY = "mock-signing-key"
+DOWNLOAD_TTL = 600
+
+STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"]
+
+
+def find_songs():
+    """out/<sha>/ altindaki isi bitmis sarkilari bulur."""
+    songs = []
+    if not OUT_DIR.is_dir():
+        return songs
+    for entry in sorted(OUT_DIR.iterdir()):
+        stems_dir = entry / "stems"
+        if not stems_dir.is_dir():
+            continue
+        stems = sorted(p.stem for p in stems_dir.glob("*.m4a"))
+        if not stems:
+            continue
+        status_path = entry / "status.json"
+        status = {}
+        if status_path.is_file():
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+        chords_path = entry / "chords.json"
+        chords = None
+        if chords_path.is_file():
+            chords = json.loads(chords_path.read_text(encoding="utf-8"))
+        status.setdefault("id", entry.name)
+        status.setdefault("title", entry.name[:12])
+        status["state"] = "done"
+        status["progress"] = 100
+        status["stems"] = [s for s in STEM_ORDER if s in stems] + \
+                          [s for s in stems if s not in STEM_ORDER]
+        songs.append({"dir": entry, "status": status, "chords": chords})
+    return songs
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):  # daha sessiz kayit
+        print(f"  {self.command} {self.path} -> {args[1] if len(args) > 1 else ''}")
+
+    # ---------------- yardimcilar ----------------
+
+    def _cors(self):
+        origin = self.headers.get("Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, Range")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Expose-Headers",
+                         "Content-Range, Accept-Ranges, Content-Length")
+
+    def _send(self, code, body=b"", content_type="application/json", extra=None):
+        self.send_response(code)
+        self._cors()
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        for key, value in (extra or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        if body and self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _json(self, code, payload, extra=None):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self._send(code, body, "application/json; charset=utf-8", extra)
+
+    def _authorized(self):
+        header = self.headers.get("Authorization", "")
+        if not header.startswith("Bearer ") or not hmac.compare_digest(header[7:], TOKEN):
+            self._json(401, {"detail": "Bearer token gerekli"})
+            return False
+        return True
+
+    def _song(self, song_id):
+        for song in find_songs():
+            if song["status"]["id"] == song_id or song["dir"].name == song_id:
+                return song
+        return None
+
+    # ---------------- yonlendirme ----------------
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors()
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        query = dict(re.findall(r"([^?&=]+)=([^&]*)", self.path))
+
+        if re.fullmatch(r"/songs/[^/]+/download-link", path):
+            if not self._authorized():
+                return
+            song_id = path.split("/")[2]
+            name = query.get("name", "vocals")
+            fmt = query.get("format", "m4a")
+            expires = int(time.time()) + DOWNLOAD_TTL
+            message = f"{song_id}|{name}|{fmt}|{expires}".encode("utf-8")
+            signature = hmac.new(SIGNING_KEY.encode(), message, hashlib.sha256).hexdigest()
+            host = self.headers.get("Host", "127.0.0.1:8001")
+            url = (f"http://{host}/songs/{song_id}/download/{name}"
+                   f"?format={fmt}&exp={expires}&sig={signature}")
+            self._json(200, {"url": url, "expires_at": expires, "ttl": DOWNLOAD_TTL})
+            return
+
+        if path == "/songs":
+            if not self._authorized():
+                return
+            # Sahte sunucu gercekten islemiyor; var olan sarkiyi dondururuz.
+            songs = find_songs()
+            if songs:
+                self._json(200, {"id": songs[0]["status"]["id"], "existing": True,
+                                 "state": "done"})
+            else:
+                self._json(400, {"detail": "Sahte sunucuda islenmis sarki yok"})
+            return
+
+        self._json(404, {"detail": "yok"})
+
+    def do_GET(self):
+        path = self.path.split("?")[0]
+        query = dict(re.findall(r"([^?&=]+)=([^&]*)", self.path))
+
+        if path == "/health":
+            if not self._authorized():
+                return
+            self._json(200, {
+                "ok": True,
+                "allowed_origins": ["http://localhost:8000", "http://127.0.0.1:8000"],
+                "reload_count": 0,
+                "fastapi": "sahte-sunucu",
+                "download_ttl": DOWNLOAD_TTL,
+            })
+            return
+
+        if path == "/songs":
+            if not self._authorized():
+                return
+            songs = [
+                {
+                    "id": song["status"]["id"],
+                    "title": song["status"].get("title"),
+                    "state": "done",
+                    "duration": song["status"].get("duration"),
+                    "progress": 100,
+                    "created_at": song["status"].get("created_at"),
+                }
+                for song in find_songs()
+            ]
+            self._json(200, {"songs": songs})
+            return
+
+        match = re.fullmatch(r"/songs/([^/]+)", path)
+        if match:
+            if not self._authorized():
+                return
+            song = self._song(match.group(1))
+            if not song:
+                self._json(404, {"detail": "Sarki bulunamadi"})
+                return
+            self._json(200, {"status": song["status"], "chords": song["chords"]})
+            return
+
+        match = re.fullmatch(r"/songs/([^/]+)/stems/([^/]+)\.m4a", path)
+        if match:
+            if not self._authorized():
+                return
+            self._serve_file(match.group(1), "stems", match.group(2) + ".m4a",
+                             "audio/mp4", ranges=True)
+            return
+
+        match = re.fullmatch(r"/songs/([^/]+)/download/([^/]+)", path)
+        if match:
+            # Imzali indirme: token ISTEMEZ (gercek API ile ayni davranis)
+            song_id, name = match.group(1), match.group(2)
+            fmt = query.get("format", "m4a")
+            try:
+                exp = int(query.get("exp", "0"))
+            except ValueError:
+                exp = 0
+            message = f"{song_id}|{name}|{fmt}|{exp}".encode("utf-8")
+            expected = hmac.new(SIGNING_KEY.encode(), message, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(query.get("sig", ""), expected):
+                self._json(403, {"detail": "Imza gecersiz"})
+                return
+            if exp < int(time.time()):
+                self._json(403, {"detail": "Link suresi gecmis"})
+                return
+            self._serve_file(song_id, "stems", name + ".m4a", "audio/mp4")
+            return
+
+        self._json(404, {"detail": "yok"})
+
+    # ---------------- dosya servisi ----------------
+
+    def _serve_file(self, song_id, folder, filename, media, ranges=False):
+        song = self._song(song_id)
+        if not song:
+            self._json(404, {"detail": "Sarki bulunamadi"})
+            return
+        path = song["dir"] / folder / filename
+        if not path.is_file():
+            self._json(404, {"detail": f"{filename} yok"})
+            return
+
+        data = path.read_bytes()
+        size = len(data)
+        header = self.headers.get("Range", "")
+        if ranges and header.lower().startswith("bytes="):
+            spec = header.split("=", 1)[1].split(",")[0].strip()
+            start_text, _, end_text = spec.partition("-")
+            try:
+                if not start_text:
+                    start = max(size - int(end_text), 0)
+                    end = size - 1
+                else:
+                    start = int(start_text)
+                    end = int(end_text) if end_text else size - 1
+            except ValueError:
+                start, end = 0, size - 1
+            if start >= size:
+                self._send(416, b"", media, {"Content-Range": f"bytes */{size}"})
+                return
+            end = min(end, size - 1)
+            self._send(206, data[start:end + 1], media, {
+                "Content-Range": f"bytes {start}-{end}/{size}",
+                "Accept-Ranges": "bytes",
+            })
+            return
+
+        self._send(200, data, media, {"Accept-Ranges": "bytes"})
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=8001)
+    parser.add_argument("--host", default="127.0.0.1")
+    args = parser.parse_args()
+
+    songs = find_songs()
+    print(f"Sahte API: http://{args.host}:{args.port}")
+    print(f"Token    : {TOKEN}")
+    print(f"Sarki    : {len(songs)} adet")
+    for song in songs:
+        chords = song["chords"]
+        print(f"  - {song['status'].get('title')}  "
+              f"({len(song['status']['stems'])} stem, "
+              f"{len(chords['chords']) if chords else 0} akor)")
+    if not songs:
+        print("  UYARI: out/<sha>/stems altinda m4a bulunamadi.")
+
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nkapatiliyor")
+
+
+if __name__ == "__main__":
+    main()

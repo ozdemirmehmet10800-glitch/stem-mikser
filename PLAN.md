@@ -119,6 +119,11 @@ artırmak, ama bu doğrudan yeni kazandığımız evrik akorlarla (14/16/18/20.
 ölçülerde Ab/C) ters düşüyor. Gerçek çözüm muhtemelen eğitilmiş bir akor
 modeli ya da onset ağırlıklı chroma.
 
+### Akor ızgarası görünümü
+Moises'ın akor şeridinde her ölçü 4 sabit vuruş hücresine bölünüyor ve akor
+değişmeyen vuruşlar boş kalıyor. Bizde hücre genişliği akorun süresiyle
+orantılı. Izgara görünümü bilinçli olarak Aşama 4 kapsamı dışında bırakıldı.
+
 ### 7'li akorlar
 Şablon seti 24 triad, bu yüzden `Dbmaj7`, `Bbm7`, `Cm7` triad'a yuvarlanıyor
 (25-27. ölçüler). Şablon setine 7'li aileler eklenebilir ama durum sayısı

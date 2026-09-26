@@ -1,1 +1,4 @@
 * text=auto eol=lf
+
+# PowerShell betikleri Windows satir sonuyla kalsin
+*.ps1 text eol=crlf
