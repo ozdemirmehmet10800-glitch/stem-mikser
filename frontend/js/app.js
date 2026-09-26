@@ -364,7 +364,10 @@ el("back-to-library").addEventListener("click", () => {
 
 async function startPlayback() {
   // Autoplay politikası: bu bir kullanıcı hareketi, context burada açılır.
-  await media.startKeeper();
+  // Sessiz elementi ÖNCE ve await'siz başlat: kullanıcı hareketi içinde
+  // kalsın, yoksa Chrome reddediyor ve kilit ekranı kontrolleri çıkmıyor.
+  media.startKeeper();
+  media.setPlaybackState(true);
   await engine.play();
   setPlayIcon(true);
   media.setPlaybackState(true);

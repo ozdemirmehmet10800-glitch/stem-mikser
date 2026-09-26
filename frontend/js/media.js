@@ -10,9 +10,14 @@
 //
 // İkisi de garanti değil; desteklenmeyen yerde sessizce devre dışı kalır.
 
-// 1 saniyelik sessiz WAV (44 baytlık başlık + sıfırlar), data URI olarak.
-// Ağdan dosya çekmemek için gömülü: 8 kHz mono 8-bit -> ~8 KB base64.
-function silentWavDataUri(seconds = 1) {
+// Sessiz WAV kodda üretiliyor, ağdan dosya çekilmiyor.
+//
+// SÜRE EN AZ 10 SANİYE olmalı: Chrome Android 5 saniyeden kısa medyayı
+// bildirime almıyor, o yüzden kilit ekranında kontrol çıkmıyordu.
+// 8 kHz 8-bit mono ile 10 saniye ~80 KB.
+export const KEEPER_SECONDS = 10;
+
+function silentWavBytes(seconds = KEEPER_SECONDS) {
   const rate = 8000;
   const samples = rate * seconds;
   const size = 44 + samples;
@@ -36,10 +41,12 @@ function silentWavDataUri(seconds = 1) {
   // 8-bit PCM'de sessizlik 128'dir, 0 değil.
   for (let i = 0; i < samples; i += 1) view.setUint8(44 + i, 128);
 
-  let binary = "";
-  const bytes = new Uint8Array(buffer);
-  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
-  return `data:audio/wav;base64,${btoa(binary)}`;
+  return new Uint8Array(buffer);
+}
+
+// Blob URL, data URI değil: base64 dosyayı 1/3 oranında şişiriyor.
+function silentWavUrl(seconds = KEEPER_SECONDS) {
+  return URL.createObjectURL(new Blob([silentWavBytes(seconds)], { type: "audio/wav" }));
 }
 
 export class MediaBridge {
@@ -54,12 +61,12 @@ export class MediaBridge {
     return "mediaSession" in navigator;
   }
 
-  // Sessiz elementi kullanıcı hareketiyle başlatmak gerekiyor; play()
-  // çağrısından çağrılıyor.
-  async startKeeper() {
+  // Sessiz elementi kullanıcı hareketiyle başlatmak gerekiyor. play()
+  // BU FONKSİYONDA, await'ten ÖNCE çağrılıyor ki tarayıcı jesti kaybetmesin.
+  startKeeper() {
     if (!this.keeper) {
       const audio = document.createElement("audio");
-      audio.src = silentWavDataUri(1);
+      audio.src = silentWavUrl();
       audio.loop = true;
       audio.volume = 0.0001; // tam 0 bazı platformlarda "medya yok" sayılıyor
       audio.setAttribute("playsinline", "");
@@ -68,12 +75,16 @@ export class MediaBridge {
       document.body.append(audio);
       this.keeper = audio;
     }
-    try {
-      await this.keeper.play();
-    } catch {
-      // Otomatik oynatma reddedildi; Media Session çalışmayabilir ama
-      // uygulamanın geri kalanı etkilenmiyor.
+    // play() bir Promise döndürüyor ama BEKLEMİYORUZ: await, çağrıyı
+    // kullanıcı hareketinin dışına taşıyıp reddedilmesine yol açabiliyor.
+    const started = this.keeper.play();
+    if (started && started.catch) {
+      started.catch(() => {
+        // Otomatik oynatma reddedildi; kilit ekranı kontrolleri çıkmayabilir
+        // ama uygulamanın geri kalanı etkilenmiyor.
+      });
     }
+    return started;
   }
 
   stopKeeper() {
@@ -136,4 +147,4 @@ export class MediaBridge {
   }
 }
 
-export { silentWavDataUri };
+export { silentWavBytes, silentWavUrl };
