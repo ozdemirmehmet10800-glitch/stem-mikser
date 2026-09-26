@@ -226,5 +226,16 @@ Sabit 6 dakika değil, `navigator.deviceMemory` değerine göre:
 Eşiği aşan şarkıda "uzun şarkı, telefonda bellek sorunu çıkabilir" uyarısı
 gösterilir ama açmaya İZİN VERİLİR. Yalnızca mobilde geçerli.
 
+## Aşama 6 – İndirme (uygulama notları)
+- `<a download>` BAŞKA ORIGIN'de çalışmıyor: tarayıcı niteliği yok sayıp
+  dosyayı indirmek yerine açıyor. Bu yüzden indirmeyi sunucu tarafı
+  zorluyor: `Content-Disposition: attachment`.
+- Dosya adı anlamlı olmalı: `<şarkı adı> - <kanal>.<uzantı>`. Türkçe
+  karakterler için `filename*=UTF-8''<yüzde-kodlu>`, eski istemciler için
+  ASCII `filename="..."` yedeği.
+- Akış: `POST /songs/{id}/download-link` → imzalı URL → o adrese git.
+  İmzalı URL token istemiyor, 10 dakika geçerli.
+- Android Chrome'da dosya İndirilenler klasörüne inmeli.
+
 ## Aşama 6 – İndirme
 - Her kanalda indirme menüsü: M4A / FLAC / WAV. Önce download-link iste, sonra imzalı URL'ye yönlendir.

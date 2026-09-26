@@ -14,12 +14,71 @@ const ICONS = {
   other: '<path d="M12 3v10.6A4 4 0 1 0 14 17V7h4V3h-6z"/>',
 };
 
+const DOWNLOAD_FORMATS = [
+  ["m4a", "M4A", "oynatma kalitesi, küçük"],
+  ["flac", "FLAC", "kayıpsız master"],
+  ["wav", "WAV", "kayıpsız, düzenleme için"],
+];
+
 export class Mixer {
-  constructor(container, engine, onChange) {
+  constructor(container, engine, onChange, onDownload) {
     this.container = container;
     this.engine = engine;
     this.onChange = onChange;
+    this.onDownload = onDownload;
     this.rows = new Map();
+    this.openMenu = null;
+    // Menü dışına dokununca kapansın.
+    document.addEventListener("pointerdown", (event) => {
+      if (this.openMenu && !this.openMenu.contains(event.target)) this.closeMenu();
+    });
+  }
+
+  closeMenu() {
+    if (this.openMenu) {
+      this.openMenu.hidden = true;
+      this.openMenu = null;
+    }
+  }
+
+  #buildDownload(name) {
+    const wrap = document.createElement("div");
+    wrap.className = "dl";
+
+    const button = document.createElement("button");
+    button.className = "toggle dl-btn";
+    button.title = `${STEM_LABELS[name] || name} indir`;
+    button.setAttribute("aria-label", `${STEM_LABELS[name] || name} indir`);
+    button.innerHTML =
+      '<svg viewBox="0 0 24 24"><path d="M12 3v10.2l3.6-3.6L17 11l-5 5-5-5 1.4-1.4L12 13.2V3zM5 19h14v2H5z"/></svg>';
+
+    const menu = document.createElement("div");
+    menu.className = "dl-menu";
+    menu.hidden = true;
+    for (const [format, label, hint] of DOWNLOAD_FORMATS) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "dl-item";
+      item.innerHTML = `<b>${label}</b><span>${hint}</span>`;
+      item.addEventListener("click", () => {
+        this.closeMenu();
+        if (this.onDownload) this.onDownload(name, format);
+      });
+      menu.append(item);
+    }
+
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const acik = this.openMenu === menu;
+      this.closeMenu();
+      if (!acik) {
+        menu.hidden = false;
+        this.openMenu = menu;
+      }
+    });
+
+    wrap.append(button, menu);
+    return wrap;
   }
 
   render(stemNames) {
@@ -78,7 +137,7 @@ export class Mixer {
         this.refresh();
       });
 
-      row.append(label, fader.element, db, solo, mute);
+      row.append(label, fader.element, db, solo, mute, this.#buildDownload(name));
       this.container.append(row);
       this.rows.set(name, { row, fader, db, solo, mute });
     }

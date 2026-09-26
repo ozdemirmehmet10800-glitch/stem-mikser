@@ -22,6 +22,7 @@ import hmac
 import json
 import pathlib
 import re
+import urllib.parse
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -218,14 +219,30 @@ class Handler(BaseHTTPRequestHandler):
             if exp < int(time.time()):
                 self._json(403, {"detail": "Link suresi gecmis"})
                 return
-            self._serve_file(song_id, "stems", name + ".m4a", "audio/mp4")
+            song = self._song(song_id)
+            title = (song["status"].get("title") if song else None) or song_id[:12]
+            bad = set('<>:"/|?*') | {"\\"}
+            cleaned = " ".join(
+                "".join(" " if c in bad else c for c in title).split()
+            )[:80] or "sarki"
+            filename = f"{cleaned} - {name}.{fmt}"
+            ascii_name = filename.encode("ascii", "ignore").decode("ascii").strip()
+            if not ascii_name or ascii_name.startswith("."):
+                ascii_name = f"stem.{fmt}"
+            quoted = urllib.parse.quote(filename, safe="")
+            disposition = (
+                'attachment; filename="' + ascii_name + '"; '
+                + "filename*=UTF-8''" + quoted
+            )
+            self._serve_file(song_id, "stems", name + ".m4a", "audio/mp4",
+                             extra={"Content-Disposition": disposition})
             return
 
         self._json(404, {"detail": "yok"})
 
     # ---------------- dosya servisi ----------------
 
-    def _serve_file(self, song_id, folder, filename, media, ranges=False):
+    def _serve_file(self, song_id, folder, filename, media, ranges=False, extra=None):
         song = self._song(song_id)
         if not song:
             self._json(404, {"detail": "Sarki bulunamadi"})
@@ -260,7 +277,9 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
-        self._send(200, data, media, {"Accept-Ranges": "bytes"})
+        headers = {"Accept-Ranges": "bytes"}
+        headers.update(extra or {})
+        self._send(200, data, media, headers)
 
 
 def main():

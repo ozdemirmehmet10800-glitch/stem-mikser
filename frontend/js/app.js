@@ -292,6 +292,28 @@ async function openSong(song) {
   }
 }
 
+async function downloadStem(name, format) {
+  if (!currentSong) return;
+  const label = `${STEM_LABELS[name] || name} · ${format.toUpperCase()}`;
+  showMessage(el("player-message"), `${label} hazırlanıyor…`, "warn");
+  try {
+    const link = await api.downloadLink(currentSong.id, name, format);
+    // <a download> BAŞKA ORIGIN'de yok sayılıyor; indirmeyi sunucunun
+    // Content-Disposition: attachment başlığı zorluyor. İmzalı URL token
+    // istemiyor, o yüzden düz gezinti yeterli.
+    const anchor = document.createElement("a");
+    anchor.href = link.url;
+    anchor.rel = "noopener";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    showMessage(el("player-message"), `${label} indiriliyor.`, "ok");
+    setTimeout(() => hideMessage(el("player-message")), 4000);
+  } catch (error) {
+    showMessage(el("player-message"), describeError(error));
+  }
+}
+
 function setPlayIcon(playing) {
   el("play-icon").innerHTML = playing
     ? '<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>'
@@ -509,7 +531,7 @@ on("clear-cache", "click", async () => {
 
 // ---------------------------------------------------------------- başlangıç
 
-mixer = new Mixer(el("channels"), engine, null);
+mixer = new Mixer(el("channels"), engine, null, downloadStem);
 strip = new ChordStrip(
   el("chordstrip"),
   el("chordstrip-track"),

@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.parse
 
 import modal
 
@@ -1625,6 +1626,33 @@ def _read_slice(path: pathlib.Path, start: int = 0, length: int = -1) -> bytes:
         return handle.read() if length < 0 else handle.read(length)
 
 
+_ILLEGAL_FILENAME = set('<>:"/|?*') | {"\\"}
+
+
+def _download_filename(title: str, stem: str, fmt: str) -> str:
+    """"<şarkı adı> - <kanal>.<uzantı>" biçiminde temiz bir dosya adı."""
+    cleaned = "".join(" " if ch in _ILLEGAL_FILENAME or ord(ch) < 32 else ch
+                      for ch in (title or ""))
+    cleaned = " ".join(cleaned.split()).strip(". ")[:80]
+    if not cleaned:
+        cleaned = "sarki"
+    return f"{cleaned} - {stem}.{fmt}"
+
+
+def _content_disposition(filename: str) -> str:
+    """attachment başlığı; Türkçe karakterler için RFC 5987 filename*.
+
+    <a download> başka origin'de yok sayılıyor, bu yüzden indirmeyi bu
+    başlık zorluyor. ASCII filename eski istemciler için yedek.
+    """
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii").strip()
+    ascii_name = ascii_name.replace('"', "").replace("\\", "")
+    if not ascii_name or ascii_name.startswith("."):
+        ascii_name = f"stem.{filename.rsplit('.', 1)[-1]}"
+    quoted = urllib.parse.quote(filename, safe="")
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
+
+
 def _sign_download(key: str, song_id: str, name: str, fmt: str, exp: int) -> str:
     message = f"{song_id}|{name}|{fmt}|{exp}".encode("utf-8")
     return hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
@@ -1940,12 +1968,15 @@ def api():
             else:
                 body = await asyncio.to_thread(_read_slice, source)
 
+        status = await load_status(song_id)
+        title = (status or {}).get("title") or song_id[:12]
+        filename = _download_filename(str(title), name, format)
+
         return Response(
             content=body,
             media_type=media,
             headers={
-                "Content-Disposition":
-                    f'attachment; filename="{name}.{format}"',
+                "Content-Disposition": _content_disposition(filename),
                 "Content-Length": str(len(body)),
             },
         )
