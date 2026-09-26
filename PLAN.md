@@ -203,6 +203,20 @@ Kalan dört parça, her biri AYRI commit:
       bırakılacak (tepe bellek 6 stereo yerine 1 stereo + 6 mono).
       Masaüstünde tam kalite. Uyarı eşiği aşağıdaki kurala göre.
 
+## Aşama 5 – telefon testinden çıkanlar
+Android Chrome / kurulu PWA: ekran sönmüyor, kilitliyken çalmaya devam
+ediyor, fader'lar çalışıyor. İki açık madde, her biri AYRI commit:
+
+- [ ] **Kilit ekranı kontrolleri çıkmıyor.** Muhtemel sebep: Chrome Android
+      5 saniyeden kısa medyayı bildirime almıyor. Sessiz WAV 1 saniye;
+      en az 10 saniye yapılacak (8 kHz 8-bit mono ile ~80 KB kalır).
+      play() kullanıcı hareketi İÇİNDE çağrılmalı, playbackState ayarlanmalı.
+- [ ] **Her açılışta 6 stem yeniden iniyor.** Stem m4a'ları cihazda
+      önbelleğe alınacak (şarkı id'siyle), 300 MB sınır, en eski kullanılan
+      silinecek (LRU). `navigator.storage.persist()` istenecek. Ayarlara
+      "çevrimdışı kopyaları sil" düğmesi. İkinci açılışta stem için ağ
+      isteği OLMAMALI.
+
 ### Aşama 5 notu – bellek uyarı eşiği cihaza göre
 Sabit 6 dakika değil, `navigator.deviceMemory` değerine göre:
 - 8 GB ve üstü: uyarı yok (10 dakikalık yükleme sınırına kadar)
