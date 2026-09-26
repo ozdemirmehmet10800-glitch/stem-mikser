@@ -8,10 +8,25 @@ import { Mixer } from "./mixer.js";
 import { ChordStrip, formatTime } from "./chords.js";
 import { MediaBridge } from "./media.js";
 import { WakeLock } from "./wakelock.js";
+import { StemCache } from "./stemcache.js";
 
 const POLL_MS = 3000;
 
 const el = (id) => document.getElementById(id);
+
+// Eksik bir öğeye olay bağlamak TÜM modül başlatmasını durduruyordu:
+// bayat bir HTML (service worker cache'i) ile yeni JS eşleşmezse uygulama
+// sessizce hiç açılmıyordu - boş liste, hata mesajı bile yok. Artık eksik
+// öğe uyarı basıp geçiyor.
+function on(id, event, handler) {
+  const node = document.getElementById(id);
+  if (!node) {
+    console.warn(`[ui] "${id}" öğesi yok, "${event}" bağlanmadı (bayat HTML?)`);
+    return null;
+  }
+  node.addEventListener(event, handler);
+  return node;
+}
 
 const views = {
   library: el("view-library"),
@@ -30,6 +45,7 @@ let seeking = false;
 let currentSong = null;
 let media = null;
 const wakeLock = new WakeLock();
+const stemCache = new StemCache();
 let lastPositionSync = -1;
 
 // ---------------------------------------------------------------- yardımcı
@@ -224,17 +240,28 @@ async function openSong(song) {
       fills.set(name, row.querySelector("i"));
     }
 
-    setOverlay(true, "Kanallar indiriliyor…");
+    setOverlay(true, "Kanallar hazırlanıyor…");
     const entries = [];
+    let fromCache = 0;
     for (const name of stems) {
-      const arrayBuffer = await api.stemBuffer(song.id, name, (ratio) => {
-        const fill = fills.get(name);
-        if (fill) fill.style.width = `${Math.round(ratio * 100)}%`;
-      });
       const fill = fills.get(name);
-      if (fill) fill.style.width = "100%";
+      // Önce cihazdaki kopya: ikinci açılışta ağa hiç çıkılmıyor.
+      let arrayBuffer = await stemCache.get(song.id, name);
+      if (arrayBuffer) {
+        fromCache += 1;
+        if (fill) fill.style.width = "100%";
+      } else {
+        arrayBuffer = await api.stemBuffer(song.id, name, (ratio) => {
+          if (fill) fill.style.width = `${Math.round(ratio * 100)}%`;
+        });
+        if (fill) fill.style.width = "100%";
+        // Kopyası saklanıyor; decodeAudioData ArrayBuffer'ı tükettiği için
+        // ÖNCE yazıp sonra çözüyoruz.
+        await stemCache.put(song.id, name, arrayBuffer.slice(0));
+      }
       entries.push({ name, arrayBuffer });
     }
+    console.info(`[stem] ${fromCache}/${stems.length} kanal cihazdan geldi`);
 
     setOverlay(true, "Ses çözülüyor…");
     const duration = await engine.setStems(entries);
@@ -305,19 +332,20 @@ function stopLoop() {
 
 // ---------------------------------------------------------------- olaylar
 
-el("open-settings").addEventListener("click", () => {
+on("open-settings", "click", () => {
+  refreshStemCacheState();
   el("setting-url").value = settings.url;
   el("setting-token").value = settings.token;
   hideMessage(el("settings-message"));
   showView("settings");
 });
 
-el("close-settings").addEventListener("click", () => {
+on("close-settings", "click", () => {
   showView("library");
   if (isConfigured(settings)) refreshLibrary();
 });
 
-el("settings-form").addEventListener("submit", (event) => {
+on("settings-form", "submit", (event) => {
   event.preventDefault();
   settings = saveSettings({
     url: el("setting-url").value,
@@ -328,7 +356,7 @@ el("settings-form").addEventListener("submit", (event) => {
   refreshLibrary();
 });
 
-el("test-connection").addEventListener("click", async () => {
+on("test-connection", "click", async () => {
   const probe = new Api({
     url: el("setting-url").value,
     token: el("setting-token").value,
@@ -347,15 +375,15 @@ el("test-connection").addEventListener("click", async () => {
   }
 });
 
-el("upload-input").addEventListener("change", (event) => {
+on("upload-input", "change", (event) => {
   const file = event.target.files && event.target.files[0];
   if (file) handleUpload(file);
   event.target.value = "";
 });
 
-el("refresh-list").addEventListener("click", refreshLibrary);
+on("refresh-list", "click", refreshLibrary);
 
-el("back-to-library").addEventListener("click", () => {
+on("back-to-library", "click", () => {
   stopPlayback();
   stopLoop();
   showView("library");
@@ -384,16 +412,16 @@ function stopPlayback() {
   wakeLock.release();
 }
 
-el("play").addEventListener("click", async () => {
+on("play", "click", async () => {
   if (engine.playing) stopPlayback();
   else await startPlayback();
 });
 
-el("rewind").addEventListener("click", async () => {
+on("rewind", "click", async () => {
   await engine.seek(0);
 });
 
-el("seek").addEventListener("input", () => {
+on("seek", "input", () => {
   seeking = true;
   const time = Number(el("seek").value) / 10;
   el("time-current").textContent = formatTime(time);
@@ -401,12 +429,12 @@ el("seek").addEventListener("input", () => {
   strip.update(time);
 });
 
-el("seek").addEventListener("change", async () => {
+on("seek", "change", async () => {
   await engine.seek(Number(el("seek").value) / 10);
   seeking = false;
 });
 
-el("master").addEventListener("input", () => {
+on("master", "input", () => {
   const gain = Number(el("master").value) / 100;
   engine.setMaster(gain);
   el("master-value").textContent = `${gainToDb(gain)} dB`;
@@ -415,7 +443,7 @@ el("master").addEventListener("input", () => {
 // ---------------------------------------------------------------- PWA
 
 async function registerServiceWorker() {
-  const state = el("sw-state");
+  const state = el("sw-state") || { set textContent(value) { console.info("[sw]", value); } };
   if (!("serviceWorker" in navigator)) {
     state.textContent = "Bu tarayıcı service worker desteklemiyor.";
     return;
@@ -434,7 +462,34 @@ async function registerServiceWorker() {
   }
 }
 
-el("clear-cache").addEventListener("click", async () => {
+function formatBytes(bytes) {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+async function refreshStemCacheState() {
+  const node = el("stem-cache-state");
+  if (!node) return;
+  if (!stemCache.available) {
+    node.textContent = "Bu tarayıcı çevrimdışı kopyaları desteklemiyor.";
+    return;
+  }
+  const usage = await stemCache.usage();
+  const persisted = stemCache.persisted;
+  const kalici = persisted === true ? "kalıcı" : persisted === false ? "geçici" : "bilinmiyor";
+  node.textContent =
+    `Çevrimdışı kopyalar: ${usage.songs} şarkı, ${usage.files} kanal, ` +
+    `${formatBytes(usage.bytes)} / ${formatBytes(usage.limit)} (depolama: ${kalici}).`;
+}
+
+on("clear-stems", "click", async () => {
+  const node = el("stem-cache-state");
+  node.textContent = "Siliniyor…";
+  await stemCache.clear();
+  await refreshStemCacheState();
+});
+
+on("clear-cache", "click", async () => {
   const state = el("sw-state");
   state.textContent = "Temizleniyor…";
   try {
@@ -465,6 +520,7 @@ strip = new ChordStrip(
 media = new MediaBridge(engine, { onSeek: (time) => engine.seek(time) });
 
 registerServiceWorker();
+stemCache.requestPersistence();
 
 if (isConfigured(settings)) {
   showView("library");

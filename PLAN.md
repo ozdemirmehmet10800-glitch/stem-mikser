@@ -207,11 +207,11 @@ Kalan dört parça, her biri AYRI commit:
 Android Chrome / kurulu PWA: ekran sönmüyor, kilitliyken çalmaya devam
 ediyor, fader'lar çalışıyor. İki açık madde, her biri AYRI commit:
 
-- [ ] **Kilit ekranı kontrolleri çıkmıyor.** Muhtemel sebep: Chrome Android
+- [x] **Kilit ekranı kontrolleri çıkmıyor.** Muhtemel sebep: Chrome Android
       5 saniyeden kısa medyayı bildirime almıyor. Sessiz WAV 1 saniye;
       en az 10 saniye yapılacak (8 kHz 8-bit mono ile ~80 KB kalır).
       play() kullanıcı hareketi İÇİNDE çağrılmalı, playbackState ayarlanmalı.
-- [ ] **Her açılışta 6 stem yeniden iniyor.** Stem m4a'ları cihazda
+- [x] **Her açılışta 6 stem yeniden iniyor.** Stem m4a'ları cihazda
       önbelleğe alınacak (şarkı id'siyle), 300 MB sınır, en eski kullanılan
       silinecek (LRU). `navigator.storage.persist()` istenecek. Ayarlara
       "çevrimdışı kopyaları sil" düğmesi. İkinci açılışta stem için ağ
