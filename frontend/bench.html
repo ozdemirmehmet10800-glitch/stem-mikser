@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Esnetme ölçümü</title>
+<meta name="theme-color" content="#07090d">
+<link rel="stylesheet" href="css/styles.css">
+<style>
+  body { padding: 16px; }
+  h1 { font-size: 22px; margin: 6px 0 4px; }
+  .lede { color: var(--text-dim); font-size: 14px; max-width: 60ch; margin: 0 0 18px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+  .controls label { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text-dim); }
+  select, .controls input[type="number"] {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: var(--radius-sm); padding: 10px 12px; font: inherit; min-height: 44px;
+  }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--text-dim); font-weight: 600; font-size: 12px; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  .ok { color: var(--ok); }
+  .warn { color: var(--warn); }
+  .bad { color: var(--danger); }
+  pre { background: var(--panel); padding: 12px; border-radius: var(--radius-sm);
+        overflow-x: auto; font-size: 12px; color: var(--text-dim); }
+  .back { display: inline-block; margin-bottom: 10px; color: var(--accent); }
+</style>
+</head>
+<body>
+
+<a class="back" href="./">&larr; uygulamaya dön</a>
+<h1>Esnetme ölçümü</h1>
+<p class="lede">
+  Aşama 8'in ilk adımı: bu telefon 6 kanalı aynı anda gerçek zamanlı
+  esnetebiliyor mu? Ölçüm <code>signalsmith-stretch</code> (MIT) ile yapılıyor,
+  yani gerçek yük. Sentetik ses kullanılıyor; API'ye ve token'a gerek yok.
+</p>
+
+<div class="controls">
+  <label>Kanal düzeni
+    <select id="layout">
+      <option value="1" selected>mono (telefon yolu)</option>
+      <option value="2">stereo (masaüstü yolu)</option>
+    </select>
+  </label>
+  <label>Ayar
+    <select id="preset">
+      <option value="default" selected>default</option>
+      <option value="cheaper">cheaper</option>
+      <option value="split">default + splitComputation</option>
+    </select>
+  </label>
+  <label>Süre (sn)
+    <input type="number" id="seconds" value="10" min="4" max="30" step="1">
+  </label>
+  <button class="btn btn-primary" id="run-offline">Ölçümü başlat</button>
+</div>
+
+<div id="message" class="message" hidden></div>
+
+<h2 style="font-size:16px">1. Nesnel ölçüm — gerçek zamandan hızlı mı?</h2>
+<p class="lede">
+  <code>OfflineAudioContext</code> ile render edilip duvar saatiyle
+  karşılaştırılıyor. <strong>Oran &lt; 1</strong> gerçek zamandan hızlı demek;
+  1'e ne kadar yakınsa o kadar az pay var. Telefon ısındıkça yavaşladığı için
+  0.5'in altını güvenli sayıyorum.
+</p>
+<table id="results">
+  <thead>
+    <tr><th>Kanal</th><th class="num">Render (sn)</th><th class="num">Ses (sn)</th>
+        <th class="num">Oran</th><th>Değerlendirme</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2 style="font-size:16px; margin-top:26px">2. Öznel ölçüm — kulakla</h2>
+<p class="lede">
+  6 kanal gerçek zamanlı çalar, hız 0.8x ve ton +2 yarım ses uygulanır.
+  <strong>Takılma, çıtırtı ya da kesilme duyuyor musun?</strong> Nesnel oran
+  iyi çıksa bile burada takılma varsa telefon yetmiyor demektir.
+</p>
+<div class="controls">
+  <button class="btn" id="run-realtime">15 saniye çal</button>
+  <button class="btn" id="stop-realtime" disabled>Durdur</button>
+</div>
+<div id="realtime-info" class="lede"></div>
+
+<h2 style="font-size:16px; margin-top:26px">Ortam</h2>
+<pre id="env">…</pre>
+
+<script type="module" src="js/bench.js"></script>
+</body>
+</html>
