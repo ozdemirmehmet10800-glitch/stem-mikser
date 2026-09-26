@@ -119,6 +119,16 @@ artırmak, ama bu doğrudan yeni kazandığımız evrik akorlarla (14/16/18/20.
 ölçülerde Ab/C) ters düşüyor. Gerçek çözüm muhtemelen eğitilmiş bir akor
 modeli ya da onset ağırlıklı chroma.
 
+### Uzun şarkılar için MediaElement yolu (Aşama 5'ten ertelendi)
+6+ dakikalık şarkılarda AudioBuffer yerine `MediaElementAudioSourceNode`
+kullanmak, PCM'i bellekte tutmamak için. Stem'ler `fetch` ile Blob olarak
+alınıp `URL.createObjectURL` ile verilecek (imzalı URL değil: kimlik
+doğrulama korunur, 10 dakikalık süre sorunu olmaz, 10 dk şarkıda toplam
+~72 MB sıkıştırılmış veri). Her `<audio>` kendi saatinde çaldığı için
+2 saniyede bir kanallar master'a göre karşılaştırılıp 40 ms'den fazla sapma
+`currentTime` ile düzeltilmeli. Aşama 5'te kapsam dışı bırakıldı çünkü
+elde uzun test şarkısı yok ve en karmaşık parça bu.
+
 ### Akor ızgarası görünümü
 Moises'ın akor şeridinde her ölçü 4 sabit vuruş hücresine bölünüyor ve akor
 değişmeyen vuruşlar boş kalıyor. Bizde hücre genişliği akorun süresiyle
@@ -172,6 +182,15 @@ Tüm uç noktalar Bearer token ister. Token ve imzalama anahtarı Modal Secret't
 - PWA: manifest.json (standalone, ikonlar). Service worker yalnızca ön yüz dosyalarını cache'lesin, ses dosyalarını DEĞİL.
 - Media Session API ile kilit ekranı play/pause; destekleniyorsa çalma sırasında Screen Wake Lock.
 - Yükleme input'u accept="audio/*".
+
+### Aşama 5 notu – bellek uyarı eşiği cihaza göre
+Sabit 6 dakika değil, `navigator.deviceMemory` değerine göre:
+- 8 GB ve üstü: uyarı yok (10 dakikalık yükleme sınırına kadar)
+- 4 GB: 8 dakika
+- daha az ya da bilinmiyor (`undefined`): 6 dakika
+
+Eşiği aşan şarkıda "uzun şarkı, telefonda bellek sorunu çıkabilir" uyarısı
+gösterilir ama açmaya İZİN VERİLİR. Yalnızca mobilde geçerli.
 
 ## Aşama 6 – İndirme
 - Her kanalda indirme menüsü: M4A / FLAC / WAV. Önce download-link iste, sonra imzalı URL'ye yönlendir.

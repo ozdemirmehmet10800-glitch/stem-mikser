@@ -361,6 +361,42 @@ Ayarlara `http://127.0.0.1:8001` ve token olarak `mock-token` gir.
 - Hata mesajları türe göre ayrı: token hatası (401) ile CORS/ağ hatası
   karıştırılmıyor; CORS mesajı sayfanın kendi origin'ini de gösteriyor.
 
+## Aşama 5 – PWA
+
+Ana ekrana eklenebilir, tam ekran açılır, çevrimdışı iskelet.
+
+- `manifest.json` — `start_url` ve `scope` **göreli** (`./`), çünkü site
+  `/stem-mikser/` alt yolunda yayınlanıyor; mutlak `/` olsaydı ana ekrandan
+  açılış 404 verirdi.
+- `sw.js` — yalnızca ön yüz dosyalarını cache'ler. **API'ye, ses dosyalarına
+  ve GET olmayan isteklere hiç karışmaz.** Sayfa gezintisinde önce ağ
+  (güncelleme insin), diğer dosyalarda önce cache. Sürüm değişince eski
+  cache'ler silinir ve yeni worker beklemeden devralır.
+- `icons/` — `tests/make_icons.py` ile üretiliyor: **yeni bağımlılık yok**,
+  yalnızca `zlib` + `struct`, 4x supersampling ile kenar yumuşatma.
+- iOS manifest'i kısmen yok saydığı için `apple-touch-icon` ve
+  `apple-mobile-web-app-capable` etiketleri ayrıca konuldu.
+- Ayarlarda **"Önbelleği temizle"** düğmesi: bozuk bir service worker yapışkan
+  olabiliyor, kaçış kapısı olmadan tarayıcı verisi silmek gerekirdi.
+
+### İkonları yeniden üretmek
+
+```powershell
+.\.venv\Scripts\python.exe tests\make_icons.py
+```
+
+### Service worker yönlendirme testi
+
+Asıl güvence service worker'ın API'ye karışmaması. `sw.js` sahte bir `self`
+içinde çalıştırılıp `fetch` işleyicisi gerçek `Request` nesneleriyle
+sınanıyor. Depo kökünü servis edip sayfayı açın:
+
+```powershell
+.\.venv\Scripts\python.exe -m http.server 8002
+```
+
+`http://localhost:8002/tests/sw_routing_test.html`
+
 ## Modal Volume düzeni
 
 ```

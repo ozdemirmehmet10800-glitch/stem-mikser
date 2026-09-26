@@ -358,6 +358,46 @@ el("master").addEventListener("input", () => {
   el("master-value").textContent = `${gainToDb(gain)} dB`;
 });
 
+// ---------------------------------------------------------------- PWA
+
+async function registerServiceWorker() {
+  const state = el("sw-state");
+  if (!("serviceWorker" in navigator)) {
+    state.textContent = "Bu tarayıcı service worker desteklemiyor.";
+    return;
+  }
+  // file:// ile açıldığında kayıt zaten başarısız olur; kullanıcıya anlamlı
+  // bir şey söylemek, konsolda sessizce patlamasından iyi.
+  if (location.protocol === "file:") {
+    state.textContent = "Dosyadan açıldı; service worker yalnızca http(s) ile çalışır.";
+    return;
+  }
+  try {
+    const registration = await navigator.serviceWorker.register("sw.js");
+    state.textContent = `Service worker etkin (kapsam: ${registration.scope}).`;
+  } catch (error) {
+    state.textContent = `Service worker kaydedilemedi: ${error.message}`;
+  }
+}
+
+el("clear-cache").addEventListener("click", async () => {
+  const state = el("sw-state");
+  state.textContent = "Temizleniyor…";
+  try {
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((key) => caches.delete(key)));
+    }
+    if ("serviceWorker" in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map((registration) => registration.unregister()));
+    }
+    state.textContent = "Önbellek temizlendi, service worker kaldırıldı. Sayfayı yenile.";
+  } catch (error) {
+    state.textContent = `Temizlenemedi: ${error.message}`;
+  }
+});
+
 // ---------------------------------------------------------------- başlangıç
 
 mixer = new Mixer(el("channels"), engine, null);
@@ -367,6 +407,8 @@ strip = new ChordStrip(
   el("chordstrip-empty"),
   (time) => engine.seek(time)
 );
+
+registerServiceWorker();
 
 if (isConfigured(settings)) {
   showView("library");

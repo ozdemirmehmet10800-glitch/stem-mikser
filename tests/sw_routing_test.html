@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Service worker yönlendirme testi</title>
+<style>
+  body { background:#07090d; color:#e8ecf2; font:15px/1.5 system-ui, sans-serif; padding:24px; }
+  h1 { font-size:20px; }
+  p { color:#8b95a5; max-width:70ch; }
+  li { list-style:none; padding:3px 0; font-family:ui-monospace, monospace; font-size:13px; }
+  .ok::before { content:"GEÇTİ  "; color:#34d399; }
+  .no::before { content:"KALDI  "; color:#f87171; }
+  .no { color:#fca5a5; }
+  #ozet { margin-top:16px; font-weight:700; }
+</style>
+</head>
+<body>
+<h1>Service worker yönlendirme testi</h1>
+<p>
+  Asıl güvence şu: service worker API isteklerine, ses dosyalarına ve
+  GET olmayan isteklere <strong>hiç karışmamalı</strong>. Karışırsa CORS
+  davranışı bozulabilir ya da ses dosyaları önbelleğe girip telefonun
+  depolamasını doldurabilir.
+</p>
+<p>
+  <code>sw.js</code> gerçek bir worker olarak değil, sahte bir <code>self</code>
+  içinde çalıştırılıp <code>fetch</code> işleyicisi gerçek
+  <code>Request</code> nesneleriyle dürtülüyor.
+</p>
+<p>
+  Çalıştırmak için depo kökünü servis edin ve bu dosyayı açın:<br>
+  <code>python -m http.server 8002</code> →
+  <code>http://localhost:8002/tests/sw_routing_test.html</code>
+</p>
+<ul id="sonuc"></ul>
+<div id="ozet"></div>
+
+<script type="module">
+const API = "https://ornek--stem-mikser.modal.run";
+const SW_PATH = "../frontend/sw.js";
+const ORIGIN = location.origin;
+
+const list = document.getElementById("sonuc");
+const add = (name, ok) => {
+  const li = document.createElement("li");
+  li.className = ok ? "ok" : "no";
+  li.textContent = name;
+  list.append(li);
+  return ok;
+};
+
+let code;
+try {
+  const response = await fetch(SW_PATH);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  code = await response.text();
+} catch (error) {
+  document.getElementById("ozet").textContent =
+    `sw.js okunamadı (${error.message}). Depo kökünü servis ettiğinizden emin olun.`;
+  throw error;
+}
+
+const handlers = {};
+const fakeSelf = {
+  addEventListener: (type, fn) => { handlers[type] = fn; },
+  location: new URL(`${ORIGIN}/frontend/sw.js`),
+  skipWaiting: () => {},
+  clients: { claim: () => {} },
+  registration: { unregister: () => {} },
+};
+const fakeCaches = {
+  open: async () => ({ add: async () => {}, put: async () => {}, match: async () => undefined }),
+  keys: async () => [],
+  delete: async () => true,
+  match: async () => undefined,
+};
+new Function("self", "caches", "fetch", "console", code)(
+  fakeSelf, fakeCaches, async () => new Response("x"), console
+);
+
+function karisiyorMu(url, options = {}) {
+  const request = new Request(url, { method: options.method || "GET" });
+  Object.defineProperty(request, "mode", { value: options.mode || "cors" });
+  Object.defineProperty(request, "destination", { value: options.destination || "" });
+  let touched = false;
+  handlers.fetch({ request, respondWith: () => { touched = true; } });
+  return touched;
+}
+
+const checks = [
+  ["install ve activate kayıtlı", Boolean(handlers.install && handlers.activate)],
+  ["API /songs (başka origin) -> karışmaz", karisiyorMu(`${API}/songs`) === false],
+  ["API stem m4a -> karışmaz", karisiyorMu(`${API}/a/stems/vocals.m4a`, { destination: "audio" }) === false],
+  ["API imzalı indirme -> karışmaz", karisiyorMu(`${API}/a/download/vocals?format=wav`) === false],
+  ["API yükleme POST -> karışmaz", karisiyorMu(`${API}/songs`, { method: "POST" }) === false],
+  ["aynı origin POST -> karışmaz", karisiyorMu(`${ORIGIN}/x`, { method: "POST" }) === false],
+  ["aynı origin DELETE -> karışmaz", karisiyorMu(`${ORIGIN}/x`, { method: "DELETE" }) === false],
+  ["aynı origin .m4a -> karışmaz", karisiyorMu(`${ORIGIN}/frontend/a.m4a`) === false],
+  ["audio destination -> karışmaz", karisiyorMu(`${ORIGIN}/frontend/a`, { destination: "audio" }) === false],
+  ["sayfa gezintisi -> karışır", karisiyorMu(`${ORIGIN}/frontend/`, { mode: "navigate" }) === true],
+  ["kendi css -> karışır", karisiyorMu(`${ORIGIN}/frontend/css/styles.css`) === true],
+  ["kendi js -> karışır", karisiyorMu(`${ORIGIN}/frontend/js/app.js`) === true],
+  ["kendi ikonu -> karışır", karisiyorMu(`${ORIGIN}/frontend/icons/icon-192.png`) === true],
+];
+
+let passed = 0;
+for (const [name, ok] of checks) { if (add(name, ok)) passed += 1; }
+document.getElementById("ozet").textContent =
+  `geçen: ${passed}   kalan: ${checks.length - passed}`;
+</script>
+</body>
+</html>
