@@ -3,6 +3,7 @@
 // parlak, susturulmuş kanal soluk.
 
 import { STEM_ORDER, STEM_LABELS, gainToDb } from "./engine.js";
+import { Fader } from "./fader.js";
 
 const ICONS = {
   vocals: '<path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11z"/>',
@@ -40,18 +41,23 @@ export class Mixer {
         `<svg viewBox="0 0 24 24">${ICONS[name] || ICONS.other}</svg>` +
         `<span>${STEM_LABELS[name] || name}</span>`;
 
-      const fader = document.createElement("input");
-      fader.type = "range";
-      fader.className = "fader";
-      fader.min = "0";
-      fader.max = "150";
-      fader.step = "1";
-      fader.value = "100";
-      fader.setAttribute("aria-label", `${STEM_LABELS[name] || name} seviyesi`);
-
       const db = document.createElement("div");
       db.className = "channel-db";
       db.textContent = "0.0 dB";
+
+      const fader = new Fader({
+        min: 0, max: 150, value: 100, step: 1,
+        label: `${STEM_LABELS[name] || name} seviyesi`,
+        onInput: (percent) => {
+          const gain = percent / 100;
+          this.engine.setFader(name, gain);
+          const text = `${gainToDb(gain)} dB`;
+          db.textContent = text;
+          fader.setValueText(`%${percent}, ${text}`);
+          this.refresh();
+        },
+      });
+      fader.setValueText("%100, 0.0 dB");
 
       const solo = document.createElement("button");
       solo.className = "toggle";
@@ -63,12 +69,6 @@ export class Mixer {
       mute.textContent = "M";
       mute.title = "Sustur";
 
-      fader.addEventListener("input", () => {
-        const gain = Number(fader.value) / 100;
-        this.engine.setFader(name, gain);
-        db.textContent = `${gainToDb(gain)} dB`;
-        this.refresh();
-      });
       solo.addEventListener("click", () => {
         this.engine.toggleSolo(name);
         this.refresh();
@@ -78,7 +78,7 @@ export class Mixer {
         this.refresh();
       });
 
-      row.append(label, fader, db, solo, mute);
+      row.append(label, fader.element, db, solo, mute);
       this.container.append(row);
       this.rows.set(name, { row, fader, db, solo, mute });
     }
