@@ -34,8 +34,17 @@
 <h1>Esnetme ölçümü</h1>
 <p class="lede">
   Aşama 8'in ilk adımı: bu telefon 6 kanalı aynı anda gerçek zamanlı
-  esnetebiliyor mu? Ölçüm <code>signalsmith-stretch</code> (MIT) ile yapılıyor,
-  yani gerçek yük. Sentetik ses kullanılıyor; API'ye ve token'a gerek yok.
+  esnetebiliyor mu? Gerçek kütüphanelerle ölçülüyor, sentetik yükle değil.
+  Sentetik ses kullanılıyor; API'ye ve token'a gerek yok.
+  <br><br>
+  <strong>Masaüstünde bulunan:</strong> <code>signalsmith-stretch</code>
+  GERÇEK ZAMANLI bağlamda 3 düğüme kadar çalışıyor; 4'ten itibaren tüm
+  işlemciler hata atıp susuyor. Aynı kütüphane <em>offline</em> render'da
+  6 kanalda sorunsuz — yani 1. bölümdeki nesnel ölçüm bu arızayı
+  <strong>göremez</strong>. Telefonda ölçüm iyi çıkıp sesin gelmemesinin
+  sebebi buydu. <code>SoundTouchJS</code> gerçek zamanlıda 8 kanalda bile
+  hatasız. Karar bu yüzden 2. bölüme (kulak + çıkış seviyesi) bakılarak
+  verilmeli.
 </p>
 
 <div class="controls">
@@ -45,11 +54,10 @@
       <option value="2">stereo (masaüstü yolu)</option>
     </select>
   </label>
-  <label>Ayar
-    <select id="preset">
-      <option value="default" selected>default</option>
-      <option value="cheaper">cheaper</option>
-      <option value="split">default + splitComputation</option>
+  <label>Kütüphane
+    <select id="library">
+      <option value="soundtouch" selected>SoundTouchJS (MPL-2.0)</option>
+      <option value="signalsmith">signalsmith-stretch (MIT)</option>
     </select>
   </label>
   <label>Süre (sn)
@@ -70,7 +78,7 @@
 <table id="results">
   <thead>
     <tr><th>Kanal</th><th class="num">Render (sn)</th><th class="num">Ses (sn)</th>
-        <th class="num">Oran</th><th>Değerlendirme</th></tr>
+        <th class="num">Oran</th><th class="num">Tepe</th><th>Değerlendirme</th></tr>
   </thead>
   <tbody></tbody>
 </table>
@@ -82,10 +90,19 @@
   iyi çıksa bile burada takılma varsa telefon yetmiyor demektir.
 </p>
 <div class="controls">
+  <button class="btn" id="test-tone">Önce test tonu (1 sn)</button>
   <button class="btn" id="run-realtime">15 saniye çal</button>
   <button class="btn" id="stop-realtime" disabled>Durdur</button>
 </div>
+<p class="lede">
+  Test tonu düz bir osilatör: esnetme kütüphanesine hiç dokunmaz. Test tonu
+  duyulup 6 kanal duyulmuyorsa sorun esnetmede; test tonu da duyulmuyorsa
+  sorun cihazın ses yolunda ya da izinlerde.
+</p>
 <div id="realtime-info" class="lede"></div>
+
+<h3 style="font-size:14px; margin:18px 0 6px">Tanı günlüğü</h3>
+<pre id="log">(henüz bir şey çalıştırılmadı)</pre>
 
 <h2 style="font-size:16px; margin-top:26px">Ortam</h2>
 <pre id="env">…</pre>

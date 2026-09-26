@@ -124,6 +124,29 @@ slash, 59 ölçünün 8'inde 3 akor.
 | `SoundTouchJS` | **MPL-2.0** | Yedek. LGPL'den MPL'ye geçmiş. AudioWorklet destekli; `pitch`, `pitchSemitones`, `playbackRate` ayrı AudioParam'lar. |
 | Rubber Band | **GPLv2+ / ticari** | KULLANILMAYACAK. Depo public; GPL bulaşıcı, tüm projeyi GPL'e zorlar. Ticari lisans ücretli. |
 
+### ÖLÇÜM SONUCU (2026-09-27, Android 10 / 8 GB / 10 çekirdek + masaüstü)
+- Nesnel (offline render) ölçüm telefonda 6 kanalda **oran 0.064** verdi -
+  gerçek zamandan ~15 kat hızlı. Yani CPU yeterli.
+- AMA gerçek zamanlı çalmada **hiç ses çıkmadı**. Sebep CPU değil:
+  `signalsmith-stretch` gerçek zamanlı bir AudioContext'te 4. düğümden
+  itibaren TÜM işlemcilerde `processorerror` atıyor
+  ("Cannot read properties of undefined (reading 'length')") ve Chrome
+  onları kalıcı olarak susturuyor. `cheaper` ve `splitComputation`
+  kurtarmıyor. Aynı kütüphane OFFLINE render'da 6 kanalda sorunsuz, bu
+  yüzden nesnel ölçüm arızayı göremiyor.
+- `@soundtouchjs/audio-worklet` (MPL-2.0) gerçek zamanlıda 8 kanalda bile
+  hatasız, tepe seviyesi doğrusal. Masaüstünde 6 kanal oranı 0.163
+  (signalsmith'in ~3 katı ama çalışıyor).
+
+**KARAR: SoundTouchJS.** Mimari de daha uygun: canlı girdi üzerinde
+çalışıyor (`source -> SoundTouchNode -> gain -> master`), tempo kaynağın
+`playbackRate`'inden geliyor ve düğüm perdeyi telafi ediyor. Buffer yükleme
+derdi yok, fader değişimleri doğal çalışıyor. Parametreler AudioParam:
+`playbackRate`, `pitchSemitones`, `pitch`.
+
+signalsmith-stretch depoda kalıyor: ölçüm sayfası ikisini karşılaştırıyor,
+telefonda da aynı sonucu doğrulamak için.
+
 ### Sıra
 1. **Önce ölçüm.** Telefonda 6 AudioWorklet esnetici aynı anda çalışabiliyor
    mu? Ayrı bir ölçüm sayfası: kanal sayısını 1'den 6'ya çıkarıp ses kesilmesi
