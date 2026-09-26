@@ -187,18 +187,18 @@ Tüm uç noktalar Bearer token ister. Token ve imzalama anahtarı Modal Secret't
 PWA bitti ve telefonda doğrulandı (Android/Chrome: kuruldu, tam ekran).
 Kalan dört parça, her biri AYRI commit:
 
-- [ ] **Dokunmatik fader'lar.** `<input type="range">` yerine pointer
+- [x] **Dokunmatik fader'lar.** `<input type="range">` yerine pointer
       event'li özel bileşen: `touch-action: none`, en az 44 px dokunma alanı,
       `setPointerCapture` (parmak kaysa bile takip). Erişilebilirlik elle:
       `role="slider"`, `aria-valuenow`/`aria-valuetext`, ok tuşları.
-- [ ] **Media Session.** Kilit ekranı metadata + play/pause/seek işleyicileri
+- [x] **Media Session.** Kilit ekranı metadata + play/pause/seek işleyicileri
       + `setPositionState`. Saf Web Audio ile çoğu platform kilit ekranında
       kontrol göstermiyor; sessiz döngüsel bir `<audio playsinline>` elementi
       gerekiyor. Aynı element iOS sessiz anahtarı sorununu da çözüyor.
-- [ ] **Wake Lock.** Çalarken `navigator.wakeLock.request("screen")`,
+- [x] **Wake Lock.** Çalarken `navigator.wakeLock.request("screen")`,
       duraklatınca bırak, `visibilitychange`'de yeniden al (arkaplana gidince
       kilit düşüyor). Desteklenmiyorsa sessizce atla.
-- [ ] **Bellek önlemleri.** Mobilde `AudioContext` `sampleRate: 32000`,
+- [x] **Bellek önlemleri.** Mobilde `AudioContext` `sampleRate: 32000`,
       stem'ler TEK TEK çözülüp hemen mono'ya indirilecek ve stereo tampon
       bırakılacak (tepe bellek 6 stereo yerine 1 stereo + 6 mono).
       Masaüstünde tam kalite. Uyarı eşiği aşağıdaki kurala göre.

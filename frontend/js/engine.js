@@ -18,6 +18,26 @@ export const STEM_LABELS = {
 const START_LEAD = 0.08; // planlama payı (sn)
 const GAIN_GLIDE = 0.012; // setTargetAtTime zaman sabiti; tık sesi olmasın
 
+// Mobilde bellek: 6 stem x 4 dk x 44,1 kHz x 2 kanal x 4 bayt = 508 MB.
+// 32 kHz mono'da aynı şarkı 184 MB. Masaüstünde tam kalite kalıyor.
+export const MOBILE_SAMPLE_RATE = 32000;
+
+export function isMobile() {
+  if (navigator.userAgentData && typeof navigator.userAgentData.mobile === "boolean") {
+    return navigator.userAgentData.mobile;
+  }
+  return window.matchMedia("(pointer: coarse)").matches && window.innerWidth < 1024;
+}
+
+// Uyarı eşiği cihaz belleğine göre. deviceMemory yalnızca Chromium'da var;
+// yoksa en temkinli değeri alıyoruz.
+export function longSongThresholdSec() {
+  const memory = navigator.deviceMemory;
+  if (memory >= 8) return Infinity;  // 10 dk yükleme sınırına kadar uyarı yok
+  if (memory >= 4) return 8 * 60;
+  return 6 * 60;
+}
+
 export function gainToDb(gain) {
   if (gain <= 0.0001) return "-∞";
   return (20 * Math.log10(gain)).toFixed(1);
@@ -33,13 +53,36 @@ export class Engine {
     this.startedAt = 0;    // ctx.currentTime cinsinden başlangıç anı
     this.duration = 0;
     this.onEnded = null;
+    this.mobile = isMobile();
+    this.monoDownmix = this.mobile;
+  }
+
+  // decodeAudioData mono'ya kendiliğinden indirmiyor, stereo tamponu yine de
+  // ayırıyor. Stem'leri TEK TEK çözüp hemen mono'ya indirip stereo tamponu
+  // bırakıyoruz: tepe bellek 6 stereo yerine 1 stereo + 6 mono oluyor.
+  #toMono(buffer) {
+    if (buffer.numberOfChannels === 1) return buffer;
+    const mono = this.ctx.createBuffer(1, buffer.length, buffer.sampleRate);
+    const target = mono.getChannelData(0);
+    const channels = buffer.numberOfChannels;
+    for (let channel = 0; channel < channels; channel += 1) {
+      const source = buffer.getChannelData(channel);
+      for (let i = 0; i < source.length; i += 1) target[i] += source[i] / channels;
+    }
+    return mono;
   }
 
   // Autoplay politikası: AudioContext ilk KULLANICI hareketiyle oluşturulmalı
   // ya da resume edilmeli. Masaüstü Chrome'da da geçerli.
   async ensureContext() {
     if (!this.ctx) {
-      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const Ctor = window.AudioContext || window.webkitAudioContext;
+      // sampleRate desteklenmezse (eski Safari) varsayılanla devam et.
+      try {
+        this.ctx = this.mobile ? new Ctor({ sampleRate: MOBILE_SAMPLE_RATE }) : new Ctor();
+      } catch {
+        this.ctx = new Ctor();
+      }
       this.master = this.ctx.createGain();
       this.master.gain.value = 1;
       this.master.connect(this.ctx.destination);
@@ -74,7 +117,14 @@ export class Engine {
     for (const entry of entries) {
       // decodeAudioData ArrayBuffer'ı tüketir; kopya vermiyoruz çünkü her
       // stem'i bir kez çözüyoruz.
-      const buffer = await this.ctx.decodeAudioData(entry.arrayBuffer);
+      let buffer = await this.ctx.decodeAudioData(entry.arrayBuffer);
+      if (this.monoDownmix) {
+        const stereo = buffer;
+        buffer = this.#toMono(stereo);
+        // Referansı bırak ki bir sonraki decode'dan önce toplanabilsin.
+        entry.arrayBuffer = null;
+        void stereo;
+      }
       const gainNode = this.ctx.createGain();
       gainNode.connect(this.master);
       this.channels.set(entry.name, {

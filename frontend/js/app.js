@@ -3,7 +3,7 @@
 
 import { loadSettings, saveSettings, isConfigured } from "./settings.js";
 import { Api, ApiError } from "./api.js";
-import { Engine, STEM_ORDER, STEM_LABELS, gainToDb } from "./engine.js";
+import { Engine, STEM_ORDER, STEM_LABELS, gainToDb, isMobile, longSongThresholdSec } from "./engine.js";
 import { Mixer } from "./mixer.js";
 import { ChordStrip, formatTime } from "./chords.js";
 import { MediaBridge } from "./media.js";
@@ -174,10 +174,28 @@ async function handleUpload(file) {
 
 // ---------------------------------------------------------------- oynatıcı
 
+function longSongWarning(song) {
+  if (!isMobile()) return null;
+  const limit = longSongThresholdSec();
+  const duration = Number(song.duration) || 0;
+  if (!Number.isFinite(limit) || duration <= limit) return null;
+  const memory = navigator.deviceMemory;
+  return (
+    `Uzun şarkı (${formatTime(duration)}), telefonda bellek sorunu ` +
+    `çıkabilir.
+Cihaz belleği: ${memory ? memory + " GB" : "bilinmiyor"}, ` +
+    `eşik: ${formatTime(limit)}.
+Yine de açmayı deneyebilirsin.`
+  );
+}
+
 async function openSong(song) {
   showView("player");
-  hideMessage(el("player-message"));
   el("player-title").textContent = song.title || song.id.slice(0, 12);
+
+  // Uyarı gösteriliyor ama AÇMAYA İZİN VERİLİYOR.
+  const warning = longSongWarning(song);
+  if (warning) showMessage(el("player-message"), warning, "warn");
   el("player-meta").textContent = "";
   el("play").disabled = true;
   strip.clear();
