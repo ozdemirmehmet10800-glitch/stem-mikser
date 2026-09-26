@@ -78,6 +78,26 @@
         <span class="time time-remaining" id="time-remaining">-0:00</span>
       </div>
       <div class="transport-row">
+        <div class="metro-wrap">
+          <button class="toggle metro-btn" id="metro-toggle" title="Metronom"
+                  aria-pressed="false" aria-label="Metronom">
+            <svg viewBox="0 0 24 24"><path d="M12 2c.6 0 1.1.4 1.3.9l5.6 16.5c.2.6-.2 1.2-.8 1.4-.1 0-.2.1-.3.1H6.2c-.7 0-1.2-.5-1.2-1.2 0-.1 0-.2.1-.3L10.7 2.9c.2-.5.7-.9 1.3-.9zm0 3.6L8.1 17h7.8L12 5.6zM7 21h10v1H7z"/></svg>
+          </button>
+          <div class="metro-panel" id="metro-panel" hidden>
+            <div class="metro-row">
+              <label for="metro-volume">Ses</label>
+              <input type="range" id="metro-volume" min="0" max="100" value="60">
+            </div>
+            <div class="metro-row">
+              <label for="metro-pan">Sağ &amp; Sol</label>
+              <input type="range" id="metro-pan" min="-100" max="100" value="0">
+            </div>
+            <div class="metro-row">
+              <label>Alt bölüm</label>
+              <div class="metro-subs" id="metro-subs"></div>
+            </div>
+          </div>
+        </div>
         <div class="master">
           <svg viewBox="0 0 24 24" class="vol"><path d="M4 9v6h4l5 5V4L8 9H4zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
           <input type="range" id="master" min="0" max="150" value="100"

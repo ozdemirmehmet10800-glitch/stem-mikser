@@ -9,6 +9,7 @@ import { ChordStrip, formatTime } from "./chords.js";
 import { MediaBridge } from "./media.js";
 import { WakeLock } from "./wakelock.js";
 import { StemCache } from "./stemcache.js";
+import { Metronome, SUBDIVISIONS } from "./metronome.js";
 
 const POLL_MS = 3000;
 
@@ -46,6 +47,7 @@ let currentSong = null;
 let media = null;
 const wakeLock = new WakeLock();
 const stemCache = new StemCache();
+const metronome = new Metronome(engine);
 let lastPositionSync = -1;
 
 // ---------------------------------------------------------------- yardımcı
@@ -278,6 +280,10 @@ async function openSong(song) {
     el("time-current").textContent = "0:00";
     el("time-remaining").textContent = `-${formatTime(duration)}`;
     el("play").disabled = false;
+    // Metronom ızgarası: beat_this vuruşları + downbeat'ler.
+    metronome.setGrid(chords ? chords.beats : [], chords ? chords.downbeats : []);
+    el("metro-toggle").disabled = !(chords && chords.beats && chords.beats.length);
+
     media.setMetadata({
       title: song.title || song.id.slice(0, 12),
       artist: chords ? `${chords.key || ""} · ${Math.round(chords.bpm || 0)} BPM` : "",
@@ -291,6 +297,41 @@ async function openSong(song) {
     showMessage(el("player-message"), describeError(error));
   }
 }
+
+function buildSubdivisionButtons() {
+  const host = el("metro-subs");
+  if (!host) return;
+  host.innerHTML = "";
+  for (const [value, label] of SUBDIVISIONS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "metro-sub" + (value === metronome.subdivision ? " on" : "");
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      metronome.setSubdivision(value);
+      [...host.children].forEach((node) => node.classList.remove("on"));
+      button.classList.add("on");
+    });
+    host.append(button);
+  }
+}
+
+on("metro-toggle", "click", async (event) => {
+  event.stopPropagation();
+  // AudioContext hazır olmalı; bu bir kullanıcı hareketi.
+  await engine.ensureContext();
+  const açık = !metronome.enabled;
+  metronome.setEnabled(açık);
+  el("metro-toggle").setAttribute("aria-pressed", String(açık));
+  el("metro-panel").hidden = !açık;
+});
+
+on("metro-volume", "input", () => {
+  metronome.setVolume(Number(el("metro-volume").value) / 100);
+});
+on("metro-pan", "input", () => {
+  metronome.setPan(Number(el("metro-pan").value) / 100);
+});
 
 async function downloadStem(name, format) {
   if (!currentSong) return;
@@ -335,6 +376,7 @@ function startLoop() {
       setPlayIcon(false);
       media.stopKeeper();
       media.setPlaybackState(false);
+      metronome.stop();
       wakeLock.release();
     }
     // Kilit ekranı konumu: saniyede bir yeter, her karede değil.
@@ -419,6 +461,8 @@ async function startPlayback() {
   media.startKeeper();
   media.setPlaybackState(true);
   await engine.play();
+  metronome.resync();
+  metronome.start();
   setPlayIcon(true);
   media.setPlaybackState(true);
   media.updatePosition();
@@ -427,6 +471,7 @@ async function startPlayback() {
 
 function stopPlayback() {
   engine.pause();
+  metronome.stop();
   setPlayIcon(false);
   media.stopKeeper();
   media.setPlaybackState(false);
@@ -453,6 +498,7 @@ on("seek", "input", () => {
 
 on("seek", "change", async () => {
   await engine.seek(Number(el("seek").value) / 10);
+  metronome.resync();
   seeking = false;
 });
 
@@ -536,11 +582,12 @@ strip = new ChordStrip(
   el("chordstrip"),
   el("chordstrip-track"),
   el("chordstrip-empty"),
-  (time) => engine.seek(time)
+  async (time) => { await engine.seek(time); metronome.resync(); }
 );
 
 media = new MediaBridge(engine, { onSeek: (time) => engine.seek(time) });
 
+buildSubdivisionButtons();
 registerServiceWorker();
 stemCache.requestPersistence();
 

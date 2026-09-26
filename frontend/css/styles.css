@@ -342,7 +342,7 @@ input[type="range"]::-moz-range-thumb {
 
 .transport-row {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: auto 1fr auto 1fr;
   align-items: center;
   margin-top: 8px;
 }
@@ -473,3 +473,43 @@ input[type="range"]::-moz-range-thumb {
 .dl-item:hover { background: var(--panel); }
 .dl-item b { display: block; font-size: 14px; }
 .dl-item span { display: block; font-size: 12px; color: var(--text-faint); }
+
+/* ---------- metronom ---------- */
+
+.metro-wrap { position: relative; margin-right: 10px; }
+.metro-btn { width: 42px; height: 42px; display: grid; place-items: center; }
+.metro-btn svg { width: 20px; height: 20px; fill: currentColor; }
+.metro-btn[aria-pressed="true"] {
+  background: var(--accent); border-color: var(--accent); color: #05242b;
+}
+.metro-panel {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 25;
+  width: 260px;
+  padding: 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+}
+.metro-panel[hidden] { display: none; }
+.metro-row { margin-bottom: 12px; }
+.metro-row:last-child { margin-bottom: 0; }
+.metro-row > label {
+  display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px;
+}
+.metro-row input[type="range"] { width: 100%; }
+.metro-subs { display: flex; gap: 6px; }
+.metro-sub {
+  flex: 1;
+  min-height: 44px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font: inherit; font-size: 13px; font-weight: 600;
+  cursor: pointer;
+}
+.metro-sub.on { background: #d7dde6; border-color: #d7dde6; color: #10141b; }
