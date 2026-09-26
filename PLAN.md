@@ -183,6 +183,26 @@ Tüm uç noktalar Bearer token ister. Token ve imzalama anahtarı Modal Secret't
 - Media Session API ile kilit ekranı play/pause; destekleniyorsa çalma sırasında Screen Wake Lock.
 - Yükleme input'u accept="audio/*".
 
+## Aşama 5 – kalan işler (2/2)
+PWA bitti ve telefonda doğrulandı (Android/Chrome: kuruldu, tam ekran).
+Kalan dört parça, her biri AYRI commit:
+
+- [ ] **Dokunmatik fader'lar.** `<input type="range">` yerine pointer
+      event'li özel bileşen: `touch-action: none`, en az 44 px dokunma alanı,
+      `setPointerCapture` (parmak kaysa bile takip). Erişilebilirlik elle:
+      `role="slider"`, `aria-valuenow`/`aria-valuetext`, ok tuşları.
+- [ ] **Media Session.** Kilit ekranı metadata + play/pause/seek işleyicileri
+      + `setPositionState`. Saf Web Audio ile çoğu platform kilit ekranında
+      kontrol göstermiyor; sessiz döngüsel bir `<audio playsinline>` elementi
+      gerekiyor. Aynı element iOS sessiz anahtarı sorununu da çözüyor.
+- [ ] **Wake Lock.** Çalarken `navigator.wakeLock.request("screen")`,
+      duraklatınca bırak, `visibilitychange`'de yeniden al (arkaplana gidince
+      kilit düşüyor). Desteklenmiyorsa sessizce atla.
+- [ ] **Bellek önlemleri.** Mobilde `AudioContext` `sampleRate: 32000`,
+      stem'ler TEK TEK çözülüp hemen mono'ya indirilecek ve stereo tampon
+      bırakılacak (tepe bellek 6 stereo yerine 1 stereo + 6 mono).
+      Masaüstünde tam kalite. Uyarı eşiği aşağıdaki kurala göre.
+
 ### Aşama 5 notu – bellek uyarı eşiği cihaza göre
 Sabit 6 dakika değil, `navigator.deviceMemory` değerine göre:
 - 8 GB ve üstü: uyarı yok (10 dakikalık yükleme sınırına kadar)
