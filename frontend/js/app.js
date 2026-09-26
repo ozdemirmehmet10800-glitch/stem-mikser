@@ -6,6 +6,7 @@ import { Api, ApiError } from "./api.js";
 import { Engine, STEM_ORDER, STEM_LABELS, gainToDb } from "./engine.js";
 import { Mixer } from "./mixer.js";
 import { ChordStrip, formatTime } from "./chords.js";
+import { MediaBridge } from "./media.js";
 
 const POLL_MS = 3000;
 
@@ -26,6 +27,8 @@ let pollTimer = null;
 let rafHandle = 0;
 let seeking = false;
 let currentSong = null;
+let media = null;
+let lastPositionSync = -1;
 
 // ---------------------------------------------------------------- yardımcı
 
@@ -228,6 +231,12 @@ async function openSong(song) {
     el("time-current").textContent = "0:00";
     el("time-remaining").textContent = `-${formatTime(duration)}`;
     el("play").disabled = false;
+    media.setMetadata({
+      title: song.title || song.id.slice(0, 12),
+      artist: chords ? `${chords.key || ""} · ${Math.round(chords.bpm || 0)} BPM` : "",
+    });
+    media.bindHandlers({ onPlay: startPlayback, onPause: stopPlayback });
+    lastPositionSync = -1;
     setOverlay(false);
     startLoop();
   } catch (error) {
@@ -253,7 +262,16 @@ function startLoop() {
       el("time-current").textContent = formatTime(time);
       el("time-remaining").textContent = `-${formatTime(engine.duration - time)}`;
     }
-    if (engine.checkEnded()) setPlayIcon(false);
+    if (engine.checkEnded()) {
+      setPlayIcon(false);
+      media.stopKeeper();
+      media.setPlaybackState(false);
+    }
+    // Kilit ekranı konumu: saniyede bir yeter, her karede değil.
+    if (time - lastPositionSync > 1 || time < lastPositionSync) {
+      lastPositionSync = time;
+      media.updatePosition();
+    }
     rafHandle = requestAnimationFrame(tick);
   };
   rafHandle = requestAnimationFrame(tick);
@@ -317,22 +335,32 @@ el("upload-input").addEventListener("change", (event) => {
 el("refresh-list").addEventListener("click", refreshLibrary);
 
 el("back-to-library").addEventListener("click", () => {
-  engine.pause();
-  setPlayIcon(false);
+  stopPlayback();
   stopLoop();
   showView("library");
   refreshLibrary();
 });
 
-el("play").addEventListener("click", async () => {
+async function startPlayback() {
   // Autoplay politikası: bu bir kullanıcı hareketi, context burada açılır.
-  if (engine.playing) {
-    engine.pause();
-    setPlayIcon(false);
-  } else {
-    await engine.play();
-    setPlayIcon(true);
-  }
+  await media.startKeeper();
+  await engine.play();
+  setPlayIcon(true);
+  media.setPlaybackState(true);
+  media.updatePosition();
+}
+
+function stopPlayback() {
+  engine.pause();
+  setPlayIcon(false);
+  media.stopKeeper();
+  media.setPlaybackState(false);
+  media.updatePosition();
+}
+
+el("play").addEventListener("click", async () => {
+  if (engine.playing) stopPlayback();
+  else await startPlayback();
 });
 
 el("rewind").addEventListener("click", async () => {
@@ -407,6 +435,8 @@ strip = new ChordStrip(
   el("chordstrip-empty"),
   (time) => engine.seek(time)
 );
+
+media = new MediaBridge(engine, { onSeek: (time) => engine.seek(time) });
 
 registerServiceWorker();
 
