@@ -14,7 +14,10 @@
 
 import { Engine, STEM_ORDER } from "./engine.js";
 import { Metronome } from "./metronome.js";
-import { measureLatency, latencyInfo } from "./stretch.js";
+import {
+  measureLatency, latencyInfo, reportedLatency,
+  DEFAULT_STRETCHER, stretcherInfo, supportsFormants,
+} from "./stretch.js";
 
 const TAP_URL = new URL("./tap-processor.js", import.meta.url).href;
 
@@ -162,9 +165,13 @@ function describe(name, result, note) {
 
 // ------------------------------------------------------------------- akış
 
-export async function runAlignmentCheck(report = () => {}) {
+export async function runAlignmentCheck(report = () => {}, options = {}) {
+  const stretcher = options.stretcher || DEFAULT_STRETCHER;
+  const formants = Boolean(options.formants) && supportsFormants(stretcher);
   const rows = [];
   const engine = new Engine();
+  engine.stretcher = stretcher;
+  engine.formants = formants;
   const metronome = new Metronome(engine);
   let tap = null;
   let sink = null;
@@ -173,6 +180,7 @@ export async function runAlignmentCheck(report = () => {}) {
     await engine.ensureContext();
     const ctx = engine.ctx;
     const sampleRate = ctx.sampleRate;
+    const info = stretcherInfo(stretcher);
     rows.push(
       row(
         "Ortam",
@@ -180,6 +188,15 @@ export async function runAlignmentCheck(report = () => {}) {
         null,
         `${engine.mobile ? "mobil" : "masaüstü"} kipi · çıkış gecikmesi ` +
           `${(engine.outputLatency * 1000).toFixed(0)} ms`
+      )
+    );
+    rows.push(
+      row(
+        "Esnetici",
+        info.label,
+        null,
+        `${info.license} · formant telafisi ` +
+          (info.supportsFormants ? (formants ? "AÇIK" : "kapalı") : "desteklenmiyor")
       )
     );
 
@@ -219,7 +236,7 @@ export async function runAlignmentCheck(report = () => {}) {
     metronome.stop();
 
     const applyRate = async (rate) => {
-      const latency = await measureLatency(sampleRate, rate, 0);
+      const latency = await measureLatency(sampleRate, rate, 0, stretcher);
       await engine.setTempoAndPitch(rate, 0, latency);
       return latency;
     };
@@ -235,12 +252,18 @@ export async function runAlignmentCheck(report = () => {}) {
     };
 
     // --- 1/2/3: sabit hızlar -------------------------------------------
+    // Kütüphanenin kendi bildirdiği gecikme ÇALARKEN okunmalı: stop()
+    // düğümü düşürüyor.
+    let claimed = null;
     for (const [label, rate] of [["1.0x (bypass)", 1], ["0.8x", 0.8], ["1.2x", 1.2]]) {
       report(`${label} ölçülüyor…`);
       await applyRate(rate);
       clear();
       listen(true);
       await startFrom(0);
+      if (claimed === null && engine.stretchNode) {
+        claimed = await reportedLatency(engine.stretchNode, stretcher);
+      }
       await wait(WINDOW_MS);
       halt();
       listen(false);
@@ -326,16 +349,33 @@ export async function runAlignmentCheck(report = () => {}) {
 
     // --- 6: ölçülen esnetici gecikmesi ---------------------------------
     for (const value of [0.8, 1.1, 1.2]) {
-      const info = latencyInfo(sampleRate, value, 0);
+      const hit = latencyInfo(sampleRate, value, 0, stretcher);
       rows.push(
-        info
+        hit
           ? row(
               `Esnetici gecikmesi · ${value}x`,
-              `${(info.seconds * 1000).toFixed(1)} ms`,
-              info.measured,
-              info.measured ? "telefonda ölçüldü" : "ÖLÇÜLEMEDİ, yedek değer kullanıldı"
+              `${(hit.seconds * 1000).toFixed(1)} ms`,
+              hit.measured,
+              hit.measured ? "bu cihazda ölçüldü" : "ÖLÇÜLEMEDİ, yedek değer kullanıldı"
             )
           : row(`Esnetici gecikmesi · ${value}x`, "—", null, "bu hızda ölçüm yapılmadı")
+      );
+    }
+
+    // Kütüphane kendi gecikmesini bildiriyorsa ölçümle karşılaştır.
+    if (claimed !== null && claimed !== undefined) {
+      const measured = latencyInfo(sampleRate, 0.8, 0, stretcher);
+      const delta = measured ? (claimed - measured.seconds) * 1000 : null;
+      rows.push(
+        row(
+          "Kütüphanenin bildirdiği gecikme",
+          `${(claimed * 1000).toFixed(1)} ms`,
+          null,
+          delta === null
+            ? "ölçümle karşılaştırılamadı"
+            : `0.8x ölçümünden ${delta > 0 ? "+" : ""}${delta.toFixed(1)} ms farklı ` +
+              "(hiza satırları hangisinin doğru olduğunu söyler)"
+        )
       );
     }
   } finally {
