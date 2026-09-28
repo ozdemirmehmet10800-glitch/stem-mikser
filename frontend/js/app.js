@@ -10,6 +10,8 @@ import { MediaBridge } from "./media.js";
 import { WakeLock } from "./wakelock.js";
 import { StemCache } from "./stemcache.js";
 import { Metronome, SUBDIVISIONS } from "./metronome.js";
+import { measureLatency, estimateLatency, MIN_RATE, MAX_RATE, MAX_SEMITONES } from "./stretch.js";
+import { transposeKey } from "./tonality.js";
 
 const POLL_MS = 3000;
 
@@ -49,6 +51,20 @@ const wakeLock = new WakeLock();
 const stemCache = new StemCache();
 const metronome = new Metronome(engine);
 let lastPositionSync = -1;
+
+// --- hız / ton durumu ---
+// tempoOffset'in birimi BPM (şarkının tempo'su biliniyorsa), bilinmiyorsa
+// yüzde puanı. BPM cinsinden TAM SAYI sapma tutmanın sebebi: 0 sapma tam
+// olarak 1.0 oranı demek. Kaydırıcıyı doğrudan BPM'de tutsak 127.12'lik bir
+// tempo 127'ye yuvarlanır ve "orijinal" konum 0.999 oranına düşerdi - yani
+// esnetici varsayılanda devre dışı KALMAZDI.
+const RATE_SPAN = 0.5;        // ±%50; MIN_RATE/MAX_RATE ile uyumlu
+let tempoOffset = 0;
+let pitchSemis = 0;
+let originalBpm = 0;          // 0 = bilinmiyor
+let originalKey = null;
+let appliedSemis = 0;
+let stretchGen = 0;           // geciken ölçümün bayat sonucunu atmak için
 
 // ---------------------------------------------------------------- yardımcı
 
@@ -216,6 +232,8 @@ async function openSong(song) {
   if (warning) showMessage(el("player-message"), warning, "warn");
   el("player-meta").textContent = "";
   el("play").disabled = true;
+  if (el("tempo-toggle")) el("tempo-toggle").disabled = true;
+  closeTunePanel();
   strip.clear();
   el("channels").innerHTML = "";
 
@@ -272,9 +290,21 @@ async function openSong(song) {
     strip.build(detail.chords, duration);
 
     const chords = detail.chords;
-    el("player-meta").textContent = chords
-      ? `${chords.key || ""} · ${Math.round(chords.bpm || 0)} BPM`
-      : "";
+
+    // Hız ve ton her şarkıda ORİJİNALE dönüyor: esnetici devre dışı, zincir
+    // source -> gain -> master.
+    originalBpm = chords && Number(chords.bpm) > 0 ? Number(chords.bpm) : 0;
+    originalKey = (chords && chords.key) || null;
+    tempoOffset = 0;
+    pitchSemis = 0;
+    appliedSemis = 0;
+    stretchGen += 1;
+    configureTuneRanges();
+    await engine.resetTempoAndPitch();
+    strip.setTranspose(0, originalKey);
+    if (el("tempo-toggle")) el("tempo-toggle").disabled = false;
+    refreshTuneUi();  // player-meta'yı da yazıyor
+
     el("seek").max = String(Math.max(Math.round(duration * 10), 1));
     el("seek").value = "0";
     el("time-current").textContent = "0:00";
@@ -316,6 +346,177 @@ function buildSubdivisionButtons() {
   }
 }
 
+// ------------------------------------------------------------- hız ve ton
+
+function currentRate() {
+  if (!tempoOffset) return 1;
+  const raw = originalBpm
+    ? (originalBpm + tempoOffset) / originalBpm
+    : 1 + tempoOffset / 100;
+  return Math.min(Math.max(raw, MIN_RATE), MAX_RATE);
+}
+
+function effectiveKey() {
+  if (!originalKey) return null;
+  if (!pitchSemis) return originalKey;
+  return transposeKey(originalKey, pitchSemis) || originalKey;
+}
+
+function refreshMeta() {
+  const parts = [];
+  const key = effectiveKey();
+  if (key) parts.push(key);
+  if (originalBpm) parts.push(`${Math.round(originalBpm * currentRate())} BPM`);
+  el("player-meta").textContent = parts.join(" · ");
+}
+
+// Kaydırıcı sınırları şarkıya göre: tempo biliniyorsa BPM, yoksa yüzde.
+function configureTuneRanges() {
+  const tempo = el("tempo-range");
+  const span = originalBpm ? Math.max(1, Math.round(originalBpm * RATE_SPAN)) : 50;
+  if (tempo) {
+    tempo.min = String(-span);
+    tempo.max = String(span);
+    tempo.value = "0";
+  }
+  const pitch = el("pitch-range");
+  if (pitch) {
+    pitch.min = String(-MAX_SEMITONES);
+    pitch.max = String(MAX_SEMITONES);
+    pitch.value = "0";
+  }
+}
+
+function signed(value) {
+  return `${value > 0 ? "+" : ""}${value}`;
+}
+
+function refreshTuneUi() {
+  const rate = currentRate();
+  const percent = Math.round(rate * 100);
+
+  if (el("tempo-value")) {
+    el("tempo-value").textContent = originalBpm
+      ? `${Math.round(originalBpm + tempoOffset)} BPM`
+      : `%${percent}`;
+  }
+  if (el("tempo-sub")) {
+    el("tempo-sub").textContent = originalBpm
+      ? `%${percent} · orijinal ${Math.round(originalBpm)} BPM`
+      : "şarkının temposu bilinmiyor";
+  }
+
+  if (el("pitch-value")) {
+    if (originalKey) {
+      el("pitch-value").textContent = pitchSemis
+        ? `${originalKey} → ${effectiveKey()}`
+        : originalKey;
+    } else {
+      el("pitch-value").textContent = pitchSemis
+        ? `${signed(pitchSemis)} yarım ses`
+        : "orijinal ton";
+    }
+  }
+  if (el("pitch-sub")) {
+    el("pitch-sub").textContent = pitchSemis
+      ? `${signed(pitchSemis)} yarım ses`
+      : "orijinal";
+  }
+
+  if (el("tempo-reset")) el("tempo-reset").disabled = tempoOffset === 0;
+  if (el("pitch-reset")) el("pitch-reset").disabled = pitchSemis === 0;
+  // Panel kapalıyken de esneticinin açık olduğu düğmeden görünsün.
+  if (el("tempo-toggle")) {
+    el("tempo-toggle").classList.toggle("changed", tempoOffset !== 0 || pitchSemis !== 0);
+  }
+  refreshMeta();
+}
+
+/**
+ * Hız ve tonu motora uygular.
+ *
+ * measure=false (kaydırıcı SÜRÜKLENİRKEN): son bilinen gecikmeyle canlı
+ * uygulanıyor, ölçüm yapılmıyor - her adımda ölçmek telefonda takılıyor.
+ * measure=true (kaydırıcı BIRAKILINCA, -/+ ve sıfırlamada): taze ölçüm
+ * alınıp yeniden çıpalanıyor, böylece metronom ve imleç tam oturuyor.
+ */
+async function applyStretch(measure) {
+  const rate = currentRate();
+  const semis = pitchSemis;
+  refreshTuneUi();
+  if (semis !== appliedSemis) {
+    appliedSemis = semis;
+    strip.setTranspose(semis, originalKey);
+  }
+
+  const ctx = engine.ctx;
+  if (!ctx) return;  // şarkı açılmadan buraya gelinmiyor, yine de korunalı
+
+  const gen = ++stretchGen;
+  const guess = estimateLatency(ctx.sampleRate, rate, semis);
+  await engine.setTempoAndPitch(rate, semis, guess);
+  media.updatePosition();
+  if (!measure) return;
+
+  const measured = await measureLatency(ctx.sampleRate, rate, semis);
+  // Kullanıcı ölçüm sürerken başka bir değere geçtiyse bu sonuç bayat.
+  if (gen !== stretchGen) return;
+  if (Math.abs(measured - guess) < 0.002) return;
+  await engine.setTempoAndPitch(rate, semis, measured);
+  media.updatePosition();
+}
+
+function clampRange(id, value) {
+  const node = el(id);
+  if (!node) return Math.round(value);
+  return Math.min(Math.max(Math.round(value), Number(node.min)), Number(node.max));
+}
+
+function setTempoOffset(value, measure) {
+  const next = clampRange("tempo-range", value);
+  if (next === tempoOffset && !measure) return undefined;
+  tempoOffset = next;
+  if (el("tempo-range")) el("tempo-range").value = String(next);
+  return applyStretch(measure);
+}
+
+function setPitchSemis(value, measure) {
+  const next = clampRange("pitch-range", value);
+  if (next === pitchSemis && !measure) return undefined;
+  pitchSemis = next;
+  if (el("pitch-range")) el("pitch-range").value = String(next);
+  return applyStretch(measure);
+}
+
+function closeTunePanel() {
+  if (!el("tempo-panel")) return;
+  el("tempo-panel").hidden = true;
+  el("tempo-toggle").setAttribute("aria-pressed", "false");
+}
+
+on("tempo-toggle", "click", async (event) => {
+  event.stopPropagation();
+  // AudioContext hazır olmalı; bu bir kullanıcı hareketi.
+  await engine.ensureContext();
+  const open = el("tempo-panel").hidden;
+  el("tempo-panel").hidden = !open;
+  el("tempo-toggle").setAttribute("aria-pressed", String(open));
+  if (open && el("metro-panel")) el("metro-panel").hidden = true;
+});
+
+// input = sürükleme (ölçüm yok), change = bırakma (ölçüm var).
+on("tempo-range", "input", () => setTempoOffset(Number(el("tempo-range").value), false));
+on("tempo-range", "change", () => setTempoOffset(Number(el("tempo-range").value), true));
+on("tempo-minus", "click", () => setTempoOffset(tempoOffset - 1, true));
+on("tempo-plus", "click", () => setTempoOffset(tempoOffset + 1, true));
+on("tempo-reset", "click", () => setTempoOffset(0, true));
+
+on("pitch-range", "input", () => setPitchSemis(Number(el("pitch-range").value), false));
+on("pitch-range", "change", () => setPitchSemis(Number(el("pitch-range").value), true));
+on("pitch-minus", "click", () => setPitchSemis(pitchSemis - 1, true));
+on("pitch-plus", "click", () => setPitchSemis(pitchSemis + 1, true));
+on("pitch-reset", "click", () => setPitchSemis(0, true));
+
 on("metro-toggle", "click", async (event) => {
   event.stopPropagation();
   // AudioContext hazır olmalı; bu bir kullanıcı hareketi.
@@ -324,6 +525,7 @@ on("metro-toggle", "click", async (event) => {
   metronome.setEnabled(açık);
   el("metro-toggle").setAttribute("aria-pressed", String(açık));
   el("metro-panel").hidden = !açık;
+  if (açık) closeTunePanel();
 });
 
 on("metro-volume", "input", () => {
@@ -365,7 +567,10 @@ function setPlayIcon(playing) {
 function startLoop() {
   cancelAnimationFrame(rafHandle);
   const tick = () => {
-    const time = engine.currentTime;
+    // visualTime: KULAĞA GİDEN konum. currentTime esneticiden çıkanı
+    // gösteriyor, ona ctx.outputLatency daha eklenecek - Bluetooth
+    // kulaklıkta 200 ms'yi buluyor ve imleç sesin önüne geçiyor.
+    const time = engine.visualTime;
     strip.update(time);
     if (!seeking) {
       el("seek").value = String(Math.round(time * 10));

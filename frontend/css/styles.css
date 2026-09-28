@@ -438,7 +438,70 @@ input[type="range"]::-moz-range-thumb {
   .topbar h1 { font-size: 24px; }
   .master { max-width: 150px; }
   .master-value { display: none; }
+  /* Panel 288 px; dar ekranda sol kenardan taşmasın. */
+  .tempo-panel { width: min(288px, calc(100vw - 24px)); }
 }
+
+/* ---------- hız ve ton ---------- */
+
+.tempo-wrap { position: relative; margin-right: 10px; }
+.tempo-btn { width: 42px; height: 42px; display: grid; place-items: center; }
+.tempo-btn svg { width: 20px; height: 20px; fill: currentColor; }
+.tempo-btn[aria-pressed="true"] {
+  background: var(--accent); border-color: var(--accent); color: #05242b;
+}
+/* Esnetici AÇIK ama panel kapalıyken de belli olsun. */
+.tempo-btn.changed { border-color: var(--accent); color: var(--accent); }
+.tempo-btn[aria-pressed="true"].changed { color: #05242b; }
+
+.tempo-panel {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 25;
+  width: 288px;
+  padding: 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+}
+.tempo-panel[hidden] { display: none; }
+
+.tune-row { margin-bottom: 16px; }
+.tune-row:last-child { margin-bottom: 0; }
+.tune-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 8px; margin-bottom: 6px;
+}
+.tune-head > label { font-size: 12px; color: var(--text-dim); }
+.tune-reset {
+  background: none; border: 0; padding: 0;
+  color: var(--accent); font: inherit; font-size: 11px;
+  cursor: pointer; text-align: right;
+}
+.tune-reset:disabled { color: var(--text-faint); cursor: default; }
+
+.tune-line { display: flex; align-items: center; gap: 8px; }
+.tune-step {
+  flex: 0 0 44px;
+  min-width: 44px; min-height: 44px;   /* dokunma alanı */
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit; font-size: 20px; line-height: 1;
+  cursor: pointer;
+}
+.tune-step:active { background: var(--panel-2); }
+.tune-value { flex: 1; text-align: center; }
+.tune-value b {
+  display: block;
+  font-size: 17px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.tune-value span { display: block; font-size: 11px; color: var(--text-faint); }
+.tune-row input[type="range"] { width: 100%; margin-top: 8px; }
 
 /* ---------- indirme menüsü ---------- */
 
@@ -476,7 +539,8 @@ input[type="range"]::-moz-range-thumb {
 
 /* ---------- metronom ---------- */
 
-.metro-wrap { position: relative; margin-right: 10px; }
+.transport-left { display: flex; align-items: center; gap: 8px; }
+.metro-wrap { position: relative; }
 .metro-btn { width: 42px; height: 42px; display: grid; place-items: center; }
 .metro-btn svg { width: 20px; height: 20px; fill: currentColor; }
 .metro-btn[aria-pressed="true"] {

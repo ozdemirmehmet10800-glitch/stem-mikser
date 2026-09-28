@@ -78,6 +78,7 @@
         <span class="time time-remaining" id="time-remaining">-0:00</span>
       </div>
       <div class="transport-row">
+        <div class="transport-left">
         <div class="metro-wrap">
           <button class="toggle metro-btn" id="metro-toggle" title="Metronom"
                   aria-pressed="false" aria-label="Metronom">
@@ -97,6 +98,60 @@
               <div class="metro-subs" id="metro-subs"></div>
             </div>
           </div>
+        </div>
+
+        <!-- hız ve ton -->
+        <div class="tempo-wrap">
+          <button class="toggle tempo-btn" id="tempo-toggle" title="Hız ve ton"
+                  aria-pressed="false" aria-label="Hız ve ton" disabled>
+            <svg viewBox="0 0 24 24"><path d="M12 4a9 9 0 0 1 8.6 11.7l-1.9-.6A7 7 0 1 0 12 6V4zm1 3.6 4.2 5.6a2.3 2.3 0 1 1-3.1 3.1L8.5 12l4.5-4.4zM3.4 15.7A9 9 0 0 1 12 4v2a7 7 0 0 0-6.7 9.1l-1.9.6z"/></svg>
+          </button>
+          <div class="tempo-panel" id="tempo-panel" hidden>
+
+            <div class="tune-row">
+              <div class="tune-head">
+                <label for="tempo-range">Tempo</label>
+                <button type="button" class="tune-reset" id="tempo-reset" disabled>
+                  Orijinale geri dön
+                </button>
+              </div>
+              <div class="tune-line">
+                <button type="button" class="tune-step" id="tempo-minus"
+                        aria-label="Tempoyu azalt">&minus;</button>
+                <div class="tune-value">
+                  <b id="tempo-value">—</b>
+                  <span id="tempo-sub"></span>
+                </div>
+                <button type="button" class="tune-step" id="tempo-plus"
+                        aria-label="Tempoyu artır">+</button>
+              </div>
+              <input type="range" id="tempo-range" min="-50" max="50" value="0" step="1"
+                     aria-label="Tempo">
+            </div>
+
+            <div class="tune-row">
+              <div class="tune-head">
+                <label for="pitch-range">Ton</label>
+                <button type="button" class="tune-reset" id="pitch-reset" disabled>
+                  Orijinale geri dön
+                </button>
+              </div>
+              <div class="tune-line">
+                <button type="button" class="tune-step" id="pitch-minus"
+                        aria-label="Tonu indir">&minus;</button>
+                <div class="tune-value">
+                  <b id="pitch-value">—</b>
+                  <span id="pitch-sub"></span>
+                </div>
+                <button type="button" class="tune-step" id="pitch-plus"
+                        aria-label="Tonu yükselt">+</button>
+              </div>
+              <input type="range" id="pitch-range" min="-6" max="6" value="0" step="1"
+                     aria-label="Ton">
+            </div>
+
+          </div>
+        </div>
         </div>
         <div class="master">
           <svg viewBox="0 0 24 24" class="vol"><path d="M4 9v6h4l5 5V4L8 9H4zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>

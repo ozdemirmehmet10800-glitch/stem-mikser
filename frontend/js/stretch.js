@@ -53,9 +53,10 @@ export const STRETCH_QUALITY = { quickSeek: false };
 const PROBE_SECONDS = 1.2;   // en kötü durumda (~0.2 sn) fazlasıyla yeter
 const PROBE_LEVEL = 0.5;
 const PROBE_FLOOR = 1e-3;
-// Ölçüm başarısız olursa: 32 kHz'de sampleReq ~4256 kare = 133 ms'lik
-// hesaplanmış değerin biraz üstü. Tamamen hizasız kalmaktan iyi.
-const FALLBACK_LATENCY = 0.16;
+// Ölçüm başarısız olursa. Masaüstü Chrome'da ölçülen aralık 124-145 ms
+// (0.5x..1.5x, ±6 yarım ses; 32 ve 44,1 kHz), ortası ~135 ms. Tamamen
+// hizasız kalmaktan iyi.
+const FALLBACK_LATENCY = 0.135;
 // Oran ızgarası: gecikme hızla çok yavaş değişiyor (sequenceMs eğimi
 // 20 ms/birim hız), 0.05 adımda hata 1 ms'nin altında. BPM adımı başına
 // ayrı ölçüm yapmak yerine ızgaraya yuvarlıyoruz.
@@ -63,6 +64,7 @@ const RATE_GRID = 0.05;
 
 const latencyCache = new Map();
 const moduleCache = new WeakMap();
+let lastMeasured = null;
 
 export function isBypass(rate, semitones) {
   return Math.abs(rate - 1) < 1e-6 && Math.round(semitones) === 0;
@@ -119,6 +121,23 @@ export function cachedLatency(sampleRate, rate, semitones) {
 }
 
 /**
+ * Beklemeden kullanılabilir bir gecikme değeri: önbellekteki ölçüm, yoksa
+ * en son ölçülen herhangi bir değer, o da yoksa varsayılan.
+ *
+ * Kaydırıcı SÜRÜKLENİRKEN bu kullanılıyor - her adımda ölçüm yapmak
+ * telefonda takılmaya yol açıyor (worklet modülü her offline context'e
+ * yeniden yükleniyor). Taze ölçüm kaydırıcı BIRAKILINCA yapılıyor.
+ */
+export function estimateLatency(sampleRate, rate, semitones) {
+  const exact = cachedLatency(sampleRate, rate, semitones);
+  if (exact !== null) return exact;
+  // Komşu bir ayarın ölçümü, varsayılandan çok daha yakın: gecikme hızla
+  // yavaş değişiyor (0.5x -> 1.5x arası toplam ~60 ms).
+  if (lastMeasured !== null) return lastMeasured;
+  return FALLBACK_LATENCY;
+}
+
+/**
  * Esneticinin çıkış gecikmesini ÖLÇER (tahmin etmez).
  *
  * WSOLA, sampleReq kadar girdi birikmeden çıkış üretmiyor; o ana kadar
@@ -140,6 +159,7 @@ export async function measureLatency(sampleRate, rate, semitones) {
     console.warn("[stretch] gecikme ölçülemedi, varsayılan kullanılıyor:", error);
   }
   latencyCache.set(key, value);
+  lastMeasured = value;
   return value;
 }
 

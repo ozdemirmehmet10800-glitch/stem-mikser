@@ -115,10 +115,12 @@ export class MediaBridge {
     };
     set("play", () => onPlay());
     set("pause", () => onPause());
+    // visualTime: kilit ekranı kullanıcının DUYDUĞU konumu gösteriyor,
+    // ileri/geri de ona göre olsun.
     set("seekbackward", (details) =>
-      this.onSeek(this.engine.currentTime - (details.seekOffset || 10)));
+      this.onSeek(this.engine.visualTime - (details.seekOffset || 10)));
     set("seekforward", (details) =>
-      this.onSeek(this.engine.currentTime + (details.seekOffset || 10)));
+      this.onSeek(this.engine.visualTime + (details.seekOffset || 10)));
     set("seekto", (details) => {
       if (details.seekTime != null) this.onSeek(details.seekTime);
     });
@@ -138,8 +140,10 @@ export class MediaBridge {
     try {
       navigator.mediaSession.setPositionState({
         duration,
-        playbackRate: 1,
-        position: Math.min(Math.max(this.engine.currentTime, 0), duration),
+        // Hız esnetmesi açıkken kilit ekranı çubuğu da o hızda ilerlemeli;
+        // sabit 1 verilirse şarkı ile çubuk birbirinden kopuyor.
+        playbackRate: this.engine.playing ? this.engine.rate : 1,
+        position: Math.min(Math.max(this.engine.visualTime, 0), duration),
       });
     } catch {
       // Bazı tarayıcılar position > duration'da atıyor; yut.

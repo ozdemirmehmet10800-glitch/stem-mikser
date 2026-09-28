@@ -7,6 +7,8 @@
 // Izgara görünümü (ölçü başına 4 sabit vuruş hücresi) şimdilik kapsam dışı;
 // PLAN.md'de "sonraki iyileştirmeler" altında.
 
+import { transposeLabel, namesForKey, NO_CHORD } from "./tonality.js";
+
 const TARGET_BAR_WIDTH = 168; // px; pxPerSec buradan türetiliyor
 const PLAYHEAD_RATIO = 0.15;  // şeridin solundan oran
 
@@ -19,6 +21,9 @@ export class ChordStrip {
     this.cells = [];
     this.pxPerSec = 0;
     this.activeIndex = -1;
+    // Ton kaydırma durumu: etiketler bununla yeniden yazılıyor.
+    this.semitones = 0;
+    this.songKey = null;
   }
 
   clear() {
@@ -91,21 +96,48 @@ export class ChordStrip {
         const cellStart = Math.max(chord.start, barStart);
         const cellEnd = Math.min(chord.end, barEnd);
         const cell = document.createElement("div");
-        cell.className = "chord-cell" + (chord.label === "N" ? " none" : "");
-        cell.textContent = chord.label === "N" ? "·" : chord.label;
+        cell.className = "chord-cell" + (chord.label === NO_CHORD ? " none" : "");
         cell.style.flexGrow = String(Math.max(cellEnd - cellStart, 0.01));
-        cell.title = `${chord.label}  ${formatTime(chord.start)}`;
         cell.addEventListener("click", () => {
           if (this.onSeek) this.onSeek(chord.start);
         });
         bar.append(cell);
-        this.cells.push({ el: cell, start: cellStart, end: cellEnd });
+        // label ORİJİNAL etiket; ekrandaki metin #relabel'dan geliyor.
+        this.cells.push({
+          el: cell, start: cellStart, end: cellEnd,
+          label: chord.label, labelStart: chord.start,
+        });
       }
       this.track.append(bar);
     }
 
     this.track.style.width = `${endTime * this.pxPerSec}px`;
+    this.#relabel();
     this.update(0);
+  }
+
+  /**
+   * Ton değişince şerit yeniden KURULMUYOR: sadece etiket metinleri
+   * yenileniyor, kaydırma konumu ve etkin hücre yerinde kalıyor.
+   *
+   * Yazım (bemol/diyez) YENİ tona göre seçiliyor - Fm'de "Ab" olan akor
+   * +2 yarım sesle "Bb" olur, "A#" değil.
+   */
+  setTranspose(semitones, songKey) {
+    this.semitones = Math.round(Number(semitones) || 0);
+    this.songKey = songKey || null;
+    this.#relabel();
+  }
+
+  #relabel() {
+    if (!this.cells.length) return;
+    const shift = this.semitones;
+    const names = namesForKey(this.songKey, shift);
+    for (const cell of this.cells) {
+      const label = shift === 0 ? cell.label : transposeLabel(cell.label, shift, names);
+      cell.el.textContent = label === NO_CHORD ? "·" : label;
+      cell.el.title = `${label}  ${formatTime(cell.labelStart)}`;
+    }
   }
 
   update(time) {
