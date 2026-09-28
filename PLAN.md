@@ -709,11 +709,46 @@ veriyor; yanlış adımla bakıldığında 0.113'e kadar çıkabildiği için e�
 Düzeltme adayları: `C-fp32` (vokal geçişi fp32), `C-ov4` (num_overlap 4),
 `C-fp32-ov4` (ikisi). Kitaplıkta ayrı ad olarak çıkıyorlar.
 
+### Referans kontrolü: bizim `_demix` MSST'ninkiyle aynı mı?
+`_demix`'i MSST'nin generic dalına BAKARAK yazdık ama birebir aynı olduğunu
+hiç kanıtlamadık. Cızırtı bizim parça birleştirmemizden geliyorsa (B-max'taki
+cızırtı da) önce bunu bilmek gerek.
+
+`::reference` MSST'nin GERÇEK `demix()`'ini aynı checkpoint ve ayarlarla
+çağırıp çıktıları örnek bazında karşılaştırıyor. Bunun için MSST'nin
+`utils/model_utils.py`'si de indiriliyor (modül düzeyi bağımlılıkları hafif:
+numpy, torch, ml_collections, tqdm - dataset/losses/metrics YOK).
+
+Eşik: en kötü fark **-60 dB altındaysa aynı** (kayan nokta gürültüsü).
+Üstündeyse gerçek fark var ve cızırtı önce orada aranmalı.
+
+Bilinen bir uyuşmazlık adayı: MSST `result.div_(counter)` yapıyor, biz
+`counter.clamp(min=1e-8)` ile bölüyoruz. Kenarlarda sayaç sıfıra yakınsa
+sonuç ayrışır.
+
+### Ek adaylar (bu turda eklendi)
+- **C-inst:** demucs'a "karışım − B vokali" yerine B'nin KENDİ enstrümantali
+  (vokal dışı 5 stem toplamı) veriliyor. Çıkarma olmadığı için vokal
+  tahminindeki hata enstrümantale sızmıyor; bedeli toplamın tam
+  korunmaması (~-33 dB kabul edildi).
+- **E (ensemble vokal):** vokal = MelBand ve BS-Roformer vokallerinin
+  ortalaması. Gerekçe: BS-Roformer daha az sızıntı ama daha çok artefakt
+  üretiyor (SIR/SAR takası); MelBand tersi. İki modelin ilintisi de
+  raporlanıyor - 1'e yakınsa ensemble'ın kazancı sınırlı demektir.
+  Ağırlıklı ortalama DENENMEDİ: tek şarkıda ağırlık seçmek aşırı uyum.
+
 ### İLERİDE denenecek (şimdi değil)
-**Davulu da B'den al.** Below The Surface'te demucs'un davul stem'ine
-piyano sızıyor; B'nin davulu kulak testinde iyiydi. C'nin iskeleti buna
-hazır: vokal gibi davul da B'den alınıp enstrümantalden çıkarılabilir,
-kalan dört stem demucs'ta kalır. Önce C'nin cızırtısı çözülsün.
+**Davulu ve piyanoyu da B'den al.** Below The Surface'te demucs'un davul
+stem'ine piyano sızıyor; B'nin davulu ve piyanosu kulak testinde iyiydi.
+Ayrıca `htdemucs_6s`'in piyanosu RESMEN zayıf - Demucs'un kendi README'si
+6 kaynaklı modelin piyano ayrımının kötü olduğunu söylüyor. C'nin iskeleti
+buna hazır: vokal gibi davul/piyano da B'den alınıp enstrümantalden
+çıkarılabilir, kalan stem'ler demucs'ta kalır. Önce C'nin cızırtısı çözülsün.
+
+**Enstrümanlar için ensemble.** MVSEP bas/davul/diğer için demucs
+ensemble'ı kullanıyor (`htdemucs_ft` dahil). Bizde vokal için E denendi;
+aynı fikir enstrümanlara da uygulanabilir. GPU süresi modelle doğrusal
+arttığı için maliyeti ayrıca ölçülmeli.
 
 ### Hâlâ ölçülmemiş, deneyin cevaplayacağı
 - Roformer'ın T4'teki süresi (Demucs'a EK geliyor, yerine geçmiyor).

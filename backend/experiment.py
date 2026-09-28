@@ -279,6 +279,13 @@ def fetch_weights(check_mirror: bool = True) -> dict:
     for name in MSST_FILES:
         size = _download(f"{MSST_RAW}/models/bs_roformer/{name}", models_dir / name)
         print(f"[msst] {name}: {size} bayt")
+    # MSST'nin gerçek demix'i referans kontrolü için gerekiyor.
+    utils_dir = root / "msst" / "utils"
+    utils_dir.mkdir(parents=True, exist_ok=True)
+    (utils_dir / "__init__.py").write_text("", encoding="utf-8")
+    size = _download(f"{MSST_RAW}/utils/model_utils.py", utils_dir / "model_utils.py")
+    print(f"[msst] utils/model_utils.py: {size} bayt")
+
     patch = _patch_msst_attend(models_dir)
     print(f"[msst] attend.py yamasi: {patch}")
     report["msst_commit"] = MSST_SHA
@@ -319,6 +326,9 @@ gpu_image = (
         "beartype==0.19.0",    # MSST model dosyaları isteğe bağlı değil, import ediyor
         "librosa==0.11.0",     # yalnız mel filtre bankası için (filters)
         "PyYAML==6.0.2",
+        # MSST'nin GERÇEK demix'ini referans olarak çağırabilmek için.
+        "ml-collections==1.0.0",
+        "tqdm==4.67.1",
     )
     .env({"HF_HOME": DEMUCS_WEIGHTS, "TORCH_HOME": DEMUCS_WEIGHTS})
     .run_function(_warm_demucs)
@@ -1019,7 +1029,8 @@ def _demucs_stage(demucs, instrumental, sources: list):
     max_containers=1,      # min_containers YOK
 )
 def run_c(song_id: str, num_overlap: int = 2, suffix: str = "c",
-          label: str = "C", fp32: bool = False) -> dict:
+          label: str = "C", fp32: bool = False,
+          instrumental_from_model: bool = False) -> dict:
     """A ile AYNI iskelet, vokal kaynağı farklı.
 
     Kulak testinde vokalin en temizi B'nin modeli çıktı ama B'nin bası ve
@@ -1080,16 +1091,34 @@ def run_c(song_id: str, num_overlap: int = 2, suffix: str = "c",
         out, had_nan = _demix(roformer, mix, config, num_overlap, use_fp16)
     names = list(config["training"]["instruments"])
     vocals = out[names.index("vocals")]
+    # C-inst modelin öteki stem'lerine de ihtiyaç duyuyor; yalnız o kipte
+    # tutuyoruz, yoksa bellekte boşuna 6 kanal duruyor.
+    out_all = out if instrumental_from_model else None
     stage1_seconds = round(time.time() - stage1_started, 2)
     vram_stage1 = _peak_vram()
     print(f"[roformer-B] {stage1_seconds} sn, fp16={use_fp16}, {vram_stage1}")
 
-    del roformer, out
+    del roformer
+    if out_all is None:
+        del out
     torch.cuda.empty_cache()
 
     # --- 2. aşama: enstrümantal -> demucs ---------------------------------
-    # Çıkarma TANIM GEREĞİ tam: enstrümantal = karışım - vokal.
-    instrumental = mix - vocals
+    if instrumental_from_model:
+        # C-inst: modelin KENDİ enstrümantali (vokal dışı 5 stem toplamı).
+        # Çıkarma yapılmadığı için vokal tahminindeki hata enstrümantale
+        # sızmıyor; bedeli toplamın artık tam korunmaması (~-33 dB kabul).
+        instrumental = None
+        for name in names:
+            if name == "vocals":
+                continue
+            piece = out_all[names.index(name)]
+            instrumental = piece.copy() if instrumental is None else instrumental + piece
+        print("[enstrumantal] modelin kendi 5 stem toplamindan")
+    else:
+        # Çıkarma TANIM GEREĞİ tam: enstrümantal = karışım - vokal.
+        instrumental = mix - vocals
+        print("[enstrumantal] karisim - vokal")
     by_name, stage2_seconds, vram_stage2 = _demucs_stage(
         demucs, instrumental, demucs_sources
     )
@@ -1158,7 +1187,7 @@ def run_c(song_id: str, num_overlap: int = 2, suffix: str = "c",
 
 @app.local_entrypoint()
 def analyze(count: int = 3, must_contain: str = "HAZBIN", song_id: str = "",
-            variants: str = ",a,b,c,cfp32,cov4,cboth"):
+            variants: str = ",a,b,c,cfp32,cov4,cboth,cinst,e"):
     """Kulak testinden sonra: içerik hangi stem'e gitti?
 
         modal run backend/experiment.py::analyze
@@ -1214,9 +1243,11 @@ def _print_analysis(report: dict):
 # "B-max'ta cızırtı") tahminle değil sayıyla açıklanıyor. Hepsi Volume'daki
 # FLAC master'lardan okunuyor, GPU gerekmiyor.
 
+# PyYAML ŞART: analiz konfiglerden chunk/adım geometrisini okuyor.
+# İlk sürümde unutulmuştu, ::crackle ModuleNotFoundError ile düştü.
 analysis_image = modal.Image.debian_slim(python_version="3.11").apt_install(
     "ffmpeg"
-).pip_install("numpy==1.26.4", "soundfile==0.13.1")
+).pip_install("numpy==1.26.4", "soundfile==0.13.1", "PyYAML==6.0.2")
 
 # Bant sınırları: bas <150 Hz (kullanıcının sorduğu), orta, tiz.
 BANDS = ((0.0, 150.0), (150.0, 2000.0), (2000.0, 22050.0))
@@ -1300,7 +1331,7 @@ def _correlation(first, second) -> float:
     timeout=1800,
     memory=8192,
 )
-def analyze_variants(song_id: str, variants: str = ",a,b,c,cfp32,cov4,cboth") -> dict:
+def analyze_variants(song_id: str, variants: str = ",a,b,c,cfp32,cov4,cboth,cinst,e") -> dict:
     """Bir şarkının tüm yöntem çıktılarını yan yana ölçer."""
     import numpy as np
 
@@ -1476,7 +1507,7 @@ def _variant_scale(mix, song_id: str):
     timeout=1800,
     memory=8192,
 )
-def analyze_instrumental(song_id: str, variants: str = "a,c,cfp32,cov4,cboth") -> dict:
+def analyze_instrumental(song_id: str, variants: str = "a,c,cfp32,cov4,cboth,cinst,e") -> dict:
     """Her yöntemin "karışım - vokal" enstrümantalini ölçer.
 
     Vokal stem'leri DİSKTEN okunuyor, model yeniden çalıştırılmıyor.
@@ -1554,7 +1585,7 @@ def analyze_instrumental(song_id: str, variants: str = "a,c,cfp32,cov4,cboth") -
 
 @app.local_entrypoint()
 def crackle(song_id: str = "", must_contain: str = "HAZBIN",
-            variants: str = "a,c,cfp32,cov4,cboth"):
+            variants: str = "a,c,cfp32,cov4,cboth,cinst,e"):
     """Cızırtının kaynağını ölç.
 
         modal run backend/experiment.py::crackle
@@ -1586,6 +1617,272 @@ def crackle(song_id: str = "", must_contain: str = "HAZBIN",
         flag = "KUMELENME VAR" if best["top_bin_share"] > 0.25 else "dagilmis"
         print(f"  {name:<26} en yuksek pay {best['top_bin_share']:.3f} "
               f"({best['model']}/{best['mode']}, adim {best['step_seconds']} sn) -> {flag}")
+
+
+# --------------------------------------------------------------------------
+# a) REFERANS KONTROLÜ: bizim _demix, MSST'nin demix'iyle aynı mı?
+# --------------------------------------------------------------------------
+# _demix'i MSST'nin generic dalına bakarak yazdık ama BİREBİR aynı olduğunu
+# hiç kanıtlamadık. Cızırtı bizim kodumuzdan geliyorsa önce bunu bilmeliyiz.
+# MSST'nin GERÇEK demix'ini aynı checkpoint ve ayarlarla çağırıp çıktıları
+# örnek bazında karşılaştırıyoruz.
+
+def _as_config_dict(config: dict):
+    """MSST'nin demix'i ConfigDict bekliyor (config.audio.chunk_size gibi)."""
+    from ml_collections import ConfigDict
+
+    return ConfigDict(config)
+
+
+@app.function(
+    image=gpu_image,
+    gpu="T4",
+    volumes={DATA_DIR: volume},
+    timeout=3600,
+    max_containers=1,
+)
+def reference_check(song_id: str, seconds: float = 60.0) -> dict:
+    """Bizim _demix ile MSST'nin demix'ini aynı girdide karşılaştırır.
+
+    seconds: karşılaştırma için şarkının ilk N saniyesi (tam şarkı iki kez
+    çıkarım demek; 60 sn fark olup olmadığını görmeye fazlasıyla yeter).
+    """
+    import sys
+
+    import numpy as np
+    import torch
+
+    volume.reload()
+    root = pathlib.Path(EXP_WEIGHTS)
+    config = _load_config(root / "bs_roformer_sw.yaml")
+    samplerate = int(config["audio"]["sample_rate"])
+    channels = int(config["audio"]["num_channels"])
+
+    model = _build_model("bs", config)
+    _load_checkpoint(model, root / "bs_roformer_sw.ckpt", "cuda")
+
+    mix = _decode(_find_input(song_id), samplerate, channels)
+    if seconds > 0:
+        mix = mix[:, : int(seconds * samplerate)]
+    print(f"[ref] karsilastirma girdisi {mix.shape}")
+
+    num_overlap = int(config.get("inference", {}).get("num_overlap", 2))
+
+    ours, ours_nan = _demix(model, mix, config, num_overlap, True)
+    print(f"[ref] bizimki bitti, nan={ours_nan}")
+
+    if _msst_path() not in sys.path:
+        sys.path.insert(0, _msst_path())
+    from utils.model_utils import demix as msst_demix
+
+    theirs = msst_demix(
+        _as_config_dict(config), model, mix, torch.device("cuda"),
+        model_type="bs_roformer", pbar=False,
+    )
+    # MSST sözlük döndürüyor (enstrüman -> dizi); bizimki (stem, kanal, n).
+    names = list(config["training"]["instruments"])
+    if isinstance(theirs, dict):
+        theirs = np.stack([theirs[name] for name in names], axis=0)
+    print(f"[ref] MSST bitti, bicim={theirs.shape}")
+
+    report = {"song": song_id, "seconds": float(seconds), "stems": {}}
+    length = min(ours.shape[-1], theirs.shape[-1])
+    for index, name in enumerate(names):
+        a = ours[index, ..., :length].astype(np.float64)
+        b = theirs[index, ..., :length].astype(np.float64)
+        diff = a - b
+        ref_rms = float(np.sqrt(np.mean(b ** 2)))
+        diff_rms = float(np.sqrt(np.mean(diff ** 2)))
+        db = 20.0 * np.log10(diff_rms / ref_rms) if ref_rms > 0 and diff_rms > 0 else -999.0
+        report["stems"][name] = {
+            "max_abs_diff": round(float(np.abs(diff).max()), 6),
+            "diff_db": round(float(db), 1),
+            "ref_rms": round(ref_rms, 6),
+        }
+        print(f"[ref] {name:<7} maks fark={report['stems'][name]['max_abs_diff']:.6f} "
+              f"fark={report['stems'][name]['diff_db']:.1f} dB")
+
+    worst = max(report["stems"].values(), key=lambda item: item["diff_db"])
+    report["worst_diff_db"] = worst["diff_db"]
+    # -60 dB altı: kayan nokta gürültüsü, aynı sayılır. Üstü: gerçek fark.
+    report["identical"] = bool(worst["diff_db"] < -60.0)
+    print(f"[ref] SONUC: en kotu {worst['diff_db']:.1f} dB -> "
+          f"{'AYNI' if report['identical'] else 'FARKLI'}")
+    return report
+
+
+# --------------------------------------------------------------------------
+# c) E: vokal = A ve B vokallerinin ortalaması (ensemble)
+# --------------------------------------------------------------------------
+
+@app.function(
+    image=gpu_image,
+    gpu="T4",
+    volumes={DATA_DIR: volume},
+    timeout=3600,
+    max_containers=1,
+)
+def run_e(song_id: str, num_overlap: int = 2, suffix: str = "e",
+          label: str = "E") -> dict:
+    """Vokali iki modelin ortalamasından alır.
+
+    Gerekçe: BS-Roformer daha az sızıntı ama daha çok artefakt üretiyor
+    (SIR/SAR takası); MelBand tersi. Ortalama ikisinin arasında bir yer
+    tutuyor ve ensemble'ın artefaktı bastırması bekleniyor.
+
+    Modeller SIRAYLA yükleniyor: ikisi birden T4'e sığar ama gerek yok,
+    çıkarımdan sonra belleği bırakıp öbürünü alıyoruz.
+    """
+    global _FIRST_CALL
+    import numpy as np
+    import torch
+    from demucs.pretrained import get_model
+
+    wall_started = time.time()
+    cold_seconds = round(time.time() - _CONTAINER_START, 2) if _FIRST_CALL else 0.0
+    was_cold = _FIRST_CALL
+    _FIRST_CALL = False
+
+    volume.reload()
+    root = pathlib.Path(EXP_WEIGHTS)
+    config_a = _load_config(root / "melband_vocals.yaml")
+    config_b = _load_config(root / "bs_roformer_sw.yaml")
+    samplerate = int(config_a["audio"]["sample_rate"])
+    channels = int(config_a["audio"]["num_channels"])
+    if int(config_b["audio"]["sample_rate"]) != samplerate:
+        raise ValueError("Iki vokal modeli ayni ornekleme hizinda degil")
+
+    source_status = json.loads((_song_dir(song_id) / "status.json").read_text("utf-8"))
+    mix = _decode(_find_input(song_id), samplerate, channels)
+    duration = round(mix.shape[1] / samplerate, 3)
+    print(f"[decode] {mix.shape} -> {duration} sn")
+
+    load_started = time.time()
+    torch.cuda.reset_peak_memory_stats()
+    stage1_started = time.time()
+
+    melband = _build_model("melband", config_a)
+    _load_checkpoint(melband, root / "melband_vocals.ckpt", "cuda")
+    out_a, nan_a = _demix(melband, mix, config_a, num_overlap, True)
+    vocals_a = out_a[0]
+    del melband, out_a
+    torch.cuda.empty_cache()
+    print(f"[melband] bitti, nan={nan_a}")
+
+    bs = _build_model("bs", config_b)
+    _load_checkpoint(bs, root / "bs_roformer_sw.ckpt", "cuda")
+    out_b, nan_b = _demix(bs, mix, config_b, num_overlap, True)
+    names_b = list(config_b["training"]["instruments"])
+    vocals_b = out_b[names_b.index("vocals")]
+    del bs, out_b
+    torch.cuda.empty_cache()
+    print(f"[bs-roformer] bitti, nan={nan_b}")
+
+    # Basit ortalama. Ağırlıklı ortalama da denenebilir ama önce düzünü
+    # ölçelim; ağırlık seçmek tek şarkıya aşırı uyum riski taşıyor.
+    vocals = (vocals_a + vocals_b) * 0.5
+    agreement = _correlation(
+        _downmix(vocals_a, CORR_RATE_DIVISOR), _downmix(vocals_b, CORR_RATE_DIVISOR)
+    )
+    stage1_seconds = round(time.time() - stage1_started, 2)
+    vram_stage1 = _peak_vram()
+    model_load_seconds = round(stage1_started - load_started, 2)
+    print(f"[ensemble] iki vokal ilintisi={agreement} (1'e yakinsa modeller ayni seyi diyor)")
+
+    demucs = get_model(MODEL_NAME)
+    demucs.eval()
+    demucs_sources = [str(name) for name in demucs.sources]
+    instrumental = mix - vocals
+    by_name, stage2_seconds, vram_stage2 = _demucs_stage(
+        demucs, instrumental, demucs_sources
+    )
+    print(f"[demucs] {stage2_seconds} sn, {vram_stage2}")
+
+    residue = by_name.get("vocals")
+    stems = {
+        "vocals": vocals,
+        "drums": by_name["drums"],
+        "bass": by_name["bass"],
+        "guitar": by_name["guitar"],
+        "piano": by_name["piano"],
+        "other": by_name["other"] + (residue if residue is not None else 0.0),
+    }
+    residue_rms = float(np.sqrt(np.mean(residue.astype(np.float64) ** 2))) if residue is not None else 0.0
+    residual = _residual_report(mix, stems)
+    print(f"[artik] {residual}")
+
+    title = f"{source_status.get('title') or song_id[:12]} [{label}]"
+    target_id = f"{song_id}-{suffix}"
+    written = _write_outputs(target_id, title, stems, samplerate, channels,
+                             duration, song_id, meta={})
+
+    wall_seconds = round(time.time() - wall_started, 2)
+    report = {
+        "method": label,
+        "source_song": song_id,
+        "target_song": target_id,
+        "title": title,
+        "duration": duration,
+        "num_overlap": int(num_overlap),
+        "tta": False,
+        "precision": "fp16",
+        "cold_start_seconds": cold_seconds,
+        "was_cold": bool(was_cold),
+        "model_load_seconds": model_load_seconds,
+        "gpu_seconds": round(stage1_seconds + stage2_seconds, 2),
+        "roformer_seconds": stage1_seconds,
+        "demucs_seconds": stage2_seconds,
+        "vocal_model_agreement": float(agreement),
+        "vocal_residue_rms": round(residue_rms, 6),
+        "wall_seconds": wall_seconds,
+        "usd": round(wall_seconds * T4_USD_PER_SECOND, 5),
+        "stems": written,
+        "vram_allocated_mb": float(max(
+            vram_stage1.get("vram_allocated_mb", 0.0),
+            vram_stage2.get("vram_allocated_mb", 0.0),
+        )),
+        "vram_reserved_mb": float(max(
+            vram_stage1.get("vram_reserved_mb", 0.0),
+            vram_stage2.get("vram_reserved_mb", 0.0),
+        )),
+        **{key: float(value) for key, value in residual.items()},
+    }
+    status_path = _song_dir(target_id) / "status.json"
+    status = json.loads(status_path.read_text("utf-8"))
+    status["experiment"] = report
+    status_path.write_text(json.dumps(status, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+    volume.commit()
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return report
+
+
+@app.local_entrypoint()
+def reference(song_id: str = "", must_contain: str = "HAZBIN",
+              seconds: float = 60.0):
+    """Bizim _demix, MSST'ninkiyle aynı mı?
+
+        modal run backend/experiment.py::reference
+    """
+    if not song_id:
+        songs = pick_songs.remote(count=1, must_contain=must_contain)
+        if not songs:
+            raise SystemExit("Sarki bulunamadi")
+        song_id = songs[0]["id"]
+    report = reference_check.remote(song_id, seconds=seconds)
+    print("\n" + "=" * 80)
+    print("REFERANS KONTROLU: bizim _demix vs MSST demix")
+    print("=" * 80)
+    for name, data in report["stems"].items():
+        print(f"  {name:<8} maks fark {data['max_abs_diff']:.6f}   "
+              f"fark {data['diff_db']:>7.1f} dB   (referans rms {data['ref_rms']:.5f})")
+    print(f"\nEn kotu fark: {report['worst_diff_db']:.1f} dB")
+    if report["identical"]:
+        print("SONUC: AYNI (-60 dB alti = kayan nokta gurultusu).")
+        print("Cizirti bizim chunk birlestirmemizden GELMIYOR.")
+    else:
+        print("SONUC: FARKLI. Chunk birlestirme suphelisi dogrulandi,")
+        print("cizirtinin kaynagi once burada aranmali.")
 
 
 @app.local_entrypoint()
@@ -1650,6 +1947,11 @@ def main(count: int = 3, must_contain: str = "HAZBIN",
                 elif method == "cboth":
                     report = run_c.remote(item["id"], num_overlap=4, fp32=True,
                                           suffix="cboth", label="C-fp32-ov4")
+                elif method == "cinst":
+                    report = run_c.remote(item["id"], instrumental_from_model=True,
+                                          suffix="cinst", label="C-inst")
+                elif method == "e":
+                    report = run_e.remote(item["id"])
                 else:
                     print(f"  bilinmeyen yontem: {method}")
                     continue
@@ -1685,7 +1987,8 @@ def _print_table(reports: list):
 
     # Yöntem başına ortalama: asıl karşılaştırma bu.
     print("\nYONTEM BASINA ORTALAMA (sarki basi)")
-    for method in ("A", "B", "C", "C-fp32", "C-ov4", "C-fp32-ov4", "B-max"):
+    for method in ("A", "B", "C", "C-fp32", "C-ov4", "C-fp32-ov4",
+                   "C-inst", "E", "B-max"):
         rows = [r for r in ok if r["method"] == method]
         if not rows:
             continue
