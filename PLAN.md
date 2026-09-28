@@ -524,24 +524,91 @@ Ağırlık lisansı (araştırıldı):
 Yani hibrit yolun lisans tarafı temiz: Demucs MIT, Mel-Band Roformer
 ağırlıkları MIT.
 
-### Ölçülmesi gerekenler
-- Roformer'ın T4'teki süresi (Demucs'a ek olarak geliyor, onun yerine
-  geçmiyor - toplam GPU süresi artacak).
-- Enstrümantali `htdemucs_6s`'e vermek, orijinal mix'i vermeye göre
-  gitar/piyano kalitesini bozuyor mu? Vokal artığı kalmadığı için
-  iyileşmesi de mümkün, kötüleşmesi de. ÖLÇÜLMELİ, varsayılmamalı.
-- Yukarıdaki maliyet tablosu bu yol için yeniden hesaplanacak.
+### DENEY KURULDU (`backend/experiment.py`) — koşum bekliyor
+Ayrı Modal uygulaması (`stem-mikser-deney`). `backend/app.py` HİÇ değişmedi,
+canlı endpoint aynı. Aynı Volume kullanılıyor; API'nin `/songs` ucu zaten
+`status.json` içeren her klasörü listelediği için sonuçlar ek bir uç
+olmadan kitaplıkta görünüyor.
 
-### Dikkat
-- `htdemucs_ft` 6 stem DEĞİL 4 stem veriyor (gitar/piyano yok). Hi-Fi'ı
-  6 stem'le birleştirmek istiyorsak yol `htdemucs_6s` + `shifts` olmalı;
-  yoksa Hi-Fi'da gitar/piyano kaybolur. Bu bir TASARIM KARARI, sormadan
-  seçilmeyecek.
-- `separate` timeout'u 900 sn. 10 dakikalık şarkı + en pahalı kip ~600 sn'ye
-  çıkıyor, sınıra yaklaşıyor. Hi-Fi'da timeout artırılmalı.
-- Çıktı boyutu değişmiyor, depolama maliyeti aynı.
-- Aşama 3'te eklenen zamanlama enstrümantasyonu gerçek sayıları verecek;
-  tahminler onunla değiştirilecek.
+```
+modal run backend/experiment.py::fetch     # ağırlıklar (bir kez, ~1.6 GB)
+modal run backend/experiment.py            # A, B, B-max x 3 şarkı
+```
+
+Üç kol:
+
+| kol | ne | kitaplıkta |
+|---|---|---|
+| **A** | Mel-Band Roformer vokal → enstrümantal = karışım − vokal → `htdemucs_6s` | `... [A]` |
+| **B** | BS-Roformer SW tek model, 6 stem, `num_overlap 2` | `... [B]` |
+| **B-max** | aynı model, `num_overlap 8` + test-time augmentation (3 geçiş) | `... [B-max]` |
+
+A'da demucs'un kendi vokal çıkışı (enstrümantalde kalan artık) **`other`'a
+ekleniyor**, atılmıyor: toplam korunsun diye. Artığın RMS'i ayrıca
+raporlanıyor — büyükse Roformer vokalin bir kısmını kaçırmış demektir.
+
+Akor ve vuruş orijinalden **kopyalanıyor**, yeniden hesaplanmıyor.
+
+### Lisans kontrolü (2026-09-28)
+
+| bileşen | kaynak | lisans |
+|---|---|---|
+| A ağırlığı | `KimberleyJSN/melbandroformer`, commit `ac9b0614ab3cd7f77219e18ba494dfd93956c348` | metadata **MIT** |
+| A mimarisi | `ZFTurbo/MSST`, commit `84b1eac0887756b4f1a9d7a1ff49105939749ed2` | **MIT**, gerçek LICENSE dosyası |
+| A konfigi | aynı MSST deposu, `configs/KimberleyJensen/...kj.yaml` | **MIT** |
+| B ağırlığı | `enerjazzer/BS-ROFO-SW-Fixed` (jarredou'nun aynası) | **YOK** |
+
+**A'nın GPL geçmişi:** bu depo bir dönem `gpl-3.0` gösteriyordu (Intel'in
+talebiyle eklenmişti; `Intel/vocals_mel_band_roformer_kimberleyJSN_openvino`
+hâlâ gpl-3.0 diyor). Yazar sonradan MIT'e çevirmiş. Güncel metadata esas
+alındı. Depo public olduğu için GPL kabul edilemezdi — kontrol tarihi ve
+commit hash'i bu yüzden kayda geçti.
+
+`KimberleyJensen/Mel-Band-Roformer-Vocal-Model` (çıkarım kodu) **hiç
+kullanılmıyor**: o depoda LICENSE dosyası yok, yani varsayılan olarak her
+hakkı saklı. Aynı mimari MIT olan MSST'de var.
+
+**B lisanssız.** jarredou HF hesabını silmiş (404 teyit edildi). İki ayna:
+
+| ayna | beyan | sha256 |
+|---|---|---|
+| `enerjazzer/BS-ROFO-SW-Fixed` | `unknown` | `24e7d35e…c775916e` |
+| `Blakus/bs_roformer_sw_6stem` | `mit` | `24e7d35e…c775916e` |
+
+**Aynı dosya** (699 412 152 bayt), yani Blakus sahip olmadığı bir dosyaya
+kendi lisansını yazmış — bu lisans yaratmaz. `enerjazzer` kanonik ayna
+alındı; `fetch` ikisini de indirip aynı olduğunu doğruluyor.
+Deney için indirilip çalıştırılıyor, **yeniden dağıtılmıyor**.
+**Canlıya alma kararı ayrı: lisans netleşmeden B entegre EDİLEMEZ.**
+
+### Ölçülenler (şarkı × kol)
+soğuk başlangıç, model yükleme (Volume'dan okuma dahil), saf GPU saniyesi,
+faturalanan duvar saati, `$0.000164/sn` ile şarkı başı maliyet, tepe VRAM
+(allocated + reserved), **stem toplamının karışımdan sapması** (dB + tepe),
+kullanılan kesinlik.
+
+`artık dB = 20·log10(rms(karışım − Σ stem) / rms(karışım))`, **ortak
+`clip_scale` uygulanmadan ÖNCE** — sonra bakılsa hata ölçek kadar yapay
+kayardı.
+
+T4'te bf16 yok. fp16 deneniyor, **NaN nöbetçisiyle**: NaN/Inf çıkarsa
+sessizce sıfırlamak yerine aynı şarkı fp32'de yeniden koşuluyor ve raporda
+hangisinin kullanıldığı yazıyor.
+
+YAML **güvenli** yükleniyor: konfigler `!!python/tuple` kullanıyor,
+`yaml.unsafe_load` bunu çözer ama rastgele kod çalıştırmaya açar. B'nin
+konfigi lisansı belirsiz bir aynadan geldiği için `SafeLoader`'a yalnız
+tuple kurucusu eklendi (yerelde doğrulandı: `python/object/apply` reddediliyor).
+
+### Hâlâ ölçülmemiş, deneyin cevaplayacağı
+- Roformer'ın T4'teki süresi (Demucs'a EK geliyor, yerine geçmiyor).
+- Enstrümantali `htdemucs_6s`'e vermek gitar/piyano kalitesini bozuyor mu?
+  Vokal artığı kalmadığı için iyileşmesi de mümkün, kötüleşmesi de.
+- B tek modelle 6 stem'i A'nın iki aşamasından iyi mi?
+- B-max'in (8 örtüşme + TTA) ek maliyeti kaliteyi hak ediyor mu?
+
+Karar **kulak testinden sonra**; entegrasyon (yükleme ekranında
+Standart/Hi-Fi seçeneği vb.) ayrıca planlanacak.
 
 ## Aşama 10 – Ek ayrıştırma (araştırma sonucu)
 Öncelik 4. **Gerçekçi kapsam beklenenden dar.**

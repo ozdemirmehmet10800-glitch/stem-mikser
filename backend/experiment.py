@@ -902,3 +902,105 @@ def fetch(check_mirror: bool = True):
     print("\n--- agirlik raporu ---")
     for key, value in report.items():
         print(f"{key}: {value}")
+
+@app.local_entrypoint()
+def main(count: int = 3, must_contain: str = "HAZBIN",
+         methods: str = "a,b,bmax", song_id: str = ""):
+    """Deneyi koşturur ve karşılaştırma tablosunu basar.
+
+        modal run backend/experiment.py
+        modal run backend/experiment.py --methods b,bmax --count 1
+
+    ÖNCE `modal run backend/experiment.py::fetch` çalıştırılmış olmalı.
+    """
+    if song_id:
+        songs = [{"id": song_id, "title": song_id[:12], "duration": 0.0}]
+    else:
+        songs = pick_songs.remote(count=count, must_contain=must_contain)
+    if not songs:
+        raise SystemExit(
+            "Kitaplikta 'done' durumunda, input dosyasi olan sarki bulunamadi."
+        )
+
+    wanted = [name.strip().lower() for name in methods.split(",") if name.strip()]
+    print(f"\nSarkilar ({len(songs)}):")
+    for item in songs:
+        print(f"  {item['id'][:12]}  {item['title']}  "
+              f"{item.get('duration', 0):.0f} sn")
+    print(f"Yontemler: {', '.join(wanted)}\n")
+
+    reports = []
+    for item in songs:
+        for method in wanted:
+            print(f"--- {item['title'][:40]} / {method.upper()} ---")
+            try:
+                if method == "a":
+                    report = run_a.remote(item["id"])
+                elif method == "b":
+                    report = run_b.remote(item["id"], num_overlap=2, tta=False,
+                                          suffix="b", label="B")
+                elif method == "bmax":
+                    # [B-max]: yüksek örtüşme + test-time augmentation.
+                    # Tek kullanıcı, şarkı başı dakikalar kabul.
+                    report = run_b.remote(item["id"], num_overlap=8, tta=True,
+                                          suffix="bmax", label="B-max")
+                else:
+                    print(f"  bilinmeyen yontem: {method}")
+                    continue
+                reports.append(report)
+            except Exception as error:  # noqa: BLE001 - deney, akış durmasın
+                print(f"  BASARISIZ: {error}")
+                reports.append({"method": method, "source_song": item["id"],
+                                "error": str(error)})
+
+    _print_table(reports)
+
+
+def _print_table(reports: list):
+    ok = [r for r in reports if "error" not in r]
+    failed = [r for r in reports if "error" in r]
+
+    print("\n" + "=" * 108)
+    print("ASAMA 9 DENEY SONUCLARI")
+    print("=" * 108)
+    header = (f"{'yontem':<7} {'sarki':<24} {'sure':>6} {'GPU':>7} {'duvar':>7} "
+              f"{'$':>8} {'VRAM':>7} {'artik dB':>9} {'kesinlik':>8} {'soguk':>7}")
+    print(header)
+    print("-" * 108)
+    for r in ok:
+        print(
+            f"{r['method']:<7} {r['title'][:24]:<24} "
+            f"{r['duration']:>6.0f} {r['gpu_seconds']:>7.1f} {r['wall_seconds']:>7.1f} "
+            f"{r['usd']:>8.4f} {r.get('vram_allocated_mb', 0):>7.0f} "
+            f"{r.get('residual_db', 0):>9.1f} {r['precision']:>8} "
+            f"{r['cold_start_seconds'] if r.get('was_cold') else 0:>7.1f}"
+        )
+    print("-" * 108)
+
+    # Yöntem başına ortalama: asıl karşılaştırma bu.
+    print("\nYONTEM BASINA ORTALAMA (sarki basi)")
+    for method in ("A", "B", "B-max"):
+        rows = [r for r in ok if r["method"] == method]
+        if not rows:
+            continue
+        n = len(rows)
+        avg = lambda key: sum(r.get(key, 0) for r in rows) / n  # noqa: E731
+        # Dakika basina normalize: sarki sureleri farkli.
+        minutes = sum(r["duration"] for r in rows) / 60.0
+        print(
+            f"  {method:<6} n={n}  GPU {avg('gpu_seconds'):.1f} sn  "
+            f"duvar {avg('wall_seconds'):.1f} sn  ${avg('usd'):.4f}/sarki  "
+            f"({sum(r['wall_seconds'] for r in rows) / minutes:.1f} sn/muzik-dk)  "
+            f"VRAM {max(r.get('vram_allocated_mb', 0) for r in rows):.0f} MB  "
+            f"artik {avg('residual_db'):.1f} dB"
+        )
+
+    if failed:
+        print("\nBASARISIZ:")
+        for r in failed:
+            print(f"  {r['method']} / {r['source_song'][:12]}: {r['error'][:160]}")
+
+    print("\nartik dB = 20*log10(rms(karisim - toplam stem) / rms(karisim)).")
+    print("Ne kadar NEGATIF ise toplam orijinale o kadar yakin.")
+    print("Sonuclar kitaplikta '[A]', '[B]', '[B-max]' olarak gorunuyor;")
+    print("akor ve vurus orijinalden kopyalandi, yeniden hesaplanmadi.")
