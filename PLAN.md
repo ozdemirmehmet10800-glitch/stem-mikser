@@ -114,7 +114,7 @@ slash, 59 ölçünün 8'inde 3 akor.
   gerçek vuruştan en fazla ±10 ms sapar. Kulakla fark edilmez ama biliniyor.
 - Aşama 8 gelince metronom esnetilmiş zaman çizgisini takip etmeli.
 
-## Aşama 8 – Hız ve ton değiştirme
+## Aşama 8 – Hız ve ton değiştirme — TAMAM (telefonda doğrulandı)
 Öncelik 2. ÖNCE ÖLÇÜM, sonra karar.
 
 ### Kütüphane ve lisans (araştırıldı)
@@ -331,6 +331,26 @@ Düzeltme sonrası masaüstü (48 kHz), iki koşuda aynı:
   telafi (`visualTime`) o cihazda etkisiz kalıyor. Kod doğru ve destekleyen
   tarayıcıda çalışıyor; Bluetooth kulaklıkta 200 ms'yi bulan gecikme için
   tarayıcı doğru değeri bildirmek zorunda. Uğraşılmayacak.
+
+### KAPANIŞ: telefon doğrulaması (2026-09-28, Android / Chrome / 32 kHz)
+Hiza testi TAMAMEN GEÇTİ:
+
+| ölçüm | telefon | masaüstü |
+|---|---|---|
+| 0.8x | +1.2 ms | +2.4 ms |
+| 1.2x | +2.2 ms | +2.2 ms |
+| canlı 0.8x → 1.1x | +3.2 ms | +3.2 ms |
+| seek sonrası konum | −0.7 ms | −7.6 ms |
+| seek sonrası bayat ses | yok | yok |
+| içerik gecikmesi 0.8 / 1.1 / 1.2x | 110.8 / 119.9 / 120.5 ms | 113.5 / 123.5 / 125.8 ms |
+
+Ayrıca elle doğrulandı: ton +2'de Fm → Gm ve akor şeridi doğru, kilit ekranı
+süre ve konumu uygulamayla aynı hızda ilerliyor, 0.8x'te davul-bas senkronu
+ve canlı hız değişimi sorunsuz.
+
+**Kalan tek konu, Aşama 8.1'e devredildi:** 0.8x + ton +2'de gıcırtı yok ama
+genel ses kalitesi düşüyor. WSOLA'nın yapısal sınırı; `quickSeek: false`
+gıcırtıyı aldı, kaliteyi bu kadar yükseltebildi.
 
 ### Plan B (kullanılmadı)
 Sunucuda render. Ölçüm iyi çıktığı için gerek kalmadı; her ayar değişiminde
