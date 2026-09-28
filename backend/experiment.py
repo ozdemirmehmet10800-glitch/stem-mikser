@@ -1019,7 +1019,7 @@ def _demucs_stage(demucs, instrumental, sources: list):
     max_containers=1,      # min_containers YOK
 )
 def run_c(song_id: str, num_overlap: int = 2, suffix: str = "c",
-          label: str = "C") -> dict:
+          label: str = "C", fp32: bool = False) -> dict:
     """A ile AYNI iskelet, vokal kaynağı farklı.
 
     Kulak testinde vokalin en temizi B'nin modeli çıktı ama B'nin bası ve
@@ -1066,9 +1066,13 @@ def run_c(song_id: str, num_overlap: int = 2, suffix: str = "c",
     # --- 1. aşama: B'nin modeli, YALNIZ vokal çıkışı alınıyor -------------
     torch.cuda.reset_peak_memory_stats()
     stage1_started = time.time()
-    use_fp16 = True
+    # fp32 elle istenebiliyor: C'de duyulan cızırtının vokal tahminindeki
+    # hassasiyetten gelip gelmediğini sınamak için. Konfig use_amp: true
+    # diyor (MSST'nin varsayılanı da bu), yani fp16 "yanlış" değil - ama
+    # çıkarma sonrası açığa çıkan hatayı büyütüyor olabilir.
+    use_fp16 = not fp32
     out, had_nan = _demix(roformer, mix, config, num_overlap, use_fp16)
-    if had_nan:
+    if had_nan and use_fp16:
         print("[fp16] NaN/Inf uretildi, fp32'ye dusuluyor")
         use_fp16 = False
         torch.cuda.reset_peak_memory_stats()
@@ -1154,7 +1158,7 @@ def run_c(song_id: str, num_overlap: int = 2, suffix: str = "c",
 
 @app.local_entrypoint()
 def analyze(count: int = 3, must_contain: str = "HAZBIN", song_id: str = "",
-            variants: str = ",a,b,bmax,c"):
+            variants: str = ",a,b,c,cfp32,cov4,cboth"):
     """Kulak testinden sonra: içerik hangi stem'e gitti?
 
         modal run backend/experiment.py::analyze
@@ -1296,7 +1300,7 @@ def _correlation(first, second) -> float:
     timeout=1800,
     memory=8192,
 )
-def analyze_variants(song_id: str, variants: str = ",a,b,bmax,c") -> dict:
+def analyze_variants(song_id: str, variants: str = ",a,b,c,cfp32,cov4,cboth") -> dict:
     """Bir şarkının tüm yöntem çıktılarını yan yana ölçer."""
     import numpy as np
 
@@ -1392,6 +1396,198 @@ def analyze_variants(song_id: str, variants: str = ",a,b,bmax,c") -> dict:
     return report
 
 
+# --------------------------------------------------------------------------
+# Cızırtı avı: "karışım - vokal" enstrümantalleri karşılaştır
+# --------------------------------------------------------------------------
+# C'de cızırtı duyuldu, A'da duyulmadı. İkisinin de yaptığı şey aynı:
+# enstrümantal = karışım - vokal. Fark vokali üreten model ve onun parça
+# (chunk) geometrisi:
+#
+#   A (MelBand)  chunk 352800 = 8.00 sn, adım (overlap 2) 176400 = 4.00 sn
+#   C (BS-RoFo)  chunk 588800 = 13.35 sn, adım (overlap 2) 294400 = 6.68 sn
+#
+# Cızırtı parça sınırlarından geliyorsa sıçramalar ADIMIN KATLARINDA
+# kümelenir. Bunu varsaymak yerine ölçüyoruz: en büyük sıçramaların
+# konumlarını adıma göre mod alıp dağılımın ne kadar toplandığına bakıyoruz.
+
+HF_BAND_HZ = 8000.0     # cızırtı geniş bantlı/tiz olur
+TOP_JUMPS = 300         # periyodiklik sınaması için en büyük sıçramalar
+MOD_BINS = 100
+
+
+def _hf_share(mono, samplerate: int) -> float:
+    import numpy as np
+
+    frame = 1 << 15
+    freqs = np.fft.rfftfreq(frame, d=1.0 / samplerate)
+    mask = freqs >= HF_BAND_HZ
+    high = 0.0
+    total = 0.0
+    for start in range(0, len(mono) - frame + 1, frame):
+        spectrum = np.abs(np.fft.rfft(mono[start:start + frame])) ** 2
+        total += float(spectrum.sum())
+        high += float(spectrum[mask].sum())
+    return high / total if total > 0 else 0.0
+
+
+def _periodicity(positions, step: int) -> dict:
+    """Sıçramalar adımın katlarında mı kümeleniyor?
+
+    Konumları adıma göre mod alıp MOD_BINS kutuya dağıtıyoruz. Rastgele
+    dağılımda her kutu ~1/MOD_BINS alır; tek kutuda toplanıyorsa sıçramalar
+    parça sınırlarına bağlı demektir.
+    """
+    import numpy as np
+
+    if len(positions) == 0 or step <= 0:
+        return {"step": int(step), "top_bin_share": 0.0, "expected": 1.0 / MOD_BINS}
+    residues = np.asarray(positions) % step
+    counts, _ = np.histogram(residues, bins=MOD_BINS, range=(0, step))
+    best = int(np.argmax(counts))
+    return {
+        "step": int(step),
+        "step_seconds": round(step / 44100.0, 3),
+        "top_bin_share": round(float(counts.max() / counts.sum()), 3),
+        "expected": round(1.0 / MOD_BINS, 3),
+        "top_bin_offset_seconds": round(best * step / MOD_BINS / 44100.0, 3),
+    }
+
+
+def _variant_scale(mix, song_id: str):
+    """Kaydedilen stem'ler clip_scale'e bölünmüş; ölçeği geri kestiriyoruz."""
+    import numpy as np
+
+    stems, samplerate = _load_stems(song_id)
+    if not stems:
+        return None, None, samplerate
+    total = None
+    for value in stems.values():
+        total = value.copy() if total is None else total + value
+    length = min(mix.shape[1], total.shape[1])
+    denominator = float(np.sum(total[:, :length] ** 2))
+    scale = (float(np.sum(mix[:, :length] * total[:, :length])) / denominator
+             if denominator > 1e-12 else 1.0)
+    return stems, scale, samplerate
+
+
+@app.function(
+    image=analysis_image,
+    volumes={DATA_DIR: volume},
+    timeout=1800,
+    memory=8192,
+)
+def analyze_instrumental(song_id: str, variants: str = "a,c,cfp32,cov4,cboth") -> dict:
+    """Her yöntemin "karışım - vokal" enstrümantalini ölçer.
+
+    Vokal stem'leri DİSKTEN okunuyor, model yeniden çalıştırılmıyor.
+    Karşılaştırma tabanı: orijinal htdemucs'un vokal DIŞI stem toplamı -
+    yani "temiz" enstrümantalin nasıl göründüğü.
+    """
+    import numpy as np
+
+    volume.reload()
+    source_status = json.loads((_song_dir(song_id) / "status.json").read_text("utf-8"))
+    title = source_status.get("title") or song_id[:12]
+    mix = _decode(_find_input(song_id), 44100, 2)
+    samplerate = 44100
+
+    report = {"song": song_id, "title": title, "instrumentals": {}}
+
+    # Taban: orijinal htdemucs, vokal dışı stem'lerin toplamı.
+    original_stems, original_scale, _ = _variant_scale(mix, song_id)
+    if original_stems:
+        base = None
+        for name, value in original_stems.items():
+            if name == "vocals":
+                continue
+            base = value.copy() if base is None else base + value
+        candidates = {"orijinal(demucs toplami)": base * original_scale}
+    else:
+        candidates = {}
+
+    # Adım geometrisi konfiglerden, tahminle değil.
+    steps = {}
+    for key, cfg_name in (("a", "melband_vocals.yaml"), ("c", "bs_roformer_sw.yaml")):
+        path = pathlib.Path(EXP_WEIGHTS) / cfg_name
+        if path.is_file():
+            cfg = _load_config(path)
+            chunk = int(cfg["audio"]["chunk_size"])
+            steps[key] = {"chunk": chunk, "step2": chunk // 2, "step4": chunk // 4}
+
+    for variant in [v.strip() for v in variants.split(",") if v.strip()]:
+        target = f"{song_id}-{variant}"
+        stems, scale, _ = _variant_scale(mix, target)
+        if not stems or "vocals" not in stems:
+            print(f"[atla] {target} yok")
+            continue
+        vocals = stems["vocals"] * scale
+        length = min(mix.shape[1], vocals.shape[1])
+        candidates[variant] = mix[:, :length] - vocals[:, :length]
+
+    for name, instrumental in candidates.items():
+        mono = instrumental.mean(axis=0)
+        diff = np.abs(np.diff(mono))
+        order = np.argsort(diff)[-TOP_JUMPS:]
+        entry = {
+            "rms": round(float(np.sqrt(np.mean(mono.astype(np.float64) ** 2))), 5),
+            "peak": round(float(np.abs(mono).max()), 4),
+            "hf_share_8k": round(_hf_share(mono, samplerate), 4),
+            "max_jump": round(float(diff.max()), 4),
+            "p9999_jump": round(float(np.percentile(diff, 99.99)), 4),
+            "jumps_over_threshold": int(np.count_nonzero(diff > CLICK_THRESHOLD)),
+            "periodicity": [],
+        }
+        # Her iki modelin adımına göre periyodiklik sınaması.
+        for key, geometry in steps.items():
+            for label, step in (("overlap2", geometry["step2"]),
+                                ("overlap4", geometry["step4"])):
+                result = _periodicity(order, step)
+                result["model"] = key
+                result["mode"] = label
+                entry["periodicity"].append(result)
+        report["instrumentals"][name] = entry
+        print(f"[{name}] rms={entry['rms']:.5f} tiz_pay={entry['hf_share_8k']:.4f} "
+              f"max_sicrama={entry['max_jump']:.4f} n={entry['jumps_over_threshold']}")
+
+    return report
+
+
+@app.local_entrypoint()
+def crackle(song_id: str = "", must_contain: str = "HAZBIN",
+            variants: str = "a,c,cfp32,cov4,cboth"):
+    """Cızırtının kaynağını ölç.
+
+        modal run backend/experiment.py::crackle
+    """
+    if not song_id:
+        songs = pick_songs.remote(count=1, must_contain=must_contain)
+        if not songs:
+            raise SystemExit("Sarki bulunamadi")
+        song_id = songs[0]["id"]
+
+    report = analyze_instrumental.remote(song_id, variants=variants)
+    print("\n" + "=" * 96)
+    print(f"ENSTRUMANTAL KARSILASTIRMASI - {report['title']}")
+    print("=" * 96)
+    print(f"{'kaynak':<26} {'rms':>8} {'tepe':>7} {'tiz>8k':>8} "
+          f"{'max sic':>8} {'p99.99':>8} {'n>esik':>8}")
+    for name, entry in report["instrumentals"].items():
+        print(f"{name:<26} {entry['rms']:>8.5f} {entry['peak']:>7.3f} "
+              f"{entry['hf_share_8k']:>8.4f} {entry['max_jump']:>8.4f} "
+              f"{entry['p9999_jump']:>8.4f} {entry['jumps_over_threshold']:>8d}")
+
+    print("\nSICRAMALAR PARCA SINIRLARINDA MI KUMELENIYOR?")
+    print("(en buyuk sicramalarin konumu adima gore mod; rastgelede pay ~0.010)")
+    for name, entry in report["instrumentals"].items():
+        best = max(entry["periodicity"], key=lambda item: item["top_bin_share"])
+        # Esik 0.25: sentetik sinamada YANLIS adimla bakildiginda pay 0.113'e
+        # kadar cikabiliyor (adimlar ortak carpan tasiyor), dogru adimda ise
+        # 1.0. 0.25 ikisini rahatca ayiriyor.
+        flag = "KUMELENME VAR" if best["top_bin_share"] > 0.25 else "dagilmis"
+        print(f"  {name:<26} en yuksek pay {best['top_bin_share']:.3f} "
+              f"({best['model']}/{best['mode']}, adim {best['step_seconds']} sn) -> {flag}")
+
+
 @app.local_entrypoint()
 def fetch(check_mirror: bool = True):
     """modal run backend/experiment.py::fetch"""
@@ -1444,6 +1640,16 @@ def main(count: int = 3, must_contain: str = "HAZBIN",
                                           suffix="bmax", label="B-max")
                 elif method == "c":
                     report = run_c.remote(item["id"])
+                # --- C'deki cızırtı için düzeltme adayları ---
+                elif method == "cfp32":
+                    report = run_c.remote(item["id"], fp32=True,
+                                          suffix="cfp32", label="C-fp32")
+                elif method == "cov4":
+                    report = run_c.remote(item["id"], num_overlap=4,
+                                          suffix="cov4", label="C-ov4")
+                elif method == "cboth":
+                    report = run_c.remote(item["id"], num_overlap=4, fp32=True,
+                                          suffix="cboth", label="C-fp32-ov4")
                 else:
                     print(f"  bilinmeyen yontem: {method}")
                     continue
@@ -1479,7 +1685,7 @@ def _print_table(reports: list):
 
     # Yöntem başına ortalama: asıl karşılaştırma bu.
     print("\nYONTEM BASINA ORTALAMA (sarki basi)")
-    for method in ("A", "B", "C", "B-max"):
+    for method in ("A", "B", "C", "C-fp32", "C-ov4", "C-fp32-ov4", "B-max"):
         rows = [r for r in ok if r["method"] == method]
         if not rows:
             continue

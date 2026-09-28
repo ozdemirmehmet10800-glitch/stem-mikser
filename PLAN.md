@@ -676,6 +676,45 @@ karşılaştırmadan önce en küçük karelerle ölçek geri kestiriliyor
 %99.8, 5 kHz tonu %0.0; aynı içerik ilişkisi 1.00, ilgisiz 0.01, yarı
 yarıya 0.86; temiz sinyalde 0 sıçrama, enjekte edilen iki tıkta tam 4.
 
+### C KULAK TESTİ ve açık kalan cızırtı
+
+| şarkı | vokal solo | bas | cızırtı |
+|---|---|---|---|
+| HAZBIN [C] | hafif sızıntı (B gibi) | iyi | **var** (vokal+other kapalıyken) |
+| Below The Surface [C] | hafif sızıntı | iyi | yok |
+| Zeus [C] | temiz | geri geldi (808 davulda, normal) | yok |
+
+**C vokalde B kadar, basta A kadar iyi** — Hi-Fi adayı C. Ama HAZBIN'deki
+cızırtı çözülmeden canlıya alınmıyor. Orijinalde ve A'da aynı ayarda yok,
+yani C'nin yöntemine özgü.
+
+**Elenen hipotez:** "fp16 yanlış kullanılıyor". İki konfig de
+`use_amp: true` diyor, yani fp16 MSST'nin kendi varsayılanı; ben de öyle
+yapıyorum. Kod hatası değil — ama çıkarma sonrası açığa çıkan hatayı
+büyütüyor OLABİLİR, sınanıyor.
+
+**Geometri farkı (asıl şüpheli):**
+
+| | chunk | adım (overlap 2) |
+|---|---|---|
+| A (MelBand) | 352 800 = 8.00 sn | 176 400 = 4.00 sn |
+| C (BS-RoFo) | 588 800 = 13.35 sn | 294 400 = 6.68 sn |
+
+`::crackle` bunu varsaymak yerine ölçüyor: en büyük sıçramaların konumu
+adıma göre mod alınıp dağılımın toplanıp toplanmadığına bakılıyor.
+Sentetik sınamada rastgele sıçramalar 0.023, sınıra oturanlar 1.000 pay
+veriyor; yanlış adımla bakıldığında 0.113'e kadar çıkabildiği için eşik
+0.25 seçildi.
+
+Düzeltme adayları: `C-fp32` (vokal geçişi fp32), `C-ov4` (num_overlap 4),
+`C-fp32-ov4` (ikisi). Kitaplıkta ayrı ad olarak çıkıyorlar.
+
+### İLERİDE denenecek (şimdi değil)
+**Davulu da B'den al.** Below The Surface'te demucs'un davul stem'ine
+piyano sızıyor; B'nin davulu kulak testinde iyiydi. C'nin iskeleti buna
+hazır: vokal gibi davul da B'den alınıp enstrümantalden çıkarılabilir,
+kalan dört stem demucs'ta kalır. Önce C'nin cızırtısı çözülsün.
+
 ### Hâlâ ölçülmemiş, deneyin cevaplayacağı
 - Roformer'ın T4'teki süresi (Demucs'a EK geliyor, yerine geçmiyor).
 - Enstrümantali `htdemucs_6s`'e vermek gitar/piyano kalitesini bozuyor mu?
