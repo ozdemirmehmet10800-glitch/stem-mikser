@@ -674,6 +674,226 @@ def run_b(song_id: str, num_overlap: int = 2, tta: bool = False,
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return report
 
+# --------------------------------------------------------------------------
+# A: Roformer vokal -> enstrümantal -> htdemucs_6s
+# --------------------------------------------------------------------------
+
+@app.function(
+    image=gpu_image,
+    gpu="T4",
+    volumes={DATA_DIR: volume},
+    timeout=3600,
+    max_containers=1,      # min_containers YOK
+)
+def run_a(song_id: str, num_overlap: int = 2, suffix: str = "a",
+          label: str = "A") -> dict:
+    """İki aşamalı hibrit.
+
+    1. Mel-Band Roformer karışımdan vokali çıkarır.
+    2. enstrümantal = karışım - vokal   (tanım gereği TAM, hata sıfır)
+    3. htdemucs_6s enstrümantali böler.
+    4. Demucs'un KENDİ vokal çıkışı (enstrümantalde kalan artık) "other"a
+       EKLENİR, atılmaz - stem toplamı karışıma eşit kalsın diye.
+
+    Yani toplamdaki tek sapma demucs'un kendi yeniden kurma hatası; Roformer
+    aşaması hiç hata eklemiyor.
+    """
+    global _FIRST_CALL
+    import numpy as np
+    import torch
+    from demucs.apply import apply_model
+    from demucs.pretrained import get_model
+
+    wall_started = time.time()
+    cold_seconds = round(time.time() - _CONTAINER_START, 2) if _FIRST_CALL else 0.0
+    was_cold = _FIRST_CALL
+    _FIRST_CALL = False
+
+    volume.reload()
+    root = pathlib.Path(EXP_WEIGHTS)
+    config = _load_config(root / "melband_vocals.yaml")
+    samplerate = int(config["audio"]["sample_rate"])
+    channels = int(config["audio"]["num_channels"])
+
+    load_started = time.time()
+    roformer = _build_model("melband", config)
+    _load_checkpoint(roformer, root / "melband_vocals.ckpt", "cuda")
+    demucs = get_model(MODEL_NAME)
+    demucs.eval()
+    model_load_seconds = round(time.time() - load_started, 2)
+    demucs_sources = [str(name) for name in demucs.sources]
+    print(f"[model] A yuklendi {model_load_seconds} sn, demucs={demucs_sources}")
+
+    if int(demucs.samplerate) != samplerate or int(demucs.audio_channels) != channels:
+        raise ValueError(
+            f"Ornekleme/kanal uyusmuyor: roformer {samplerate}/{channels}, "
+            f"demucs {int(demucs.samplerate)}/{int(demucs.audio_channels)}"
+        )
+
+    source_status = json.loads((_song_dir(song_id) / "status.json").read_text("utf-8"))
+    mix = _decode(_find_input(song_id), samplerate, channels)
+    duration = round(mix.shape[1] / samplerate, 3)
+    print(f"[decode] {mix.shape} -> {duration} sn")
+
+    # --- 1. aşama: vokal ---------------------------------------------------
+    torch.cuda.reset_peak_memory_stats()
+    stage1_started = time.time()
+    use_fp16 = True
+    out, had_nan = _demix(roformer, mix, config, num_overlap, use_fp16)
+    if had_nan:
+        print("[fp16] NaN/Inf uretildi, fp32'ye dusuluyor")
+        use_fp16 = False
+        torch.cuda.reset_peak_memory_stats()
+        stage1_started = time.time()
+        out, had_nan = _demix(roformer, mix, config, num_overlap, use_fp16)
+    vocals = out[0]
+    stage1_seconds = round(time.time() - stage1_started, 2)
+    vram_stage1 = _peak_vram()
+    print(f"[roformer] {stage1_seconds} sn, fp16={use_fp16}, {vram_stage1}")
+
+    # Belleği bırak: demucs aşaması aynı GPU'da.
+    del roformer, out
+    torch.cuda.empty_cache()
+
+    # --- 2. aşama: enstrümantal -> demucs ---------------------------------
+    instrumental = mix - vocals
+
+    # Normalizasyon: canlı separate ile aynı (demucs CLI davranışı).
+    reference = instrumental.mean(0)
+    ref_mean = float(reference.mean())
+    ref_std = float(reference.std())
+    if ref_std < 1e-8:
+        raise ValueError("Enstrumantal neredeyse sessiz; demucs'a verilecek sinyal yok.")
+    normalized = (instrumental - ref_mean) / ref_std
+
+    torch.cuda.reset_peak_memory_stats()
+    stage2_started = time.time()
+    with torch.no_grad():
+        split = apply_model(
+            demucs, torch.from_numpy(normalized)[None], device="cuda",
+            shifts=1, split=True, overlap=0.25, progress=False,
+        )
+    demucs_out = (split[0].cpu().numpy() * ref_std) + ref_mean
+    stage2_seconds = round(time.time() - stage2_started, 2)
+    vram_stage2 = _peak_vram()
+    print(f"[demucs] {stage2_seconds} sn, {vram_stage2}")
+
+    by_name = {name: demucs_out[index] for index, name in enumerate(demucs_sources)}
+
+    # Demucs'un vokal çıkışı: enstrümantalde kalan vokal ARTIĞI. Roformer'ın
+    # vokaliyle karıştırmak istemiyoruz (çift sayılırdı), atmak da toplamı
+    # bozardı - "other"a ekliyoruz.
+    residue = by_name.get("vocals")
+    stems = {
+        "vocals": vocals,
+        "drums": by_name["drums"],
+        "bass": by_name["bass"],
+        "guitar": by_name["guitar"],
+        "piano": by_name["piano"],
+        "other": by_name["other"] + (residue if residue is not None else 0.0),
+    }
+    residue_rms = float(np.sqrt(np.mean(residue.astype(np.float64) ** 2))) if residue is not None else 0.0
+    print(f"[artik-vokal] demucs'un vokal artigi rms={residue_rms:.6f} -> other'a eklendi")
+
+    residual = _residual_report(mix, stems)
+    print(f"[artik] {residual}")
+
+    title = f"{source_status.get('title') or song_id[:12]} [{label}]"
+    target_id = f"{song_id}-{suffix}"
+    written = _write_outputs(target_id, title, stems, samplerate, channels,
+                             duration, song_id, meta={})
+
+    wall_seconds = round(time.time() - wall_started, 2)
+    gpu_seconds = round(stage1_seconds + stage2_seconds, 2)
+    report = {
+        "method": label,
+        "source_song": song_id,
+        "target_song": target_id,
+        "title": title,
+        "duration": duration,
+        "num_overlap": int(num_overlap),
+        "tta": False,
+        "precision": "fp16" if use_fp16 else "fp32",
+        "cold_start_seconds": cold_seconds,
+        "was_cold": bool(was_cold),
+        "model_load_seconds": model_load_seconds,
+        "gpu_seconds": gpu_seconds,
+        "roformer_seconds": stage1_seconds,
+        "demucs_seconds": stage2_seconds,
+        "vocal_residue_rms": round(residue_rms, 6),
+        "wall_seconds": wall_seconds,
+        "usd": round(wall_seconds * T4_USD_PER_SECOND, 5),
+        "stems": written,
+        "vram_allocated_mb": float(max(
+            vram_stage1.get("vram_allocated_mb", 0.0),
+            vram_stage2.get("vram_allocated_mb", 0.0),
+        )),
+        "vram_reserved_mb": float(max(
+            vram_stage1.get("vram_reserved_mb", 0.0),
+            vram_stage2.get("vram_reserved_mb", 0.0),
+        )),
+        **{key: float(value) for key, value in residual.items()},
+    }
+    status_path = _song_dir(target_id) / "status.json"
+    status = json.loads(status_path.read_text("utf-8"))
+    status["experiment"] = report
+    status_path.write_text(json.dumps(status, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+    volume.commit()
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return report
+
+
+# --------------------------------------------------------------------------
+# şarkı seçimi ve koşum
+# --------------------------------------------------------------------------
+
+@app.function(image=fetch_image, volumes={DATA_DIR: volume}, timeout=120)
+def pick_songs(count: int = 3, must_contain: str = "") -> list:
+    """Deneyde kullanılacak şarkılar: en son yüklenen `count` tanesi.
+
+    `must_contain` verilirse (HAZBIN gibi) o şarkı listede olmasa bile
+    başa ekleniyor. Deney çıktıları (-a/-b/-bmax) elenmiş oluyor.
+    """
+    volume.reload()
+    root = pathlib.Path(DATA_DIR) / "songs"
+    found = []
+    for entry in sorted(root.iterdir()) if root.is_dir() else []:
+        status_path = entry / "status.json"
+        if not status_path.is_file():
+            continue
+        try:
+            data = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if data.get("state") != "done":
+            continue
+        if data.get("source_song"):       # deney çıktısı, kaynak değil
+            continue
+        if not sorted(entry.glob("input.*")):
+            continue
+        found.append({
+            "id": str(data.get("id", entry.name)),
+            "title": str(data.get("title") or entry.name[:12]),
+            "created_at": str(data.get("created_at") or ""),
+            "duration": float(data.get("duration") or 0.0),
+        })
+
+    found.sort(key=lambda item: item["created_at"], reverse=True)
+    chosen = []
+    if must_contain:
+        needle = must_contain.lower()
+        for item in found:
+            if needle in item["title"].lower():
+                chosen.append(item)
+                break
+    for item in found:
+        if len(chosen) >= count:
+            break
+        if item not in chosen:
+            chosen.append(item)
+    return chosen
+
 
 @app.local_entrypoint()
 def fetch(check_mirror: bool = True):
