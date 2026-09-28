@@ -1,8 +1,8 @@
-// Hız ve ton esnetmesi: TEK SoundTouch düğümü, toplama bus'ında.
+// Hız ve ton esnetmesi: TEK düğüm, toplama bus'ında.
 //
 // Mimari:
 //   6 source (hepsi aynı playbackRate) -> stem gain'leri -> bus
-//     -> SoundTouchNode -> master -> destination
+//     -> esnetici düğümü -> master -> destination
 //
 // Kanal başına AYRI düğüm KULLANMIYORUZ. WSOLA her sekansta yapıştırma
 // noktasını kendi sinyaline göre seçiyor; ayrı düğümlerde her stem kendi
@@ -11,43 +11,24 @@
 // CPU altıya bölünmüyor.
 //
 // Bedeli: fader/solo/mute değişimi düğümün ÖNÜNDE olduğu için esnetici
-// açıkken ~150 ms geç duyuluyor. Bilinçli kabul.
+// açıkken ~120 ms geç duyuluyor. Bilinçli kabul.
 //
 // Metronom düğümün DIŞINDA kalıyor (doğrudan destination'a), yoksa tıklar
 // zaman esnetmesinde yayılırdı.
+//
+// Hangi kütüphanenin kullanıldığı burada değil stretchers.js'te; bu dosya
+// yalnız bypass kuralını, gecikme ölçümünü ve önbelleği tutuyor.
 
-import { SoundTouchNode } from "../vendor/soundtouch-worklet/index.js";
+import {
+  DEFAULT_STRETCHER, normalizeStretcher, stretcherInfo,
+} from "./stretchers.js";
 
-// import.meta.url'e göre çözülüyor: index.html ve bench.html farklı
-// derinlikte olsa da aynı adrese çıkıyor.
-const PROCESSOR_URL = new URL(
-  "../vendor/soundtouch-worklet/soundtouch-processor.js",
-  import.meta.url
-).href;
+export { DEFAULT_STRETCHER, STRETCHERS, stretcherInfo, supportsFormants } from "./stretchers.js";
 
 export const MIN_RATE = 0.5;
 export const MAX_RATE = 1.5;
 export const MAX_SEMITONES = 6;
 
-// WSOLA kalite ayarları. setStretchParameters ile hepsi erişilebilir:
-//   sequenceMs   - yapıştırma sekansının uzunluğu; 0 = otomatik
-//                  (tempo'ya göre 130 - 20*tempo ms, 50..125 ms arası)
-//   seekWindowMs - en iyi örtüşmenin arandığı pencere; 0 = otomatik
-//                  (25.67 - 2.67*tempo ms, 15..25 ms arası)
-//   overlapMs    - çapraz geçiş uzunluğu; varsayılan 8 ms
-//   quickSeek    - kaba arama (varsayılan true)
-//
-// sequenceMs/seekWindowMs/overlapMs OTOMATİK bırakılıyor: SoundTouch'ın
-// tempoya göre uyarlanan formülü elle seçilmiş tek bir değerden iyi.
-// quickSeek ise KAPATILIYOR - kaba arama yerine tam arama örtüşme hizasını
-// düzeltiyor ve bench.html'de bildirilen hafif gıcırtının ilk şüphelisi bu.
-// Ölçümde 6 ayrı düğümle oran 0.111 çıktı; burada tek düğüm var, yani tam
-// aramanın maliyetini karşılayacak kat kat baş mevcut.
-//
-// Bu üçlüyü gecikme ölçümüne DE vermek gerekmiyor: gecikme yalnızca
-// sequenceMs/seekWindowMs/overlapMs ve tempo'dan çıkıyor, quickSeek
-// tampon boyutlarını değiştirmiyor.
-export const STRETCH_QUALITY = { quickSeek: false };
 
 // Gecikme ölçümü: İÇERİK gecikmesi.
 //
@@ -91,19 +72,28 @@ const RATE_GRID = 0.05;
 // key -> {seconds, measured}. measured=false ise ölçüm başarısız olmuş ve
 // yedek değere düşülmüş demektir; hiza testi bunu ayrıca raporluyor.
 const latencyCache = new Map();
+// ctx -> Map(arka uç kimliği -> yükleme sözü)
 const moduleCache = new WeakMap();
-let lastMeasured = null;
+// Arka uç başına son ölçüm: sürükleme sırasındaki tahmin için. Ortak
+// tutulsa SoundTouch'ın değeri Signalsmith'e sızardı.
+const lastMeasured = new Map();
 
 export function isBypass(rate, semitones) {
   return Math.abs(rate - 1) < 1e-6 && Math.round(semitones) === 0;
 }
 
-/** Worklet modülünü bir AudioContext'e bir kez yükler. */
-export function registerModule(ctx) {
-  let ready = moduleCache.get(ctx);
+/** Worklet modülünü bir AudioContext'e bir kez yükler (arka uç başına). */
+export function registerModule(ctx, stretcher = DEFAULT_STRETCHER) {
+  const id = normalizeStretcher(stretcher);
+  let perContext = moduleCache.get(ctx);
+  if (!perContext) {
+    perContext = new Map();
+    moduleCache.set(ctx, perContext);
+  }
+  let ready = perContext.get(id);
   if (!ready) {
-    ready = SoundTouchNode.register(ctx, PROCESSOR_URL);
-    moduleCache.set(ctx, ready);
+    ready = stretcherInfo(id).register(ctx);
+    perContext.set(id, ready);
   }
   return ready;
 }
@@ -111,30 +101,38 @@ export function registerModule(ctx) {
 /**
  * Esnetici düğümü kurar. Modül önceden yüklenmiş olmalı (registerModule).
  * channels: bus'ın kanal sayısı (mobilde mono indirme yüzünden 1 olabilir).
+ * Signalsmith'in fabrikası asenkron, bu yüzden dönüş her zaman beklenmeli.
  */
-export function createNode(ctx, channels, { rate, semitones }) {
-  const node = new SoundTouchNode({
-    context: ctx,
-    outputChannelCount: [Math.max(1, channels)],
-  });
-  // Tempo KAYNAĞIN playbackRate'inden geliyor; düğüme aynı değeri veriyoruz
-  // ki perdeyi telafi edebilsin. Düğümün kendi hesabı:
-  //   virtualPitch = 2^(semitones/12) / playbackRate
-  // yani net sonuç: hız = rate, perde = semitones.
-  node.playbackRate.value = rate;
-  node.pitchSemitones.value = Math.round(semitones);
-  node.setStretchParameters(STRETCH_QUALITY);
-  return node;
+export function createNode(ctx, channels, options, stretcher = DEFAULT_STRETCHER) {
+  return stretcherInfo(stretcher).create(ctx, Math.max(1, channels), options);
 }
 
-export function updateNode(node, { rate, semitones }) {
+export function updateNode(node, options, stretcher = DEFAULT_STRETCHER, when = 0) {
   if (!node) return;
-  node.playbackRate.value = rate;
-  node.pitchSemitones.value = Math.round(semitones);
+  stretcherInfo(stretcher).update(node, options, when);
 }
 
-function probeKey(sampleRate, rate, semitones) {
-  return `${Math.round(sampleRate)}|${quantizeRate(rate)}|${Math.round(semitones)}`;
+/**
+ * Düğümü kaynaklarla AYNI ana başlatır. SoundTouch'ta gereksiz (giriş gelir
+ * gelmez işliyor), Signalsmith'te şart: schedule({active:true}) olmadan
+ * hiç ses üretmiyor.
+ */
+export function startNode(node, when, options, stretcher = DEFAULT_STRETCHER) {
+  if (!node) return;
+  stretcherInfo(stretcher).start(node, when, options);
+}
+
+/** Kütüphanenin kendi bildirdiği gecikme, varsa. Ölçümle karşılaştırmak için. */
+export function reportedLatency(node, stretcher = DEFAULT_STRETCHER) {
+  if (!node) return Promise.resolve(null);
+  return Promise.resolve(stretcherInfo(stretcher).reportedLatency(node));
+}
+
+// Önbellek anahtarına ARKA UÇ da giriyor: Signalsmith'in gecikmesi
+// SoundTouch'ınkinden farklı, ikisi aynı kovaya düşmemeli.
+function probeKey(sampleRate, rate, semitones, stretcher) {
+  return `${normalizeStretcher(stretcher)}|${Math.round(sampleRate)}` +
+    `|${quantizeRate(rate)}|${Math.round(semitones)}`;
 }
 
 function quantizeRate(rate) {
@@ -142,9 +140,9 @@ function quantizeRate(rate) {
 }
 
 /** Önbellekte varsa gecikme; yoksa null (ölçüm gerekiyor). */
-export function cachedLatency(sampleRate, rate, semitones) {
+export function cachedLatency(sampleRate, rate, semitones, stretcher = DEFAULT_STRETCHER) {
   if (isBypass(rate, semitones)) return 0;
-  const hit = latencyCache.get(probeKey(sampleRate, rate, semitones));
+  const hit = latencyCache.get(probeKey(sampleRate, rate, semitones, stretcher));
   return hit === undefined ? null : hit.seconds;
 }
 
@@ -153,9 +151,9 @@ export function cachedLatency(sampleRate, rate, semitones) {
  * yapılamamış ve yedek sabite düşülmüş. Hiza testi bunu gösteriyor.
  * Henüz hiç denenmemişse null.
  */
-export function latencyInfo(sampleRate, rate, semitones) {
+export function latencyInfo(sampleRate, rate, semitones, stretcher = DEFAULT_STRETCHER) {
   if (isBypass(rate, semitones)) return { seconds: 0, measured: true };
-  const hit = latencyCache.get(probeKey(sampleRate, rate, semitones));
+  const hit = latencyCache.get(probeKey(sampleRate, rate, semitones, stretcher));
   return hit === undefined ? null : { seconds: hit.seconds, measured: hit.measured };
 }
 
@@ -167,12 +165,13 @@ export function latencyInfo(sampleRate, rate, semitones) {
  * telefonda takılmaya yol açıyor (worklet modülü her offline context'e
  * yeniden yükleniyor). Taze ölçüm kaydırıcı BIRAKILINCA yapılıyor.
  */
-export function estimateLatency(sampleRate, rate, semitones) {
-  const exact = cachedLatency(sampleRate, rate, semitones);
+export function estimateLatency(sampleRate, rate, semitones, stretcher = DEFAULT_STRETCHER) {
+  const exact = cachedLatency(sampleRate, rate, semitones, stretcher);
   if (exact !== null) return exact;
   // Komşu bir ayarın ölçümü, varsayılandan çok daha yakın: gecikme hızla
   // yavaş değişiyor (0.5x -> 1.5x arası toplam ~60 ms).
-  if (lastMeasured !== null) return lastMeasured;
+  const recent = lastMeasured.get(normalizeStretcher(stretcher));
+  if (recent !== undefined) return recent;
   return FALLBACK_LATENCY;
 }
 
@@ -196,16 +195,19 @@ export function estimateLatency(sampleRate, rate, semitones) {
  *
  * Telafi edilmezse metronom ve akor imleci sesten ~110 ms kayar.
  */
-export async function measureLatency(sampleRate, rate, semitones) {
+export async function measureLatency(
+  sampleRate, rate, semitones, stretcher = DEFAULT_STRETCHER
+) {
   if (isBypass(rate, semitones)) return 0;
-  const key = probeKey(sampleRate, rate, semitones);
+  const id = normalizeStretcher(stretcher);
+  const key = probeKey(sampleRate, rate, semitones, id);
   const hit = latencyCache.get(key);
   if (hit !== undefined) return hit;
 
   let value = FALLBACK_LATENCY;
   let measured = false;
   try {
-    value = await renderProbe(sampleRate, rate, Math.round(semitones));
+    value = await renderProbe(sampleRate, rate, Math.round(semitones), id);
     measured = true;
   } catch (error) {
     console.warn("[stretch] gecikme ölçülemedi, varsayılan kullanılıyor:", error);
@@ -213,11 +215,11 @@ export async function measureLatency(sampleRate, rate, semitones) {
   latencyCache.set(key, { seconds: value, measured });
   // Yedek değeri "son ölçüm" diye yaymıyoruz; yoksa tek bir hata bütün
   // sürükleme tahminlerini kirletir.
-  if (measured) lastMeasured = value;
+  if (measured) lastMeasured.set(id, value);
   return value;
 }
 
-async function renderProbe(sampleRate, rate, semitones) {
+async function renderProbe(sampleRate, rate, semitones, stretcher) {
   const Ctor = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   if (!Ctor) throw new Error("OfflineAudioContext yok");
 
@@ -234,8 +236,12 @@ async function renderProbe(sampleRate, rate, semitones) {
   const bufferFrames = Math.ceil((realSeconds * rate + 0.2) * sampleRate);
 
   const ctx = new Ctor(1, length, sampleRate);
-  await SoundTouchNode.register(ctx, PROCESSOR_URL);
-  const node = createNode(ctx, 1, { rate, semitones });
+  await registerModule(ctx, stretcher);
+  // Formant telafisi blok yapısını değiştirmiyor, yalnız spektral zarfı
+  // yeniden şekillendiriyor; gecikmeye girmediği için sondada KAPALI ve
+  // önbellek anahtarında yok. Yanılıyorsak hiza testi yakalar.
+  const probeOptions = { rate, semitones, formants: false };
+  const node = await createNode(ctx, 1, probeOptions, stretcher);
 
   const buffer = ctx.createBuffer(1, bufferFrames, sampleRate);
   const data = buffer.getChannelData(0);
@@ -272,6 +278,7 @@ async function renderProbe(sampleRate, rate, semitones) {
   source.playbackRate.value = rate;
   source.connect(node);
   node.connect(ctx.destination);
+  startNode(node, 0, probeOptions, stretcher);
   source.start(0);
 
   const rendered = await ctx.startRendering();

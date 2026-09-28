@@ -23,8 +23,8 @@
 //                zamanlayıcısında bunu kullanıyor.
 
 import {
-  MIN_RATE, MAX_RATE, MAX_SEMITONES,
-  isBypass, registerModule, createNode, updateNode,
+  MIN_RATE, MAX_RATE, MAX_SEMITONES, DEFAULT_STRETCHER,
+  isBypass, registerModule, createNode, updateNode, startNode, supportsFormants,
 } from "./stretch.js";
 
 export const STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"];
@@ -90,6 +90,8 @@ export class Engine {
     this.bus = null;        // stem'lerin toplandığı gain (yalnız esnetmede)
     this.stretchNode = null;
     this.channelLayout = 2; // bus'ın kanal sayısı; mobilde mono olabilir
+    this.stretcher = DEFAULT_STRETCHER;
+    this.formants = false;  // yalnız destekleyen arka uçta anlamlı
   }
 
   // decodeAudioData mono'ya kendiliğinden indirmiyor, stereo tamponu yine de
@@ -172,6 +174,41 @@ export class Engine {
     return !isBypass(this.rate, this.semitones);
   }
 
+  #stretchOptions() {
+    return {
+      rate: this.rate,
+      semitones: this.semitones,
+      // Desteklemeyen arka uçta bayrak hiç gönderilmiyor.
+      formants: this.formants && supportsFormants(this.stretcher),
+    };
+  }
+
+  /**
+   * Esnetici kütüphanesini değiştirir. Düğüm tipi değiştiği için zincir
+   * yeniden kurulmak zorunda: çalıyorsa mevcut konuma seek ediliyor.
+   */
+  async setStretcher(id) {
+    const next = id || DEFAULT_STRETCHER;
+    if (next === this.stretcher) return;
+    this.stretcher = next;
+    if (this.playing && this.stretchActive) await this.seek(this.currentTime);
+  }
+
+  /**
+   * Formant telafisi. Signalsmith'te canlı uygulanabiliyor (schedule),
+   * SoundTouch'ta karşılığı yok - orada ayar sessizce yok sayılıyor.
+   */
+  async setFormants(on) {
+    const next = Boolean(on);
+    if (next === this.formants) return;
+    this.formants = next;
+    if (!this.playing || !this.stretchActive) return;
+    if (supportsFormants(this.stretcher)) {
+      updateNode(this.stretchNode, this.#stretchOptions(), this.stretcher,
+                 this.ctx.currentTime);
+    }
+  }
+
   #routeChannels() {
     if (!this.ctx) return;
     // Esnetici kapalıysa gain'ler DOĞRUDAN master'a gidiyor: varsayılan
@@ -215,15 +252,16 @@ export class Engine {
       this.#routeChannels();
       return;
     }
-    await registerModule(this.ctx);
+    await registerModule(this.ctx, this.stretcher);
     if (!this.bus) {
       this.bus = this.ctx.createGain();
       this.bus.gain.value = 1;
     }
-    this.stretchNode = createNode(this.ctx, this.channelLayout, {
-      rate: this.rate,
-      semitones: this.semitones,
-    });
+    // Signalsmith'in fabrikası asenkron; SoundTouch'ınki değil. İkisi de
+    // await ediliyor, startAt bundan SONRA hesaplandığı için sorun yok.
+    this.stretchNode = await createNode(
+      this.ctx, this.channelLayout, this.#stretchOptions(), this.stretcher
+    );
     this.bus.connect(this.stretchNode);
     this.stretchNode.connect(this.master);
     this.#routeChannels();
@@ -289,7 +327,8 @@ export class Engine {
     this.semitones = nextSemis;
     this.latency = nextLatency;
     if (nowActive) {
-      updateNode(this.stretchNode, { rate: nextRate, semitones: nextSemis });
+      updateNode(this.stretchNode, this.#stretchOptions(), this.stretcher,
+                 this.ctx.currentTime);
       for (const channel of this.channels.values()) {
         if (channel.source) channel.source.playbackRate.value = nextRate;
       }
@@ -418,6 +457,9 @@ export class Engine {
     await this.#rebuildStretch();
 
     const startAt = this.ctx.currentTime + START_LEAD;
+    // Signalsmith schedule({active:true}) olmadan hiç ses üretmiyor ve
+    // kaynaklarla AYNI ana yazılması gerekiyor; SoundTouch'ta bu no-op.
+    startNode(this.stretchNode, startAt, this.#stretchOptions(), this.stretcher);
     for (const channel of this.channels.values()) {
       const source = this.ctx.createBufferSource();
       source.buffer = channel.buffer;
