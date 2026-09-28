@@ -10,7 +10,10 @@ import { MediaBridge } from "./media.js";
 import { WakeLock } from "./wakelock.js";
 import { StemCache } from "./stemcache.js";
 import { Metronome, SUBDIVISIONS } from "./metronome.js";
-import { measureLatency, estimateLatency, MIN_RATE, MAX_RATE, MAX_SEMITONES } from "./stretch.js";
+import {
+  measureLatency, estimateLatency, MIN_RATE, MAX_RATE, MAX_SEMITONES,
+  STRETCHERS, stretcherInfo, supportsFormants,
+} from "./stretch.js";
 import { transposeKey } from "./tonality.js";
 
 const POLL_MS = 3000;
@@ -605,6 +608,8 @@ on("open-settings", "click", () => {
   refreshStemCacheState();
   el("setting-url").value = settings.url;
   el("setting-token").value = settings.token;
+  el("setting-stretcher").value = settings.stretcher;
+  refreshStretcherUi();
   hideMessage(el("settings-message"));
   showView("settings");
 });
@@ -713,6 +718,55 @@ on("master", "input", () => {
   el("master-value").textContent = `${gainToDb(gain)} dB`;
 });
 
+// --------------------------------------------------------- esnetici seçimi
+
+function refreshStretcherUi() {
+  const select = el("setting-stretcher");
+  const check = el("setting-formants");
+  if (!select || !check) return;
+  const info = stretcherInfo(settings.stretcher);
+  const able = supportsFormants(settings.stretcher);
+  el("stretcher-note").textContent =
+    `${info.label} (${info.license}). Değişiklik çalarken de uygulanıyor; ` +
+    `hız 1.0 ve ton 0 iken hiçbir esnetici kurulmuyor.`;
+  check.disabled = !able;
+  check.checked = able && Boolean(settings.formants);
+  el("formant-note").textContent = able
+    ? "Ton kaydırırken formantları yerinde tutmayı dener. Kaynağın hız " +
+      "kaydırması ayrıca geri çevriliyor, yoksa formantlar tempoyla birlikte " +
+      "düşüyor (ölçüldü). Kulakla dene."
+    : `${info.label} formant telafisi sunmuyor.`;
+}
+
+function applyStretcherSettings() {
+  engine.setStretcher(settings.stretcher);
+  engine.setFormants(settings.formants);
+}
+
+on("setting-stretcher", "change", () => {
+  settings = saveSettings({ stretcher: el("setting-stretcher").value });
+  refreshStretcherUi();
+  applyStretcherSettings();
+});
+
+on("setting-formants", "change", () => {
+  settings = saveSettings({ formants: el("setting-formants").checked });
+  refreshStretcherUi();
+  applyStretcherSettings();
+});
+
+function buildStretcherOptions() {
+  const select = el("setting-stretcher");
+  if (!select) return;
+  select.innerHTML = "";
+  for (const item of STRETCHERS) {
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = `${item.label} (${item.license})`;
+    select.append(option);
+  }
+}
+
 // ------------------------------------------------------------- hiza testi
 
 // aligncheck.js YALNIZCA test çalıştırılınca yükleniyor: normal açılışta
@@ -763,9 +817,10 @@ on("align-run", "click", async () => {
     // Oynatıcı çalıyorsa durdur: iki AudioContext aynı anda ses vermesin.
     if (engine.playing) stopPlayback();
     const { runAlignmentCheck, PASS_MS } = await import("./aligncheck.js");
-    const rows = await runAlignmentCheck((text) => {
-      state.textContent = text;
-    });
+    const rows = await runAlignmentCheck(
+      (text) => { state.textContent = text; },
+      { stretcher: settings.stretcher, formants: settings.formants }
+    );
     renderAlignment(rows);
     const failed = rows.filter((item) => item.passed === false).length;
     state.textContent = failed
@@ -858,6 +913,10 @@ strip = new ChordStrip(
 media = new MediaBridge(engine, { onSeek: (time) => engine.seek(time) });
 
 buildSubdivisionButtons();
+buildStretcherOptions();
+el("setting-stretcher").value = settings.stretcher;
+refreshStretcherUi();
+applyStretcherSettings();
 registerServiceWorker();
 stemCache.requestPersistence();
 

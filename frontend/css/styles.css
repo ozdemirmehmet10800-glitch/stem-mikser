@@ -503,6 +503,18 @@ input[type="range"]::-moz-range-thumb {
 .tune-value span { display: block; font-size: 11px; color: var(--text-faint); }
 .tune-row input[type="range"] { width: 100%; margin-top: 8px; }
 
+.field select {
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 11px 12px; font: inherit; min-height: 44px; width: 100%;
+}
+.check {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 44px; cursor: pointer; font-size: 14px;
+}
+.check input { width: 20px; height: 20px; accent-color: var(--accent); }
+.check input:disabled + span { color: var(--text-faint); }
+
 /* ---------- hiza testi ---------- */
 
 .align-state {

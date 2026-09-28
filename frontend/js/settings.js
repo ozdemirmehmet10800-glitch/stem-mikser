@@ -3,19 +3,36 @@
 
 const KEY = "stem-mikser.settings";
 
+// Esnetici seçimi ve formant telafisi de burada: cihaza özgü tercihler,
+// sunucuyu ilgilendirmiyor. Varsayılan SoundTouch - Signalsmith gerçek
+// şarkıda A/B ile kazanana kadar mevcut davranış değişmesin.
+const DEFAULTS = { url: "", token: "", stretcher: "soundtouch", formants: false };
+
 export function loadSettings() {
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return { url: "", token: "" };
+    if (!raw) return { ...DEFAULTS };
     const parsed = JSON.parse(raw);
-    return { url: parsed.url || "", token: parsed.token || "" };
+    return {
+      url: parsed.url || "",
+      token: parsed.token || "",
+      stretcher: parsed.stretcher || DEFAULTS.stretcher,
+      formants: Boolean(parsed.formants),
+    };
   } catch {
-    return { url: "", token: "" };
+    return { ...DEFAULTS };
   }
 }
 
-export function saveSettings({ url, token }) {
-  const clean = { url: (url || "").trim().replace(/\/+$/, ""), token: (token || "").trim() };
+export function saveSettings(next) {
+  const current = loadSettings();
+  const merged = { ...current, ...next };
+  const clean = {
+    url: (merged.url || "").trim().replace(/\/+$/, ""),
+    token: (merged.token || "").trim(),
+    stretcher: merged.stretcher || DEFAULTS.stretcher,
+    formants: Boolean(merged.formants),
+  };
   localStorage.setItem(KEY, JSON.stringify(clean));
   return clean;
 }
