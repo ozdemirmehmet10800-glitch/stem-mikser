@@ -356,6 +356,99 @@ gıcırtıyı aldı, kaliteyi bu kadar yükseltebildi.
 Sunucuda render. Ölçüm iyi çıktığı için gerek kalmadı; her ayar değişiminde
 yeniden render + indirme maliyeti ve anlık geri bildirimin kaybı vardı.
 
+## Aşama 8.1 – Esnetici kalitesi (A/B bekliyor)
+Aşama 8'den devreden tek konu: 0.8x + ton +2'de gıcırtı yok ama genel kalite
+düşüyor. WSOLA'nın yapısal sınırı.
+
+### signalsmith yeniden aday
+Aşama 8'de "gerçek zamanlıda 4+ düğümde susuyor" diye elenmişti. O ölçüm
+kütüphaneyi **tampon kipinde** çalıştırıyordu (`numberOfInputs: 0` +
+`addBuffers`). Artık TEK düğüm mimarisindeyiz ve mimari **canlı giriş**
+istiyor - o kip hiç denenmemişti.
+
+Duman testi (`bench.html` 3. bölüm, 6 kaynak → bus → tek düğüm, 0.8x + 2 ton):
+
+| | süre | processorerror | sustu mu | tepe | latency() |
+|---|---|---|---|---|---|
+| signalsmith, masaüstü | 60 sn | 0 | hayır | 0.163 | 120.0 ms |
+| soundtouch, masaüstü | 30 sn | 0 | hayır | 0.146 | — |
+| signalsmith, telefon | 60 sn | 0 | hayır | 0.157 | 120.0 ms |
+| soundtouch, telefon | 60 sn | 0 | hayır | 0.147 | — |
+
+Canlı girişte signalsmith `rate`'i YOK SAYIYOR (README), yani saf perde
+kaydırıcı - mimarimize zaten uyuyor. Perde telafisi elle:
+`semitones = S − 12·log2(R)`.
+
+### Lisans (teyit edildi)
+Depoda gerçek `LICENSE.txt`: **MIT, Copyright (c) 2022 Geraint Luff /
+Signalsmith Audio Ltd.** npm tarball'ında ayrı dosya yok, beyan
+`package.json`'da.
+
+### Mimari: arka uç kayıt defteri
+`stretchers.js` iki kütüphaneyi tek arayüz ardına koyuyor
+(`register/create/update/start/dispose/reportedLatency`). Motor hangisinin
+seçili olduğunu bilmiyor. Bus, bypass kuralı, düğümün her `play()`'de
+yeniden kurulması - hepsi aynı kaldı.
+
+Signalsmith'in fabrikası ASENKRON ve `schedule({active:true})` olmadan hiç
+ses üretmiyor; düğüm kaynaklarla AYNI ana yazılıyor (`startNode`).
+
+### ÖLÇÜM: hiza (masaüstü 48 kHz, aynı oturum)
+
+| ölçüm | SoundTouch | Signalsmith |
+|---|---|---|
+| 1.0x (bypass) | +0.0 ms (±0.0) | +0.0 ms (±0.0) |
+| 0.8x | +2.4 ms (**±16.9**) | −0.0 ms (**±0.0**) |
+| 1.2x | +2.2 ms (**±8.5**) | 0.0 ms (**±0.1**) |
+| canlı 0.8x → 1.1x | −1.1 ms (±9.9) | +0.1 ms (±0.1) |
+| seek sonrası konum | −7.6 ms | −0.0 ms |
+| seek sonrası bayat ses | yok | yok |
+| içerik gecikmesi 0.8 / 1.1 / 1.2x | 113.5 / 123.5 / 125.8 ms | 119.9 / 120.0 / 120.0 ms |
+
+Medyanlar ikisinde de eşiğin içinde; **ayrışan şey SAÇILMA**. SoundTouch
+WSOLA olduğu için tek tek darbeleri seekWindow kadar (±8-17 ms) oynatıyor;
+signalsmith faz vokoder olduğu için oynatmıyor (±0.1 ms). Kulakla bildirilen
+kalite farkının nesnel karşılığı büyük olasılıkla bu.
+
+Signalsmith'in gecikmesi hızdan BAĞIMSIZ (sabit blok gecikmesi) ve
+kütüphanenin kendi `latency()` değeriyle 0.1 ms'de uyuşuyor - iki bağımsız
+yöntemin aynı sayıyı vermesi sondanın da doğru olduğunun teyidi.
+
+### ÖLÇÜM: CPU payı, gerçek topoloji
+Offline render oranı (gerçek zamanlı CPU payı tarayıcıdan okunamıyor, bu en
+iyi vekil), 6 kaynak → bus → tek düğüm, 32 kHz mono, masaüstü:
+
+| | 6 AYRI düğüm | 6 → TEK düğüm |
+|---|---|---|
+| SoundTouch | 0.169 | **0.043** |
+| Signalsmith | 0.057 | **0.012** |
+
+Signalsmith gerçek mimaride 3.6 kat ucuz.
+
+### Formant telafisi – ÖLÇÜLDÜ, yönü ters çıktı
+Yalın `formantCompensation: true` bizim zincirimizde ZARARLI: kaynağın
+`playbackRate`'i formantları zaten rate katı kaydırmış ve düğüm yukarı
+akıştaki o kaymayı göremiyor. Spektral ağırlık merkezi ölçümü (f0 150 Hz,
+formant 1000 Hz'lik sentetik vızıltı):
+
+| durum | ağırlık merkezi |
+|---|---|
+| girdi (referans) | 1005 Hz |
+| R=0.8 S=0, telafi kapalı | 917 Hz |
+| R=0.8 S=0, telafi AÇIK (yalın) | **814 Hz** = tam 0.8 katı |
+| R=0.8 S=0, telafi + `formantSemitones = −12·log2(R)` | 917 Hz (düzeldi) |
+
+Bu yüzden ayar açıkken `formantSemitones = −12·log2(rate)` da gönderiliyor;
+böylece ayar yalnızca PERDE kaydırmasına karşı formant davranışını
+değiştiriyor. Kulakla A/B'de yargılanmak istenen tam olarak bu.
+
+### Açık: A/B kararı
+Ayarlar ekranından geçiş yapılıp gerçek şarkıda kulakla karşılaştırılacak.
+**Varsayılan şimdilik SoundTouch** - Signalsmith kazanırsa varsayılan
+değiştirilecek. Signalsmith de beğenilmezse SoundTouch'ta `overlapMs: 12`
+denemesine dönülecek (tek satır, `stretchers.js` içindeki
+`STRETCH_QUALITY`).
+
 ## Aşama 9 – Hi-Fi modu (daha kaliteli ayrıştırma)
 Öncelik 3. Yüklerken seçilir, `status.json`'a yazılır.
 

@@ -9,7 +9,7 @@
 // yeni worker beklemeden devralıyor (skipWaiting + clients.claim), yoksa
 // GitHub Pages'e atılan bir düzeltme kullanıcıya günlerce ulaşmayabiliyor.
 
-const VERSION = "v13";
+const VERSION = "v14";
 const CACHE = `stem-mikser-${VERSION}`;
 
 // Göreli yollar: site /stem-mikser/ alt yolunda yayınlanıyor, kökte değil.
@@ -30,6 +30,7 @@ const SHELL = [
   "./js/chords.js",
   "./js/settings.js",
   "./js/stretch.js",
+  "./js/stretchers.js",
   "./js/tonality.js",
   "./js/aligncheck.js",
   "./js/tap-processor.js",
@@ -42,6 +43,7 @@ const SHELL = [
   "./vendor/soundtouch-worklet/constants.js",
   "./vendor/soundtouch-worklet/processOffline.js",
   "./vendor/soundtouch-worklet/soundtouch-processor.js",
+  "./vendor/signalsmith-stretch/SignalsmithStretch.mjs",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
   "./icons/icon-512-maskable.png",
