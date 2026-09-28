@@ -101,6 +101,45 @@
 </p>
 <div id="realtime-info" class="lede"></div>
 
+<h2 style="font-size:16px; margin-top:26px">3. Tek düğüm, CANLI giriş — Aşama 8.1 duman testi</h2>
+<p class="lede">
+  Uygulamanın <strong>gerçek mimarisi</strong>: 6 kaynak &rarr; kanal
+  gain'leri &rarr; toplama bus'ı &rarr; <strong>TEK</strong> esnetici düğümü
+  &rarr; master. Hız 0.8x, ton +2.
+  <br><br>
+  Bu test neden ayrı: yukarıdaki 1. ve 2. bölüm signalsmith'i
+  <strong>tampon kipinde</strong> (<code>numberOfInputs: 0</code> +
+  <code>addBuffers</code>) çalıştırıyordu ve 4. düğümden itibaren susuyordu.
+  Burada kütüphane <strong>canlı giriş</strong> kipinde ve tek düğüm — bu kip
+  hiç denenmedi. Canlı girişte signalsmith <code>rate</code>'i yok sayıyor,
+  yani saf perde kaydırıcı; tempo kaynağın <code>playbackRate</code>'inden
+  geliyor ve perde telafisi elle yapılıyor
+  (<code>semitones = S &minus; 12&middot;log<sub>2</sub>(R)</code>).
+  <br><br>
+  <strong>Asıl aranan arıza sonradan susma.</strong> Çıkış seviyesi sürekli
+  izleniyor; 1 saniyeden uzun sessizlik "sustu" sayılıp zamanıyla birlikte
+  raporlanıyor. O yüzden en az 60 saniye çalışmalı.
+</p>
+<div class="controls">
+  <label>Süre (sn)
+    <input type="number" id="single-seconds" value="60" min="20" max="300" step="10">
+  </label>
+  <button class="btn btn-primary" id="run-single">Tek düğüm testini başlat</button>
+  <button class="btn" id="stop-single" disabled>Durdur</button>
+</div>
+<table id="single-results">
+  <tbody>
+    <tr><th>Durum</th><td id="s-state">—</td></tr>
+    <tr><th>Geçen süre</th><td class="num" id="s-elapsed">—</td></tr>
+    <tr><th>Çıkış seviyesi (anlık)</th><td class="num" id="s-level">—</td></tr>
+    <tr><th>Çıkış seviyesi (tepe)</th><td class="num" id="s-peak">—</td></tr>
+    <tr><th>processorerror</th><td class="num" id="s-errors">—</td></tr>
+    <tr><th>Sessizliğe düştü mü</th><td id="s-silence">—</td></tr>
+    <tr><th>latency()</th><td class="num" id="s-latency">—</td></tr>
+    <tr><th>Sonuç</th><td id="s-verdict">—</td></tr>
+  </tbody>
+</table>
+
 <h3 style="font-size:14px; margin:18px 0 6px">Tanı günlüğü</h3>
 <pre id="log">(henüz bir şey çalıştırılmadı)</pre>
 

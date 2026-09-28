@@ -318,6 +318,224 @@ async function stopRealtime() {
   el("stop-realtime").disabled = true;
 }
 
+// ------------------------------------- 3. tek düğüm, CANLI giriş (Aşama 8.1)
+//
+// Uygulamanın gerçek mimarisi: 6 kaynak -> kanal gain'leri -> toplama bus'ı
+// -> TEK esnetici düğümü -> master.
+//
+// Yukarıdaki iki bölüm signalsmith'i TAMPON kipinde çalıştırıyordu
+// (numberOfInputs: 0 + addBuffers) ve 4. düğümden itibaren susuyordu.
+// Burası CANLI GİRİŞ kipi ve tek düğüm; o kip hiç denenmedi.
+//
+// Asıl aranan arıza SONRADAN SUSMA: çıkış seviyesi sürekli izleniyor,
+// 1 saniyeden uzun sessizlik zamanıyla raporlanıyor.
+
+const SINGLE_SOURCES = 6;
+const SINGLE_LOOP_SECONDS = 16;
+const SILENCE_LEVEL = 0.002;
+const SILENCE_SECONDS = 1.0;   // bu kadar süren sessizlik "sustu" sayılıyor
+const SETTLE_SECONDS = 2.0;    // başlangıç doluşu sessizlik sayılmasın
+
+let singleCtx = null;
+let singleWatch = null;
+let singleTimer = null;
+// İzleme rAF ile YAPILMIYOR: ekran kapanınca ya da sekme arkaya geçince
+// rAF duruyor ve 60 saniyelik ölçüm sessizce ölüyor. 5 Hz zaten yeterli.
+const SINGLE_WATCH_MS = 200;
+
+function setSingle(id, text, cls) {
+  const node = el(id);
+  if (!node) return;
+  node.textContent = text;
+  node.className = cls ? cls : node.className.replace(/\b(ok|warn|bad)\b/g, "");
+}
+
+async function buildLiveStretcher(ctx, layout, library, errors) {
+  if (library === "signalsmith") {
+    const node = await SignalsmithStretch(ctx, {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [layout],
+    });
+    node.onprocessorerror = (event) =>
+      errors.push(`signalsmith: ${(event && event.message) || "processorerror"}`);
+    return {
+      node,
+      // CANLI girişte signalsmith rate'i YOK SAYIYOR (README): tempo zaten
+      // kaynağın playbackRate'inden geliyor, düğüm yalnız perde kaydırıyor.
+      // Kaynak perdeyi RATE katı kaydırdığı için telafi elle yapılıyor.
+      start(when) {
+        node.schedule({
+          output: when,
+          active: true,
+          semitones: SEMITONES - 12 * Math.log2(RATE),
+        });
+      },
+      async latency() {
+        try {
+          return await node.latency();
+        } catch (error) {
+          log(`latency() okunamadı: ${error && error.message}`);
+          return null;
+        }
+      },
+    };
+  }
+
+  await SoundTouchNode.register(ctx, PROCESSOR_URL);
+  const node = new SoundTouchNode({ context: ctx, outputChannelCount: [layout] });
+  node.onprocessorerror = () => errors.push("soundtouch: processorerror");
+  node.parameters.get("playbackRate").value = RATE;
+  node.parameters.get("pitchSemitones").value = SEMITONES;
+  node.setStretchParameters({ quickSeek: false });
+  return { node, start() {}, async latency() { return null; } };
+}
+
+async function runSingleNode() {
+  if (singleCtx) await stopSingleNode();
+  const layout = Number(el("layout").value);
+  const library = el("library").value;
+  const seconds = Number(el("single-seconds").value);
+  logLines.length = 0;
+  el("run-single").disabled = true;
+  el("stop-single").disabled = false;
+  for (const id of ["s-elapsed", "s-level", "s-peak", "s-errors", "s-silence",
+                    "s-latency", "s-verdict"]) setSingle(id, "—");
+  setSingle("s-state", "kuruluyor…", "warn");
+
+  singleCtx = openContext();
+  const ctx = singleCtx;
+  const errors = [];
+
+  try {
+    log(`tek düğüm canlı kip: ${library}, ${layout} kanal, ${RATE}x, +${SEMITONES} ton`);
+
+    const master = ctx.createGain();
+    master.gain.value = 0.3;
+    master.connect(ctx.destination);
+
+    const stretch = await buildLiveStretcher(ctx, layout, library, errors);
+    const bus = ctx.createGain();
+    bus.gain.value = 1;
+    bus.connect(stretch.node);
+    stretch.node.connect(master);
+    log("düğüm kuruldu, bus bağlandı");
+
+    // 6 kaynak, her biri kendi gain'iyle - uygulamadaki zincirin aynısı.
+    const sources = [];
+    for (let i = 0; i < SINGLE_SOURCES; i += 1) {
+      const frames = Math.floor(SINGLE_LOOP_SECONDS * ctx.sampleRate);
+      const buffer = ctx.createBuffer(layout, frames, ctx.sampleRate);
+      const signal = makeSignal(SINGLE_LOOP_SECONDS, layout, ctx.sampleRate);
+      for (let ch = 0; ch < layout; ch += 1) buffer.copyToChannel(signal[ch], ch);
+      const gain = ctx.createGain();
+      gain.gain.value = 1 / SINGLE_SOURCES;
+      gain.connect(bus);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.loop = true;           // 60 sn boyunca aksın
+      source.playbackRate.value = RATE;
+      source.connect(gain);
+      sources.push(source);
+    }
+
+    if (ctx.state === "suspended") {
+      await ctx.resume().catch((e) => log(`resume başarısız: ${e.message}`));
+    }
+
+    const when = ctx.currentTime + 0.25;
+    for (const source of sources) source.start(when);
+    stretch.start(when);
+    log(`başlangıç ${when.toFixed(3)} (şu an ${ctx.currentTime.toFixed(3)})`);
+
+    const reported = await stretch.latency();
+    setSingle("s-latency", reported === null || reported === undefined
+      ? "kütüphane bildirmiyor"
+      : `${(reported * 1000).toFixed(1)} ms`);
+
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    master.connect(analyser);
+    const samples = new Float32Array(analyser.fftSize);
+
+    const started = performance.now();
+    let overallPeak = 0;
+    let silentFrom = null;
+    let firstSilenceAt = null;
+    let silentTotal = 0;
+    setSingle("s-state", "çalıyor — dinle", "ok");
+
+    const watch = () => {
+      if (!singleCtx) return;
+      analyser.getFloatTimeDomainData(samples);
+      let level = 0;
+      for (let i = 0; i < samples.length; i += 1) {
+        const value = Math.abs(samples[i]);
+        if (value > level) level = value;
+      }
+      const elapsed = (performance.now() - started) / 1000;
+      if (elapsed > SETTLE_SECONDS && level > overallPeak) overallPeak = level;
+
+      if (elapsed > SETTLE_SECONDS) {
+        if (level < SILENCE_LEVEL) {
+          if (silentFrom === null) silentFrom = elapsed;
+          else if (elapsed - silentFrom >= SILENCE_SECONDS && firstSilenceAt === null) {
+            firstSilenceAt = silentFrom;
+            log(`SUSTU: ${silentFrom.toFixed(1)} sn'de ses kesildi`);
+          }
+        } else {
+          if (silentFrom !== null) silentTotal += elapsed - silentFrom;
+          silentFrom = null;
+        }
+      }
+
+      setSingle("s-elapsed", `${elapsed.toFixed(1)} / ${seconds} sn`);
+      setSingle("s-level", level.toFixed(4));
+      setSingle("s-peak", overallPeak.toFixed(4));
+      setSingle("s-errors", String(errors.length),
+                errors.length ? "bad" : "ok");
+      setSingle("s-silence",
+        firstSilenceAt === null ? "hayır" : `EVET, ${firstSilenceAt.toFixed(1)} sn'de`,
+        firstSilenceAt === null ? "ok" : "bad");
+    };
+    singleWatch = setInterval(watch, SINGLE_WATCH_MS);
+
+    singleTimer = setTimeout(() => {
+      const passed = errors.length === 0 && firstSilenceAt === null && overallPeak > 0.01;
+      setSingle("s-verdict",
+        passed
+          ? "GEÇTİ — canlı kip tek düğümle çalışıyor"
+          : `KALDI — ${errors.length} hata, ` +
+            `${firstSilenceAt === null ? "sessizlik yok" : "sustu"}, ` +
+            `tepe ${overallPeak.toFixed(4)}`,
+        passed ? "ok" : "bad");
+      log(passed ? "SONUÇ: GEÇTİ" : "SONUÇ: KALDI");
+      stopSingleNode();
+    }, seconds * 1000);
+  } catch (error) {
+    const text = error && error.message ? error.message : String(error);
+    log(`KURULUM HATASI: ${text}`);
+    setSingle("s-state", "kurulamadı", "bad");
+    setSingle("s-verdict", `KALDI — ${text}`, "bad");
+    await stopSingleNode();
+  }
+}
+
+async function stopSingleNode() {
+  clearTimeout(singleTimer);
+  singleTimer = null;
+  clearInterval(singleWatch);
+  singleWatch = null;
+  if (singleCtx) {
+    const ctx = singleCtx;
+    singleCtx = null;
+    await ctx.close().catch(() => {});
+  }
+  if (el("s-state").textContent === "çalıyor — dinle") setSingle("s-state", "durduruldu");
+  el("run-single").disabled = false;
+  el("stop-single").disabled = true;
+}
+
 // ---------------------------------------------------------------- ortam
 
 function showEnvironment() {
@@ -335,6 +553,8 @@ el("test-tone").addEventListener("click", () => {
   testTone().catch((e) => log(`test tonu hatası: ${e.message}`));
 });
 el("run-offline").addEventListener("click", runOffline);
+el("run-single").addEventListener("click", runSingleNode);
+el("stop-single").addEventListener("click", stopSingleNode);
 el("run-realtime").addEventListener("click", runRealtime);
 el("stop-realtime").addEventListener("click", stopRealtime);
 showEnvironment();
