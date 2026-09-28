@@ -978,6 +978,420 @@ def pick_songs(count: int = 3, must_contain: str = "") -> list:
     return chosen
 
 
+# --------------------------------------------------------------------------
+# C: vokal B'nin modelinden, kalan 5 stem demucs'tan
+# --------------------------------------------------------------------------
+
+def _demucs_stage(demucs, instrumental, sources: list):
+    """Enstrümantali htdemucs_6s ile böler. A ve C bunu paylaşıyor.
+
+    Normalizasyon canlı `separate` ile aynı (demucs CLI davranışı).
+    Dönen: {isim: (2, N)}, saniye, tepe VRAM.
+    """
+    import numpy as np
+    import torch
+    from demucs.apply import apply_model
+
+    reference = instrumental.mean(0)
+    ref_mean = float(reference.mean())
+    ref_std = float(reference.std())
+    if ref_std < 1e-8:
+        raise ValueError("Enstrumantal neredeyse sessiz; demucs'a verilecek sinyal yok.")
+    normalized = (instrumental - ref_mean) / ref_std
+
+    torch.cuda.reset_peak_memory_stats()
+    started = time.time()
+    with torch.no_grad():
+        split = apply_model(
+            demucs, torch.from_numpy(normalized)[None], device="cuda",
+            shifts=1, split=True, overlap=0.25, progress=False,
+        )
+    out = (split[0].cpu().numpy() * ref_std) + ref_mean
+    seconds = round(time.time() - started, 2)
+    return {name: out[index] for index, name in enumerate(sources)}, seconds, _peak_vram()
+
+
+@app.function(
+    image=gpu_image,
+    gpu="T4",
+    volumes={DATA_DIR: volume},
+    timeout=3600,
+    max_containers=1,      # min_containers YOK
+)
+def run_c(song_id: str, num_overlap: int = 2, suffix: str = "c",
+          label: str = "C") -> dict:
+    """A ile AYNI iskelet, vokal kaynağı farklı.
+
+    Kulak testinde vokalin en temizi B'nin modeli çıktı ama B'nin bası ve
+    gitarı kayboluyordu; demucs'un bas/gitar/davulu ise iyiydi. C ikisinin
+    iyi tarafını birleştiriyor: vokali BS-Roformer SW'den, kalan beş stem'i
+    htdemucs_6s'ten.
+    """
+    global _FIRST_CALL
+    import numpy as np
+    import torch
+    from demucs.pretrained import get_model
+
+    wall_started = time.time()
+    cold_seconds = round(time.time() - _CONTAINER_START, 2) if _FIRST_CALL else 0.0
+    was_cold = _FIRST_CALL
+    _FIRST_CALL = False
+
+    volume.reload()
+    root = pathlib.Path(EXP_WEIGHTS)
+    config = _load_config(root / "bs_roformer_sw.yaml")
+    samplerate = int(config["audio"]["sample_rate"])
+    channels = int(config["audio"]["num_channels"])
+
+    load_started = time.time()
+    roformer = _build_model("bs", config)
+    _load_checkpoint(roformer, root / "bs_roformer_sw.ckpt", "cuda")
+    demucs = get_model(MODEL_NAME)
+    demucs.eval()
+    model_load_seconds = round(time.time() - load_started, 2)
+    demucs_sources = [str(name) for name in demucs.sources]
+    print(f"[model] C yuklendi {model_load_seconds} sn, demucs={demucs_sources}")
+
+    if int(demucs.samplerate) != samplerate or int(demucs.audio_channels) != channels:
+        raise ValueError(
+            f"Ornekleme/kanal uyusmuyor: roformer {samplerate}/{channels}, "
+            f"demucs {int(demucs.samplerate)}/{int(demucs.audio_channels)}"
+        )
+
+    source_status = json.loads((_song_dir(song_id) / "status.json").read_text("utf-8"))
+    mix = _decode(_find_input(song_id), samplerate, channels)
+    duration = round(mix.shape[1] / samplerate, 3)
+    print(f"[decode] {mix.shape} -> {duration} sn")
+
+    # --- 1. aşama: B'nin modeli, YALNIZ vokal çıkışı alınıyor -------------
+    torch.cuda.reset_peak_memory_stats()
+    stage1_started = time.time()
+    use_fp16 = True
+    out, had_nan = _demix(roformer, mix, config, num_overlap, use_fp16)
+    if had_nan:
+        print("[fp16] NaN/Inf uretildi, fp32'ye dusuluyor")
+        use_fp16 = False
+        torch.cuda.reset_peak_memory_stats()
+        stage1_started = time.time()
+        out, had_nan = _demix(roformer, mix, config, num_overlap, use_fp16)
+    names = list(config["training"]["instruments"])
+    vocals = out[names.index("vocals")]
+    stage1_seconds = round(time.time() - stage1_started, 2)
+    vram_stage1 = _peak_vram()
+    print(f"[roformer-B] {stage1_seconds} sn, fp16={use_fp16}, {vram_stage1}")
+
+    del roformer, out
+    torch.cuda.empty_cache()
+
+    # --- 2. aşama: enstrümantal -> demucs ---------------------------------
+    # Çıkarma TANIM GEREĞİ tam: enstrümantal = karışım - vokal.
+    instrumental = mix - vocals
+    by_name, stage2_seconds, vram_stage2 = _demucs_stage(
+        demucs, instrumental, demucs_sources
+    )
+    print(f"[demucs] {stage2_seconds} sn, {vram_stage2}")
+
+    # Demucs'un vokal çıkışı = enstrümantalde kalan artık -> "other"a.
+    residue = by_name.get("vocals")
+    stems = {
+        "vocals": vocals,
+        "drums": by_name["drums"],
+        "bass": by_name["bass"],
+        "guitar": by_name["guitar"],
+        "piano": by_name["piano"],
+        "other": by_name["other"] + (residue if residue is not None else 0.0),
+    }
+    residue_rms = float(np.sqrt(np.mean(residue.astype(np.float64) ** 2))) if residue is not None else 0.0
+    print(f"[artik-vokal] demucs'un vokal artigi rms={residue_rms:.6f} -> other'a eklendi")
+
+    residual = _residual_report(mix, stems)
+    print(f"[artik] {residual}")
+
+    title = f"{source_status.get('title') or song_id[:12]} [{label}]"
+    target_id = f"{song_id}-{suffix}"
+    written = _write_outputs(target_id, title, stems, samplerate, channels,
+                             duration, song_id, meta={})
+
+    wall_seconds = round(time.time() - wall_started, 2)
+    report = {
+        "method": label,
+        "source_song": song_id,
+        "target_song": target_id,
+        "title": title,
+        "duration": duration,
+        "num_overlap": int(num_overlap),
+        "tta": False,
+        "precision": "fp16" if use_fp16 else "fp32",
+        "cold_start_seconds": cold_seconds,
+        "was_cold": bool(was_cold),
+        "model_load_seconds": model_load_seconds,
+        "gpu_seconds": round(stage1_seconds + stage2_seconds, 2),
+        "roformer_seconds": stage1_seconds,
+        "demucs_seconds": stage2_seconds,
+        "vocal_residue_rms": round(residue_rms, 6),
+        "wall_seconds": wall_seconds,
+        "usd": round(wall_seconds * T4_USD_PER_SECOND, 5),
+        "stems": written,
+        "vram_allocated_mb": float(max(
+            vram_stage1.get("vram_allocated_mb", 0.0),
+            vram_stage2.get("vram_allocated_mb", 0.0),
+        )),
+        "vram_reserved_mb": float(max(
+            vram_stage1.get("vram_reserved_mb", 0.0),
+            vram_stage2.get("vram_reserved_mb", 0.0),
+        )),
+        **{key: float(value) for key, value in residual.items()},
+    }
+    status_path = _song_dir(target_id) / "status.json"
+    status = json.loads(status_path.read_text("utf-8"))
+    status["experiment"] = report
+    status_path.write_text(json.dumps(status, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+    volume.commit()
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return report
+
+
+@app.local_entrypoint()
+def analyze(count: int = 3, must_contain: str = "HAZBIN", song_id: str = "",
+            variants: str = ",a,b,bmax,c"):
+    """Kulak testinden sonra: içerik hangi stem'e gitti?
+
+        modal run backend/experiment.py::analyze
+    """
+    if song_id:
+        songs = [{"id": song_id, "title": song_id[:12]}]
+    else:
+        songs = pick_songs.remote(count=count, must_contain=must_contain)
+
+    for item in songs:
+        report = analyze_variants.remote(item["id"], variants=variants)
+        _print_analysis(report)
+
+
+def _print_analysis(report: dict):
+    title = report["title"]
+    print("\n" + "=" * 100)
+    print(f"{title}")
+    print("=" * 100)
+
+    print("\n1) STEM BASINA <150 Hz PAYI (yontem ici dagilim, toplam=1.00)")
+    header = f"{'yontem':<10}" + "".join(f"{n:>9}" for n in STEM_ORDER)
+    print(header)
+    for variant, row in report.get("low_band_share", {}).items():
+        name = variant or "orijinal"
+        print(f"{name:<10}" + "".join(f"{row.get(n, 0):>9.3f}" for n in STEM_ORDER))
+
+    print("\n2) STEM BASINA RMS ve TEPE")
+    for variant, entry in report["variants"].items():
+        name = variant or "orijinal"
+        print(f"  {name:<8} scale={entry['scale']:.3f}  artik={entry['residual_db']:>7.1f} dB"
+              f"  DC={entry['dc_offset']:.1e}")
+        for stem in STEM_ORDER:
+            data = entry["stems"].get(stem)
+            if not data:
+                continue
+            print(f"      {stem:<7} rms={data['rms']:.5f} tepe={data['peak']:.4f} "
+                  f"<150Hz pay={data['low_energy_ratio']:.3f} "
+                  f"sicrama max={data['max_jump']:.3f} n={data['jumps_over_threshold']}")
+
+    print("\n3) ICERIK ESLEMESI (bir yontemin stem'i otekinde nereye dusuyor)")
+    for pair, matrix in report.get("stem_mapping", {}).items():
+        print(f"  {pair}")
+        for stem, data in matrix.items():
+            row = "  ".join(f"{k}={v:.2f}" for k, v in data["row"].items())
+            print(f"      {stem:<7} -> {data['best_match']:<7} ({data['corr']:.2f})   {row}")
+
+
+# --------------------------------------------------------------------------
+# Kulak testi sonrası ölçüm: içerik nereye gitti?
+# --------------------------------------------------------------------------
+# Kulakla duyulanlar ("B'de bas yok", "B'de gitar yok", "A'nın artığı büyük",
+# "B-max'ta cızırtı") tahminle değil sayıyla açıklanıyor. Hepsi Volume'daki
+# FLAC master'lardan okunuyor, GPU gerekmiyor.
+
+analysis_image = modal.Image.debian_slim(python_version="3.11").apt_install(
+    "ffmpeg"
+).pip_install("numpy==1.26.4", "soundfile==0.13.1")
+
+# Bant sınırları: bas <150 Hz (kullanıcının sorduğu), orta, tiz.
+BANDS = ((0.0, 150.0), (150.0, 2000.0), (2000.0, 22050.0))
+CORR_RATE_DIVISOR = 4      # 44100 -> 11025, ilişki ölçümü için fazlasıyla yeter
+CLICK_THRESHOLD = 0.25     # ardışık örnek farkı bu kadarsa süreksizlik sayılır
+
+
+def _band_energies(mono, samplerate: int) -> list:
+    """Bant başına enerji (mutlak, toplamı sinyalin toplam enerjisi)."""
+    import numpy as np
+
+    frame = 1 << 15
+    freqs = np.fft.rfftfreq(frame, d=1.0 / samplerate)
+    masks = [(freqs >= low) & (freqs < high) for low, high in BANDS]
+    totals = [0.0] * len(BANDS)
+    for start in range(0, len(mono) - frame + 1, frame):
+        spectrum = np.abs(np.fft.rfft(mono[start:start + frame])) ** 2
+        for index, mask in enumerate(masks):
+            totals[index] += float(spectrum[mask].sum())
+    return totals
+
+
+def _click_stats(stereo) -> dict:
+    """Süreksizlik (cızırtı) izi: ardışık örnekler arasındaki sıçramalar."""
+    import numpy as np
+
+    mono = stereo.mean(axis=0)
+    diff = np.abs(np.diff(mono))
+    big = np.flatnonzero(diff > CLICK_THRESHOLD)
+    return {
+        "max_jump": round(float(diff.max()) if diff.size else 0.0, 4),
+        "p99999_jump": round(float(np.percentile(diff, 99.999)) if diff.size else 0.0, 4),
+        "jumps_over_threshold": int(big.size),
+        "first_jump_samples": [int(v) for v in big[:8]],
+    }
+
+
+def _load_stems(song_id: str, samplerate_hint: int = 44100):
+    """Bir varyantın master FLAC'larını okur.
+
+    Dönen: {isim: (2, N) float32}, örnekleme hızı. Eksik stem atlanıyor.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    master = _song_dir(song_id) / "master"
+    stems = {}
+    samplerate = samplerate_hint
+    for name in STEM_ORDER:
+        path = master / f"{name}.flac"
+        if not path.is_file():
+            continue
+        data, samplerate = sf.read(str(path), dtype="float32", always_2d=True)
+        stems[name] = np.ascontiguousarray(data.T)
+    return stems, int(samplerate)
+
+
+def _downmix(stereo, divisor: int):
+    """Mono + basit ondalama: ilişki ölçümü için yeterli, bellek dostu."""
+    import numpy as np
+
+    mono = stereo.mean(axis=0)
+    usable = (len(mono) // divisor) * divisor
+    return mono[:usable].reshape(-1, divisor).mean(axis=1)
+
+
+def _correlation(first, second) -> float:
+    import numpy as np
+
+    length = min(len(first), len(second))
+    a, b = first[:length], second[:length]
+    denominator = float(np.linalg.norm(a) * np.linalg.norm(b))
+    if denominator < 1e-12:
+        return 0.0
+    return round(float(np.dot(a, b) / denominator), 3)
+
+
+@app.function(
+    image=analysis_image,
+    volumes={DATA_DIR: volume},
+    timeout=1800,
+    memory=8192,
+)
+def analyze_variants(song_id: str, variants: str = ",a,b,bmax,c") -> dict:
+    """Bir şarkının tüm yöntem çıktılarını yan yana ölçer."""
+    import numpy as np
+
+    volume.reload()
+    wanted = [v.strip() for v in variants.split(",")]
+    source_status = json.loads((_song_dir(song_id) / "status.json").read_text("utf-8"))
+    title = source_status.get("title") or song_id[:12]
+
+    mix = None
+    samplerate = 44100
+    report = {"song": song_id, "title": title, "variants": {}}
+    compact = {}   # varyant -> {stem -> ondalanmış mono}
+
+    for variant in wanted:
+        target = song_id if variant == "" else f"{song_id}-{variant}"
+        if not (_song_dir(target) / "master").is_dir():
+            print(f"[atla] {target} yok")
+            continue
+        stems, samplerate = _load_stems(target)
+        if not stems:
+            continue
+        if mix is None:
+            mix = _decode(_find_input(song_id), samplerate, 2)
+
+        total = None
+        for value in stems.values():
+            total = value.copy() if total is None else total + value
+
+        # Kaydedilen stem'ler ortak clip_scale'e BÖLÜNMÜŞ durumda ve ölçek
+        # varyanttan varyanta değişiyor. Yöntemleri karşılaştırmak için geri
+        # çarpmamız gerek; ölçeği en küçük kareler ile kestiriyoruz:
+        #   scale = <mix, toplam> / <toplam, toplam>
+        length = min(mix.shape[1], total.shape[1])
+        numerator = float(np.sum(mix[:, :length] * total[:, :length]))
+        denominator = float(np.sum(total[:, :length] ** 2))
+        scale = numerator / denominator if denominator > 1e-12 else 1.0
+
+        residual = mix[:, :length] - scale * total[:, :length]
+        mix_rms = float(np.sqrt(np.mean(mix[:, :length].astype(np.float64) ** 2)))
+        res_rms = float(np.sqrt(np.mean(residual.astype(np.float64) ** 2)))
+        residual_db = 20.0 * np.log10(res_rms / mix_rms) if mix_rms > 0 and res_rms > 0 else -999.0
+        # DC kayması: demucs normalizasyonu ref_mean'i HER stem'e geri
+        # ekliyor, yani toplamda 6 kat. Gerçek müzikte ref_mean ~0 olduğu
+        # için ihmal edilebilir olmalı - ölçüp gösteriyoruz.
+        dc_offset = float(np.mean(scale * total[:, :length]) - np.mean(mix[:, :length]))
+
+        entry = {"scale": round(scale, 4),
+                 "residual_db": round(float(residual_db), 2),
+                 "dc_offset": float(f"{dc_offset:.3e}"),
+                 "stems": {}}
+        compact[variant] = {}
+        for name, value in stems.items():
+            scaled = value * scale
+            mono = scaled.mean(axis=0)
+            bands = _band_energies(mono, samplerate)
+            band_total = sum(bands) or 1.0
+            entry["stems"][name] = {
+                "rms": round(float(np.sqrt(np.mean(scaled.astype(np.float64) ** 2))), 5),
+                "peak": round(float(np.abs(scaled).max()), 4),
+                "low_energy_ratio": round(bands[0] / band_total, 4),
+                "low_energy_abs": float(f"{bands[0]:.4e}"),
+                **_click_stats(scaled),
+            }
+            compact[variant][name] = _downmix(scaled, CORR_RATE_DIVISOR)
+        report["variants"][variant] = entry
+        print(f"[{variant or 'orijinal'}] scale={scale:.4f} artik={residual_db:.1f} dB")
+
+    # --- bas nereye gitti: <150 Hz enerjisinin yöntemler arası dağılımı ----
+    low_table = {}
+    for variant, entry in report["variants"].items():
+        absolute = {name: data["low_energy_abs"] for name, data in entry["stems"].items()}
+        grand = sum(absolute.values()) or 1.0
+        low_table[variant] = {name: round(value / grand, 4)
+                              for name, value in absolute.items()}
+    report["low_band_share"] = low_table
+
+    # --- içerik eşlemesi: A'nın stem'i B'nin hangi stem'iyle örtüşüyor? ----
+    pairs = {}
+    for left in ("", "a", "c"):
+        for right in ("b", "bmax", "c"):
+            if left not in compact or right not in compact or left == right:
+                continue
+            matrix = {}
+            for lname, lvalue in compact[left].items():
+                row = {rname: _correlation(lvalue, rvalue)
+                       for rname, rvalue in compact[right].items()}
+                best = max(row, key=row.get)
+                matrix[lname] = {"best_match": best, "corr": row[best], "row": row}
+            pairs[f"{left or 'orijinal'}->{right}"] = matrix
+    report["stem_mapping"] = pairs
+
+    volume.commit()
+    return report
+
+
 @app.local_entrypoint()
 def fetch(check_mirror: bool = True):
     """modal run backend/experiment.py::fetch"""
@@ -988,7 +1402,7 @@ def fetch(check_mirror: bool = True):
 
 @app.local_entrypoint()
 def main(count: int = 3, must_contain: str = "HAZBIN",
-         methods: str = "a,b,bmax", song_id: str = ""):
+         methods: str = "a,b,c", song_id: str = ""):
     """Deneyi koşturur ve karşılaştırma tablosunu basar.
 
         modal run backend/experiment.py
@@ -1024,9 +1438,12 @@ def main(count: int = 3, must_contain: str = "HAZBIN",
                                           suffix="b", label="B")
                 elif method == "bmax":
                     # [B-max]: yüksek örtüşme + test-time augmentation.
-                    # Tek kullanıcı, şarkı başı dakikalar kabul.
+                    # Kulak testinde ELENDİ (5 kat maliyet, tutarlı fark yok,
+                    # bir şarkıda cızırtı); karşılaştırma için duruyor.
                     report = run_b.remote(item["id"], num_overlap=8, tta=True,
                                           suffix="bmax", label="B-max")
+                elif method == "c":
+                    report = run_c.remote(item["id"])
                 else:
                     print(f"  bilinmeyen yontem: {method}")
                     continue
@@ -1062,7 +1479,7 @@ def _print_table(reports: list):
 
     # Yöntem başına ortalama: asıl karşılaştırma bu.
     print("\nYONTEM BASINA ORTALAMA (sarki basi)")
-    for method in ("A", "B", "B-max"):
+    for method in ("A", "B", "C", "B-max"):
         rows = [r for r in ok if r["method"] == method]
         if not rows:
             continue

@@ -627,6 +627,55 @@ veriyor - sessizce yamasız kalıp çıkarımın ortasında patlamasındansa.
 T4 notu: log'daki "GPU Compute Capability below 8.0" beklenen, sm_75'te
 flash attention yok; math/mem-efficient çekirdek kullanılıyor.
 
+### KULAK TESTİ SONUÇLARI (3 şarkı, orijinal htdemucs'a göre)
+
+| | vokal (kapalı) | vokal (solo) | davul/bas | gitar |
+|---|---|---|---|---|
+| **A** | temiz | az sızıntı (1.5-3.5 sn) | iyi/çok iyi | orijinalden net |
+| **B** | temiz | **en temiz** | davul iyi, **bas kayıp** | gerçek gitarda iyi, ötekilerde **yok** |
+| **B-max** | temiz | değişken | iyi | — |
+
+**B-max ELENDİ:** 5 kat süre/maliyet, tutarlı fark yok, HAZBIN'de belirgin
+cızırtı (B'de yok).
+
+**B'nin iki kayıp stem'i (deney logundan):** 1. şarkıda bas tepesi 0.0306,
+gitar tepesi 0.0422; HAZBIN'de gitar tepesi 0.0024. Yani stem üretiliyor
+ama neredeyse boş.
+
+**Gitar ipucu:** gerçek, duyulur gitarı olan şarkıda (BELOW THE SURFACE) B
+gitarı düzgün ayırdı. Yani B'nin gitar tespiti çalışıyor; A'nın "gitar"
+dediği şey ötekilerde başka bir enstrüman olabilir.
+
+### C: A ve B'nin iyi taraflarının birleşimi
+Kulak testi net bir bölünme gösterdi: **vokalde B, bas/gitar/davulda
+demucs** iyi. C tam bunu yapıyor - vokal BS-Roformer SW'den, kalan beş
+stem `htdemucs_6s`'ten (A ile aynı iskelet, sadece vokal kaynağı farklı).
+Demucs'un vokal artığı yine `other`'a ekleniyor.
+
+### Kulak testinden çıkan ÖLÇÜM soruları
+`modal run backend/experiment.py::analyze` bunları sayıyla cevaplıyor,
+Volume'daki FLAC master'lardan, GPU'suz:
+
+1. **Bas nereye gitti?** Stem başına <150 Hz enerjisi, yöntemler arası
+   dağılım tablosu.
+2. **Gitar nereye gitti?** Stem'ler arası normalize edilmiş ilişki matrisi:
+   A'nın gitarı B'nin hangi stem'iyle örtüşüyor.
+3. **A'nın artığı neden büyük?** Her varyantın artığı aynı ölçütle
+   hesaplanıyor - ORİJİNAL (htdemucs, tek aşama) dahil. Orijinal de ~-21 dB
+   çıkarsa sebep demucs'un kendi yeniden kurma hatası, A'nın yaptığı bir şey
+   değil. (Vokal çıkarma tanım gereği tam olduğu için A'nın artığı =
+   demucs'un enstrümantal üzerindeki hatası.)
+4. **B-max'taki cızırtı?** Stem başına ardışık örnek sıçraması (süreksizlik)
+   sayısı ve en büyüğü, ayrıca tepe seviyeleri.
+
+Varyantların stem'leri farklı `clip_scale`'e bölünmüş kaydedildiği için
+karşılaştırmadan önce en küçük karelerle ölçek geri kestiriliyor
+(`scale = <karışım, toplam> / <toplam, toplam>`).
+
+Ölçüm ilkelleri sentetik sinyalle doğrulandı: 60 Hz tonu <150 Hz bandına
+%99.8, 5 kHz tonu %0.0; aynı içerik ilişkisi 1.00, ilgisiz 0.01, yarı
+yarıya 0.86; temiz sinyalde 0 sıçrama, enjekte edilen iki tıkta tam 4.
+
 ### Hâlâ ölçülmemiş, deneyin cevaplayacağı
 - Roformer'ın T4'teki süresi (Demucs'a EK geliyor, yerine geçmiyor).
 - Enstrümantali `htdemucs_6s`'e vermek gitar/piyano kalitesini bozuyor mu?
