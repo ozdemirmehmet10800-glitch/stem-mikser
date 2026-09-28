@@ -191,6 +191,60 @@ async function runOffline() {
       body.append(row);
       await new Promise((resolve) => setTimeout(resolve, 60));
     }
+    // GERÇEK TOPOLOJİ: 6 kaynak -> bus -> TEK düğüm. Yukarıdaki satırlar
+    // N AYRI düğüm ölçüyor; uygulamada kullanılan mimari bu değil.
+    // Gerçek zamanlı CPU payı tarayıcıdan doğrudan okunamıyor, offline
+    // render oranı en iyi vekil.
+    {
+      const errors = [];
+      const ctx = new OfflineAudioContext({
+        numberOfChannels: layout,
+        length: Math.floor(seconds * SAMPLE_RATE),
+        sampleRate: SAMPLE_RATE,
+      });
+      const master = ctx.createGain();
+      master.gain.value = 0.3;
+      master.connect(ctx.destination);
+      const stretch = await buildLiveStretcher(ctx, layout, el("library").value, errors);
+      const bus = ctx.createGain();
+      bus.connect(stretch.node);
+      stretch.node.connect(master);
+      for (let i = 0; i < 6; i += 1) {
+        const buffer = ctx.createBuffer(layout, Math.floor(seconds * SAMPLE_RATE), SAMPLE_RATE);
+        const signal = makeSignal(seconds, layout, SAMPLE_RATE);
+        for (let ch = 0; ch < layout; ch += 1) buffer.copyToChannel(signal[ch], ch);
+        const gain = ctx.createGain();
+        gain.gain.value = 1 / 6;
+        gain.connect(bus);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.playbackRate.value = RATE;
+        source.connect(gain);
+        source.start(0);
+      }
+      stretch.start(0);
+
+      const started = performance.now();
+      const rendered = await ctx.startRendering();
+      const elapsed = (performance.now() - started) / 1000;
+      const ratio = elapsed / seconds;
+      const peak = peakOf(rendered);
+      let verdict;
+      if (peak < 0.0005) verdict = ["bad", `SESSİZ (${errors.length} hata)`];
+      else if (ratio < 0.5) verdict = ["ok", "rahat"];
+      else if (ratio < 0.8) verdict = ["warn", "sınırda"];
+      else verdict = ["bad", "pay yok"];
+      const row = document.createElement("tr");
+      row.innerHTML =
+        `<td><strong>6 &rarr; tek düğüm</strong></td>` +
+        `<td class="num">${elapsed.toFixed(2)}</td>` +
+        `<td class="num">${seconds.toFixed(0)}</td>` +
+        `<td class="num">${ratio.toFixed(3)}</td>` +
+        `<td class="num">${peak.toFixed(4)}</td>` +
+        `<td class="${verdict[0]}">${verdict[1]} (gerçek mimari)</td>`;
+      body.append(row);
+      log(`tek düğüm topolojisi: oran ${ratio.toFixed(3)}, tepe ${peak.toFixed(4)}`);
+    }
     say("Nesnel ölçüm bitti. Şimdi kulakla da dinle (2. bölüm).", "ok");
   } catch (error) {
     say(`Ölçüm başarısız: ${error && error.message ? error.message : error}`, "error");
