@@ -23,7 +23,10 @@ import {
   DEFAULT_STRETCHER, normalizeStretcher, stretcherInfo,
 } from "./stretchers.js";
 
-export { DEFAULT_STRETCHER, STRETCHERS, stretcherInfo, supportsFormants } from "./stretchers.js";
+export {
+  DEFAULT_STRETCHER, FALLBACK_STRETCHER, STRETCHERS,
+  stretcherInfo, supportsFormants, isAvailable, normalizeStretcher,
+} from "./stretchers.js";
 
 export const MIN_RATE = 0.5;
 export const MAX_RATE = 1.5;

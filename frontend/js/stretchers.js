@@ -36,7 +36,14 @@ const SOUNDTOUCH_PROCESSOR_URL = new URL(
 // düzeltiyor, telefonda bildirilen hafif gıcırtının ilk şüphelisi buydu.
 export const STRETCH_QUALITY = { quickSeek: false };
 
-export const DEFAULT_STRETCHER = "soundtouch";
+// A/B sonucu (2026-09-28, telefonda gerçek şarkıyla): Signalsmith açık ara
+// daha iyi. Nesnel karşılığı hiza testindeki saçılma - SoundTouch ±8-17 ms,
+// Signalsmith ±0.1 ms; ayrıca gerçek topolojide 3.6 kat ucuz.
+export const DEFAULT_STRETCHER = "signalsmith";
+
+// WebAssembly yoksa ya da Signalsmith yüklenemezse buraya düşülüyor.
+// SoundTouch saf JS, ek çalışma zamanı gerektirmiyor.
+export const FALLBACK_STRETCHER = "soundtouch";
 
 /**
  * Signalsmith'in canlı kipte uygulaması gereken yarım ses.
@@ -81,6 +88,7 @@ const ADAPTERS = {
     label: "SoundTouch",
     license: "MPL-2.0",
     supportsFormants: false,
+    needsWasm: false,
     register(ctx) {
       return SoundTouchNode.register(ctx, SOUNDTOUCH_PROCESSOR_URL);
     },
@@ -110,6 +118,8 @@ const ADAPTERS = {
     label: "Signalsmith",
     license: "MIT",
     supportsFormants: true,
+    // WASM gömülü: WebAssembly olmayan ortamda düğüm hiç kurulamaz.
+    needsWasm: true,
     // Worklet modülünü fabrika kendi yüklüyor; ayrı bir kayıt adımı yok.
     register() {
       return Promise.resolve();
@@ -148,9 +158,28 @@ export const STRETCHERS = Object.values(ADAPTERS).map((adapter) => ({
   supportsFormants: adapter.supportsFormants,
 }));
 
-/** Tanınmayan kimlik varsayılana düşüyor; bayat ayar uygulamayı kırmasın. */
+/**
+ * Arka uç bu cihazda kullanılabilir mi? Signalsmith WASM ile geliyor;
+ * WebAssembly olmayan bir ortamda düğüm hiç kurulamaz.
+ */
+export function isAvailable(id) {
+  const adapter = ADAPTERS[id];
+  if (!adapter) return false;
+  if (adapter.needsWasm && typeof WebAssembly === "undefined") return false;
+  return true;
+}
+
+/**
+ * Tanınmayan kimlik varsayılana, kullanılamayan kimlik YEDEĞE düşüyor;
+ * bayat bir ayar ya da eksik WebAssembly uygulamayı kırmasın.
+ *
+ * Bu yalnız STATİK kontrol. Kütüphane yüklenirken patlarsa motor ayrıca
+ * çalışma anında yedeğe düşüyor (engine.js, activeStretcher).
+ */
 export function normalizeStretcher(id) {
-  return ADAPTERS[id] ? id : DEFAULT_STRETCHER;
+  if (isAvailable(id)) return id;
+  if (ADAPTERS[id]) return FALLBACK_STRETCHER; // tanınıyor ama bu cihazda çalışmaz
+  return isAvailable(DEFAULT_STRETCHER) ? DEFAULT_STRETCHER : FALLBACK_STRETCHER;
 }
 
 export function stretcherInfo(id) {

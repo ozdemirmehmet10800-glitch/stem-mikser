@@ -356,7 +356,7 @@ gıcırtıyı aldı, kaliteyi bu kadar yükseltebildi.
 Sunucuda render. Ölçüm iyi çıktığı için gerek kalmadı; her ayar değişiminde
 yeniden render + indirme maliyeti ve anlık geri bildirimin kaybı vardı.
 
-## Aşama 8.1 – Esnetici kalitesi (A/B bekliyor)
+## Aşama 8.1 – Esnetici kalitesi — TAMAM (Signalsmith seçildi)
 Aşama 8'den devreden tek konu: 0.8x + ton +2'de gıcırtı yok ama genel kalite
 düşüyor. WSOLA'nın yapısal sınırı.
 
@@ -442,12 +442,48 @@ Bu yüzden ayar açıkken `formantSemitones = −12·log2(rate)` da gönderiliyo
 böylece ayar yalnızca PERDE kaydırmasına karşı formant davranışını
 değiştiriyor. Kulakla A/B'de yargılanmak istenen tam olarak bu.
 
-### Açık: A/B kararı
-Ayarlar ekranından geçiş yapılıp gerçek şarkıda kulakla karşılaştırılacak.
-**Varsayılan şimdilik SoundTouch** - Signalsmith kazanırsa varsayılan
-değiştirilecek. Signalsmith de beğenilmezse SoundTouch'ta `overlapMs: 12`
-denemesine dönülecek (tek satır, `stretchers.js` içindeki
-`STRETCH_QUALITY`).
+### KARAR: Signalsmith (2026-09-28, telefonda gerçek şarkıyla A/B)
+**Signalsmith açık ara kazandı.** Formant telafisi KAPALI daha iyi geldi.
+Varsayılanlar buna göre: `DEFAULT_STRETCHER = "signalsmith"`,
+`formants: false`. SoundTouch ayarlarda seçenek olarak duruyor.
+
+Kayıtlı tercihe DOKUNULMUYOR: `parsed.stretcher` varsa varsayılan devreye
+girmiyor, yani daha önce elle SoundTouch seçmiş bir cihaz öyle kalıyor.
+
+Telefon hiza testi (32 kHz), Signalsmith, tamamen geçti:
+
+| ölçüm | telefon | masaüstü |
+|---|---|---|
+| 0.8x | −0.1 ms (±0.0) | 0.0 ms (±0.0) |
+| 1.2x | −0.0 ms (±0.1) | +0.0 ms (±0.1) |
+| canlı 0.8x → 1.1x | −0.0 ms (±0.1) | +0.0 ms (±0.1) |
+| seek sonrası konum | +0.1 ms | −0.0 ms |
+| seek sonrası bayat ses | yok | yok |
+| gecikme 0.8 / 1.1 / 1.2x | 119.8 / 119.9 / 119.9 ms | 119.9 / 120.0 / 120.0 ms |
+| kütüphanenin `latency()` değeri | 120.0 ms | 120.0 ms |
+
+Sonda ile kütüphanenin kendi beyanı 0.2 ms içinde uyuşuyor - iki bağımsız
+yöntemin aynı sayıyı vermesi sondanın da doğrulanması.
+
+### Yedeğe düşme
+Signalsmith WASM ile geliyor. İki katman:
+1. **Statik:** `isAvailable()` WebAssembly yoksa Signalsmith'i eliyor,
+   `normalizeStretcher()` SoundTouch'a düşürüyor. Ayarlar ekranı bunu
+   yazıyor.
+2. **Çalışma anı:** WASM derlemesi ya da worklet kaydı patlarsa motor
+   (`#createWithFallback`) SoundTouch'la bir kez daha deniyor.
+   `activeStretcher` gerçekten kurulanı tutuyor; `update`, `start`, formant
+   bayrağı ve gecikme ölçümü hep ona bakıyor - yoksa yedeğe düşen bir
+   cihazda yanlış gecikme kullanılırdı.
+
+### Hiza testi açıklaması esneticiye göre
+"Saçılma WSOLA'nın doğası" cümlesi yalnız SoundTouch için doğru.
+`runAlignmentCheck` artık `{rows, legend}` döndürüyor; Signalsmith'te metin
+"faz vokoder darbeleri oynatmadığı için saçılma ~0 bekleniyor" oluyor.
+
+### Elde kalan kart
+Signalsmith de yetmezse SoundTouch'ta `overlapMs: 12` denemesi duruyor -
+tek satır, `stretchers.js` içindeki `STRETCH_QUALITY`.
 
 ## Aşama 9 – Hi-Fi modu (daha kaliteli ayrıştırma)
 Öncelik 3. Yüklerken seçilir, `status.json`'a yazılır.

@@ -12,7 +12,7 @@ import { StemCache } from "./stemcache.js";
 import { Metronome, SUBDIVISIONS } from "./metronome.js";
 import {
   measureLatency, estimateLatency, MIN_RATE, MAX_RATE, MAX_SEMITONES,
-  STRETCHERS, stretcherInfo, supportsFormants,
+  STRETCHERS, stretcherInfo, supportsFormants, normalizeStretcher,
 } from "./stretch.js";
 import { transposeKey } from "./tonality.js";
 
@@ -456,12 +456,15 @@ async function applyStretch(measure) {
   if (!ctx) return;  // şarkı açılmadan buraya gelinmiyor, yine de korunalı
 
   const gen = ++stretchGen;
-  const guess = estimateLatency(ctx.sampleRate, rate, semis);
+  // İSTENEN değil GERÇEKTEN KURULAN arka ucun gecikmesi: kütüphane
+  // yüklenemeyip yedeğe düşüldüyse ölçüm de yedeğe ait olmalı.
+  const backend = engine.activeStretcher;
+  const guess = estimateLatency(ctx.sampleRate, rate, semis, backend);
   await engine.setTempoAndPitch(rate, semis, guess);
   media.updatePosition();
   if (!measure) return;
 
-  const measured = await measureLatency(ctx.sampleRate, rate, semis);
+  const measured = await measureLatency(ctx.sampleRate, rate, semis, backend);
   // Kullanıcı ölçüm sürerken başka bir değere geçtiyse bu sonuç bayat.
   if (gen !== stretchGen) return;
   if (Math.abs(measured - guess) < 0.002) return;
@@ -724,9 +727,17 @@ function refreshStretcherUi() {
   const select = el("setting-stretcher");
   const check = el("setting-formants");
   if (!select || !check) return;
-  const info = stretcherInfo(settings.stretcher);
-  const able = supportsFormants(settings.stretcher);
+  // Seçilen ile GERÇEKTEN kullanılan ayrılabilir: WebAssembly yoksa ya da
+  // kütüphane yüklenemezse yedeğe düşülüyor.
+  const effective = normalizeStretcher(settings.stretcher);
+  const info = stretcherInfo(effective);
+  const able = supportsFormants(effective);
+  const fellBack = effective !== settings.stretcher;
   el("stretcher-note").textContent =
+    (fellBack
+      ? `Bu cihazda ${stretcherInfo(settings.stretcher).label} çalışmıyor ` +
+        `(WebAssembly yok), ${info.label} kullanılıyor. `
+      : "") +
     `${info.label} (${info.license}). Değişiklik çalarken de uygulanıyor; ` +
     `hız 1.0 ve ton 0 iken hiçbir esnetici kurulmuyor.`;
   check.disabled = !able;
@@ -734,7 +745,7 @@ function refreshStretcherUi() {
   el("formant-note").textContent = able
     ? "Ton kaydırırken formantları yerinde tutmayı dener. Kaynağın hız " +
       "kaydırması ayrıca geri çevriliyor, yoksa formantlar tempoyla birlikte " +
-      "düşüyor (ölçüldü). Kulakla dene."
+      "düşüyor (ölçüldü). A/B'de KAPALISI daha iyi geldi, varsayılan kapalı."
     : `${info.label} formant telafisi sunmuyor.`;
 }
 
@@ -771,7 +782,7 @@ function buildStretcherOptions() {
 
 // aligncheck.js YALNIZCA test çalıştırılınca yükleniyor: normal açılışta
 // ne modül ne de worklet indiriliyor.
-function renderAlignment(rows) {
+function renderAlignment(rows, legend) {
   const host = el("align-results");
   if (!host) return;
   host.innerHTML = "";
@@ -797,12 +808,12 @@ function renderAlignment(rows) {
   }
   table.append(body);
   host.append(table);
-  const legend = document.createElement("small");
-  legend.className = "align-legend";
-  legend.textContent =
-    "Hiza farkı = metronom − stem. Artı: metronom GEÇ, eksi: metronom ERKEN. " +
-    "Karar yalnız MEDYANA bakıyor; saçılma WSOLA'nın doğası, geçti/kaldıya girmiyor.";
-  host.append(legend);
+  // Açıklama testten geliyor: saçılma cümlesi kullanılan esneticiye göre
+  // değişiyor (WSOLA'nın doğası Signalsmith için geçerli değil).
+  const note = document.createElement("small");
+  note.className = "align-legend";
+  note.textContent = legend;
+  host.append(note);
 }
 
 on("align-run", "click", async () => {
@@ -817,11 +828,11 @@ on("align-run", "click", async () => {
     // Oynatıcı çalıyorsa durdur: iki AudioContext aynı anda ses vermesin.
     if (engine.playing) stopPlayback();
     const { runAlignmentCheck, PASS_MS } = await import("./aligncheck.js");
-    const rows = await runAlignmentCheck(
+    const { rows, legend } = await runAlignmentCheck(
       (text) => { state.textContent = text; },
       { stretcher: settings.stretcher, formants: settings.formants }
     );
-    renderAlignment(rows);
+    renderAlignment(rows, legend);
     const failed = rows.filter((item) => item.passed === false).length;
     state.textContent = failed
       ? `${failed} ölçüm kaldı (eşik ±${PASS_MS} ms).`

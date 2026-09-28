@@ -16,7 +16,7 @@ import { Engine, STEM_ORDER } from "./engine.js";
 import { Metronome } from "./metronome.js";
 import {
   measureLatency, latencyInfo, reportedLatency,
-  DEFAULT_STRETCHER, stretcherInfo, supportsFormants,
+  DEFAULT_STRETCHER, stretcherInfo, supportsFormants, normalizeStretcher,
 } from "./stretch.js";
 
 const TAP_URL = new URL("./tap-processor.js", import.meta.url).href;
@@ -165,8 +165,20 @@ function describe(name, result, note) {
 
 // ------------------------------------------------------------------- akış
 
+/**
+ * Saçılma açıklaması ESNETİCİYE GÖRE. Eskiden hep "WSOLA'nın doğası"
+ * yazıyordu; Signalsmith faz vokoder, orada bu cümle yanlış.
+ */
+function jitterLegend(id) {
+  if (id === "signalsmith") {
+    return "Faz vokoder darbeleri oynatmadığı için saçılma ~0 bekleniyor.";
+  }
+  return "Saçılma WSOLA'nın doğası: yapıştırma noktası her darbede " +
+    "seekWindow kadar kayabiliyor.";
+}
+
 export async function runAlignmentCheck(report = () => {}, options = {}) {
-  const stretcher = options.stretcher || DEFAULT_STRETCHER;
+  const stretcher = normalizeStretcher(options.stretcher || DEFAULT_STRETCHER);
   const formants = Boolean(options.formants) && supportsFormants(stretcher);
   const rows = [];
   const engine = new Engine();
@@ -393,5 +405,11 @@ export async function runAlignmentCheck(report = () => {}, options = {}) {
     engine.dispose();
   }
 
-  return rows;
+  return {
+    rows,
+    legend:
+      "Hiza farkı = metronom − stem. Artı: metronom GEÇ, eksi: metronom " +
+      "ERKEN. Karar yalnız MEDYANA bakıyor; saçılma geçti/kaldıya girmiyor. " +
+      jitterLegend(stretcher),
+  };
 }

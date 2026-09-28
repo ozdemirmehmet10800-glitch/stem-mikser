@@ -23,8 +23,9 @@
 //                zamanlayıcısında bunu kullanıyor.
 
 import {
-  MIN_RATE, MAX_RATE, MAX_SEMITONES, DEFAULT_STRETCHER,
-  isBypass, registerModule, createNode, updateNode, startNode, supportsFormants,
+  MIN_RATE, MAX_RATE, MAX_SEMITONES, DEFAULT_STRETCHER, FALLBACK_STRETCHER,
+  isBypass, registerModule, createNode, updateNode, startNode,
+  supportsFormants, normalizeStretcher,
 } from "./stretch.js";
 
 export const STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"];
@@ -90,7 +91,9 @@ export class Engine {
     this.bus = null;        // stem'lerin toplandığı gain (yalnız esnetmede)
     this.stretchNode = null;
     this.channelLayout = 2; // bus'ın kanal sayısı; mobilde mono olabilir
-    this.stretcher = DEFAULT_STRETCHER;
+    this.stretcher = DEFAULT_STRETCHER;        // istenen
+    this.activeStretcher = DEFAULT_STRETCHER;  // gerçekten kurulan
+    this.onStretcherFallback = null;           // yedeğe düşünce haber ver
     this.formants = false;  // yalnız destekleyen arka uçta anlamlı
   }
 
@@ -178,8 +181,9 @@ export class Engine {
     return {
       rate: this.rate,
       semitones: this.semitones,
-      // Desteklemeyen arka uçta bayrak hiç gönderilmiyor.
-      formants: this.formants && supportsFormants(this.stretcher),
+      // Desteklemeyen arka uçta bayrak hiç gönderilmiyor. GERÇEKTEN kurulan
+      // arka uca bakılıyor: yedeğe düşülmüşse formant seçeneği de düşmeli.
+      formants: this.formants && supportsFormants(this.activeStretcher),
     };
   }
 
@@ -188,9 +192,12 @@ export class Engine {
    * yeniden kurulmak zorunda: çalıyorsa mevcut konuma seek ediliyor.
    */
   async setStretcher(id) {
-    const next = id || DEFAULT_STRETCHER;
+    const next = normalizeStretcher(id || DEFAULT_STRETCHER);
     if (next === this.stretcher) return;
     this.stretcher = next;
+    // Çalmıyorsa bir sonraki play() zaten yeni düğümü kuruyor; activeStretcher
+    // orada güncelleniyor. Burada peşin yazmıyoruz ki yedeğe düşme durumunda
+    // yanlış bir değer görünmesin.
     if (this.playing && this.stretchActive) await this.seek(this.currentTime);
   }
 
@@ -203,8 +210,8 @@ export class Engine {
     if (next === this.formants) return;
     this.formants = next;
     if (!this.playing || !this.stretchActive) return;
-    if (supportsFormants(this.stretcher)) {
-      updateNode(this.stretchNode, this.#stretchOptions(), this.stretcher,
+    if (supportsFormants(this.activeStretcher)) {
+      updateNode(this.stretchNode, this.#stretchOptions(), this.activeStretcher,
                  this.ctx.currentTime);
     }
   }
@@ -252,19 +259,50 @@ export class Engine {
       this.#routeChannels();
       return;
     }
-    await registerModule(this.ctx, this.stretcher);
     if (!this.bus) {
       this.bus = this.ctx.createGain();
       this.bus.gain.value = 1;
     }
-    // Signalsmith'in fabrikası asenkron; SoundTouch'ınki değil. İkisi de
-    // await ediliyor, startAt bundan SONRA hesaplandığı için sorun yok.
-    this.stretchNode = await createNode(
-      this.ctx, this.channelLayout, this.#stretchOptions(), this.stretcher
-    );
+    this.stretchNode = await this.#createWithFallback();
     this.bus.connect(this.stretchNode);
     this.stretchNode.connect(this.master);
     this.#routeChannels();
+  }
+
+  /**
+   * Düğümü kurar; istenen kütüphane yüklenemezse YEDEĞE düşer.
+   *
+   * Statik kontrol (WebAssembly var mı) normalizeStretcher'da yapılıyor ama
+   * yetmiyor: WASM derlemesi, ağ hatası ya da worklet kaydı çalışma anında
+   * da patlayabilir. O durumda sessizce susmaktansa SoundTouch'la çalmak
+   * iyi. activeStretcher gerçekten kurulan arka ucu tutuyor; update, start
+   * ve gecikme ölçümü hep ona bakıyor.
+   */
+  async #createWithFallback() {
+    const wanted = normalizeStretcher(this.stretcher);
+    try {
+      await registerModule(this.ctx, wanted);
+      const node = await createNode(
+        this.ctx, this.channelLayout, this.#stretchOptions(), wanted
+      );
+      this.activeStretcher = wanted;
+      return node;
+    } catch (error) {
+      if (wanted === FALLBACK_STRETCHER) throw error;
+      console.warn(
+        `[stretch] ${wanted} kurulamadı, ${FALLBACK_STRETCHER} kullanılıyor:`,
+        error
+      );
+      this.activeStretcher = FALLBACK_STRETCHER;
+      // #stretchOptions artık activeStretcher'a baktığı için formant
+      // bayrağı da kendiliğinden düşüyor.
+      await registerModule(this.ctx, FALLBACK_STRETCHER);
+      const node = await createNode(
+        this.ctx, this.channelLayout, this.#stretchOptions(), FALLBACK_STRETCHER
+      );
+      if (this.onStretcherFallback) this.onStretcherFallback(wanted, FALLBACK_STRETCHER);
+      return node;
+    }
   }
 
   /**
@@ -327,7 +365,7 @@ export class Engine {
     this.semitones = nextSemis;
     this.latency = nextLatency;
     if (nowActive) {
-      updateNode(this.stretchNode, this.#stretchOptions(), this.stretcher,
+      updateNode(this.stretchNode, this.#stretchOptions(), this.activeStretcher,
                  this.ctx.currentTime);
       for (const channel of this.channels.values()) {
         if (channel.source) channel.source.playbackRate.value = nextRate;
@@ -459,7 +497,7 @@ export class Engine {
     const startAt = this.ctx.currentTime + START_LEAD;
     // Signalsmith schedule({active:true}) olmadan hiç ses üretmiyor ve
     // kaynaklarla AYNI ana yazılması gerekiyor; SoundTouch'ta bu no-op.
-    startNode(this.stretchNode, startAt, this.#stretchOptions(), this.stretcher);
+    startNode(this.stretchNode, startAt, this.#stretchOptions(), this.activeStretcher);
     for (const channel of this.channels.values()) {
       const source = this.ctx.createBufferSource();
       source.buffer = channel.buffer;
