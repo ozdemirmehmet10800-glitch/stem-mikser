@@ -7,6 +7,10 @@
 // kayıyor. Bunun yerine ileriye bakan bir zamanlayıcı - her SCHEDULE_EVERY
 // ms'de uyanıp LOOKAHEAD saniyelik ilerisini AudioContext saatine yazıyor.
 // Web Audio kendi saatiyle çaldığı için JavaScript gecikse bile tık kaymıyor.
+//
+// LOOKAHEAD ctx saniyesi cinsinden, yani hız 1.5x iken 0.18, 0.5x iken 0.06
+// şarkı saniyesine karşılık geliyor - ikisi de zamanlayıcı aralığından (25 ms)
+// büyük, dolayısıyla esnetme açıkken de tık atlanmıyor.
 
 const SCHEDULE_EVERY = 25;   // ms, zamanlayıcı uyanma aralığı
 const LOOKAHEAD = 0.12;      // sn, ne kadar ileriyi yazıyoruz
@@ -127,6 +131,10 @@ export class Metronome {
   }
 
   // Seek/duraklat sonrası: şarkı zamanından sonraki ilk tıka atla.
+  //
+  // CANLI HIZ DEĞİŞİMİNDE ÇAĞIRMAK GEREKMİYOR: nextIndex şarkı zamanındaki
+  // bir indeks ve motor konumu sürekli tutuyor; değişen tek şey songToCtx
+  // eşlemesi. resync burada çağrılsa tam o anda düşen tık atlanabilir.
   resync() {
     const now = this.engine.currentTime;
     let index = 0;
@@ -152,14 +160,18 @@ export class Metronome {
     if (!this.enabled || !engine.playing || !engine.ctx) return;
     const ctx = engine.ctx;
 
-    // Şarkı zamanı <-> ctx zamanı eşlemesi. engine.startedAt, çalmanın
-    // başladığı ctx anı; engine.offset o andaki şarkı konumu.
-    const songToCtx = (songTime) => engine.startedAt + (songTime - engine.offset);
+    // Şarkı zamanı -> ctx zamanı eşlemesi MOTORDAN geliyor (engine.songToCtx):
+    // hız çarpanını ve esneticinin ölçülmüş çıkış gecikmesini içeriyor, yani
+    // tıklar esnetilmiş zaman çizgisine oturuyor. Burada kendi hesabımızı
+    // yapsak 0.8x'te metronom şarkıdan kopardı.
+    //
+    // ctx.outputLatency'yi EKLEMİYORUZ: tıklar da stem'lerle aynı çıkıştan
+    // geçtiği için o gecikmeyi ikisi birlikte yiyor.
     const horizon = ctx.currentTime + LOOKAHEAD;
 
     while (this.nextIndex < this.ticks.length) {
       const tick = this.ticks[this.nextIndex];
-      const at = songToCtx(tick.time);
+      const at = engine.songToCtx(tick.time);
       if (at > horizon) break;
       if (at >= ctx.currentTime) this.#click(at, tick.accent);
       this.nextIndex += 1;
