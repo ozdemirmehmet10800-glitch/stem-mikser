@@ -214,6 +214,466 @@ def fetch_weights(check_mirror: bool = True) -> dict:
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return report
 
+# --------------------------------------------------------------------------
+# htdemucs_6s ağırlığı imaja gömülüyor (A yolunun ikinci aşaması).
+# Roformer ağırlıkları volume'da; bu küçük ve canlı imajla aynı davranmalı.
+# --------------------------------------------------------------------------
+
+def _warm_demucs():
+    from demucs.pretrained import get_model
+
+    model = get_model(MODEL_NAME)
+    print(f"[build] {MODEL_NAME} indirildi, kaynaklar={list(model.sources)}")
+
+# --------------------------------------------------------------------------
+# GPU imajı
+# --------------------------------------------------------------------------
+# Sürümler canlı separate_image ile AYNI tutuldu: aynı torch/demucs/numpy
+# ikilisi, böylece ölçülen fark modelden geliyor, ortamdan değil.
+gpu_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("ffmpeg")
+    .pip_install(
+        "torch==2.5.1",
+        "numpy==1.26.4",
+        "demucs==4.1.0",       # A yolunun ikinci aşaması
+        "soundfile==0.13.1",
+    )
+    .pip_install(
+        "einops==0.8.2",
+        "rotary-embedding-torch==0.9.1",
+        "beartype==0.19.0",    # MSST model dosyaları isteğe bağlı değil, import ediyor
+        "librosa==0.11.0",     # yalnız mel filtre bankası için (filters)
+        "PyYAML==6.0.2",
+    )
+    .env({"HF_HOME": DEMUCS_WEIGHTS, "TORCH_HOME": DEMUCS_WEIGHTS})
+    .run_function(_warm_demucs)
+    .env({"HF_HUB_OFFLINE": "1"})
+)
+
+# Konteyner ne zaman ayağa kalktı? Soğuk başlangıcı ölçmek için.
+_CONTAINER_START = time.time()
+_FIRST_CALL = True
+
+
+# --------------------------------------------------------------------------
+# yardımcılar
+# --------------------------------------------------------------------------
+
+def _run(cmd: list) -> subprocess.CompletedProcess:
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"{cmd[0]} basarisiz ({result.returncode}): "
+            f"{result.stderr.decode('utf-8', 'replace')[:800]}"
+        )
+    return result
+
+
+def _song_dir(song_id: str) -> pathlib.Path:
+    return pathlib.Path(DATA_DIR) / "songs" / song_id
+
+
+def _find_input(song_id: str) -> pathlib.Path:
+    matches = sorted(_song_dir(song_id).glob("input.*"))
+    if not matches:
+        raise FileNotFoundError(f"{song_id}: input dosyasi yok")
+    return matches[0]
+
+
+def _msst_path() -> str:
+    """MSST model dosyaları volume'da; import edilebilmesi için sys.path'e."""
+    return str(pathlib.Path(EXP_WEIGHTS) / "msst")
+
+
+def _load_config(path: pathlib.Path) -> dict:
+    """YAML'i GÜVENLİ yükler.
+
+    Konfigler `!!python/tuple` etiketi kullanıyor; `yaml.unsafe_load` bunu
+    çözer ama rastgele kod çalıştırmaya da açar. B'nin konfigi lisansı
+    belirsiz bir aynadan geliyor, o yüzden SafeLoader'a yalnızca tuple
+    kurucusunu ekliyoruz.
+    """
+    import yaml
+
+    class Loader(yaml.SafeLoader):
+        pass
+
+    Loader.add_constructor(
+        "tag:yaml.org,2002:python/tuple",
+        lambda loader, node: tuple(loader.construct_sequence(node)),
+    )
+    with path.open("r", encoding="utf-8") as handle:
+        return yaml.load(handle, Loader=Loader)
+
+
+def _build_model(kind: str, config: dict):
+    """kind: 'melband' (A, tek stem vokal) | 'bs' (B, 6 stem)."""
+    import sys
+
+    if _msst_path() not in sys.path:
+        sys.path.insert(0, _msst_path())
+
+    params = dict(config["model"])
+    if kind == "melband":
+        from models.bs_roformer.mel_band_roformer import MelBandRoformer
+
+        return MelBandRoformer(**params)
+    from models.bs_roformer.bs_roformer import BSRoformer
+
+    return BSRoformer(**params)
+
+
+def _load_checkpoint(model, path: pathlib.Path, device: str):
+    import torch
+
+    state = torch.load(str(path), map_location="cpu", weights_only=False)
+    if isinstance(state, dict):
+        for key in ("state_dict", "model", "model_state_dict"):
+            if key in state and isinstance(state[key], dict):
+                state = state[key]
+                break
+    # Bazı checkpoint'ler "module." önekiyle kaydedilmiş oluyor.
+    if any(name.startswith("module.") for name in state):
+        state = {name.removeprefix("module."): value for name, value in state.items()}
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing or unexpected:
+        print(f"[ckpt] eksik={len(missing)} fazla={len(unexpected)}")
+        if missing[:3]:
+            print(f"[ckpt] ilk eksikler: {missing[:3]}")
+    model.to(device)
+    model.eval()
+    return model
+
+
+def _windowing_array(window_size: int, fade_size: int, device):
+    """MSST'nin _getWindowingArray'i (MIT): doğrusal fade-in/out, ortası 1."""
+    import torch
+
+    window = torch.ones(window_size, device=device)
+    window[:fade_size] = torch.linspace(0.0, 1.0, fade_size, device=device)
+    window[-fade_size:] = torch.linspace(1.0, 0.0, fade_size, device=device)
+    return window
+
+
+def _demix(model, mix, config: dict, num_overlap: int, use_fp16: bool,
+           device: str = "cuda"):
+    """Örtüşmeli parça parça çıkarım.
+
+    MSST'nin demix()'inin (MIT) 'generic' dalıyla aynı: kenar bozulmasını
+    önlemek için reflect dolgu, parça başına fade'li pencere (ilk parçada
+    fade-in, son parçada fade-out yok), ağırlıklı toplam / sayaç.
+
+    Kendimiz yazdık çünkü num_overlap deneyin ASIL KOLU ([B-max]) ve MSST'nin
+    utils/model_utils.py'si çok daha fazla bağımlılık çekiyor.
+    """
+    import numpy as np
+    import torch
+    from torch.nn import functional as F
+
+    chunk_size = int(config["audio"]["chunk_size"])
+    batch_size = int(config.get("inference", {}).get("batch_size", 1))
+    fade_size = chunk_size // 10
+    step = chunk_size // num_overlap
+    border = chunk_size - step
+
+    mix = torch.as_tensor(mix, dtype=torch.float32, device=device)
+    length_init = mix.shape[-1]
+    if length_init > 2 * border and border > 0:
+        mix = F.pad(mix, (border, border), mode="reflect")
+
+    window_template = _windowing_array(chunk_size, fade_size, device)
+    num_stems = int(config["model"].get("num_stems", 1))
+    result = torch.zeros((num_stems,) + tuple(mix.shape), dtype=torch.float32,
+                         device=device)
+    counter = torch.zeros(mix.shape[-1], dtype=torch.float32, device=device)
+
+    batch_data = []
+    batch_locations = []
+    index = 0
+    with torch.autocast("cuda", dtype=torch.float16, enabled=use_fp16):
+        with torch.inference_mode():
+            while index < mix.shape[1]:
+                part = mix[:, index:index + chunk_size]
+                chunk_len = part.shape[-1]
+                pad_mode = "reflect" if chunk_len > chunk_size // 2 else "constant"
+                part = F.pad(part, (0, chunk_size - chunk_len), mode=pad_mode)
+                batch_data.append(part)
+                batch_locations.append((index, chunk_len))
+                index += step
+
+                if len(batch_data) >= batch_size or index >= mix.shape[1]:
+                    out = model(torch.stack(batch_data, dim=0)).to(torch.float32)
+                    if out.dim() == 3:  # tek stem'li modeller stem eksenini atıyor
+                        out = out.unsqueeze(1)
+                    window = window_template.clone()
+                    if index - step == 0:
+                        window[:fade_size] = 1.0        # ilk parça: fade-in yok
+                    elif index >= mix.shape[1]:
+                        window[-fade_size:] = 1.0       # son parça: fade-out yok
+                    for slot, (start, seg_len) in enumerate(batch_locations):
+                        piece = out[slot, ..., :seg_len] * window[:seg_len]
+                        result[..., start:start + seg_len] += piece
+                        counter[start:start + seg_len] += window[:seg_len]
+                    batch_data.clear()
+                    batch_locations.clear()
+
+            estimated = result / counter.clamp(min=1e-8)
+            if length_init > 2 * border and border > 0:
+                estimated = estimated[..., border:-border]
+
+    array = estimated.cpu().numpy()
+    # NaN nöbetçisi: T4'te bf16 yok, fp16'da Roformer NaN üretebiliyor.
+    # Sessizce sıfırlamak yerine çağırana haber veriyoruz.
+    had_nan = bool(np.isnan(array).any() or np.isinf(array).any())
+    np.nan_to_num(array, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    return array, had_nan
+
+
+def _demix_tta(model, mix, config, num_overlap, use_fp16):
+    """Test-time augmentation: orijinal + kanal takası + faz tersi, ortalama.
+
+    MSST'nin --use_tta'sıyla aynı. Üç geçiş, yani üç kat süre.
+    """
+    import numpy as np
+
+    variants = [mix, mix[::-1].copy(), -mix]
+    total = None
+    nan_seen = False
+    for slot, variant in enumerate(variants):
+        out, had_nan = _demix(model, variant, config, num_overlap, use_fp16)
+        nan_seen = nan_seen or had_nan
+        if slot == 1:
+            out = out[:, ::-1].copy()   # kanalları geri çevir
+        elif slot == 2:
+            out = -out                  # fazı geri çevir
+        total = out if total is None else total + out
+    return total / len(variants), nan_seen
+
+# --------------------------------------------------------------------------
+# çıktı yazımı ve ölçüm
+# --------------------------------------------------------------------------
+
+STEM_ORDER = ("vocals", "drums", "bass", "guitar", "piano", "other")
+
+
+def _decode(path: pathlib.Path, samplerate: int, channels: int):
+    """ffmpeg -> float32 PCM. torchaudio I/O YOK (proje kuralı)."""
+    import numpy as np
+
+    proc = _run([
+        "ffmpeg", "-nostdin", "-v", "error", "-i", str(path),
+        "-f", "f32le", "-acodec", "pcm_f32le",
+        "-ar", str(samplerate), "-ac", str(channels), "-",
+    ])
+    return np.frombuffer(proc.stdout, dtype="<f4").reshape(-1, channels).T.copy()
+
+
+def _residual_report(mix, stems: dict) -> dict:
+    """Stem toplamı orijinal karışımdan ne kadar sapıyor?
+
+    ÖLÇEKLEMEDEN ÖNCE hesaplanıyor: ortak clip_scale uygulandıktan sonra
+    bakılsa hata ölçek kadar yapay olarak kayardı.
+    """
+    import numpy as np
+
+    total = None
+    for value in stems.values():
+        total = value.copy() if total is None else total + value
+    residual = mix - total
+    mix_rms = float(np.sqrt(np.mean(mix.astype(np.float64) ** 2)))
+    res_rms = float(np.sqrt(np.mean(residual.astype(np.float64) ** 2)))
+    ratio_db = 20.0 * np.log10(res_rms / mix_rms) if mix_rms > 0 and res_rms > 0 else -np.inf
+    return {
+        "residual_db": round(float(ratio_db), 2) if np.isfinite(ratio_db) else -999.0,
+        "residual_peak": round(float(np.abs(residual).max()), 6),
+        "mix_rms": round(mix_rms, 6),
+    }
+
+
+def _write_outputs(song_id: str, title: str, stems: dict, samplerate: int,
+                   channels: int, duration: float, source_song: str,
+                   meta: dict) -> list:
+    """FLAC master + m4a, canlı `separate` ile AYNI kurallarla.
+
+    Ortak clip_scale: stem başına ayrı ölçek mikserde dengeyi bozardı.
+    """
+    import soundfile as sf
+
+    song_dir = _song_dir(song_id)
+    master_dir = song_dir / "master"
+    stems_dir = song_dir / "stems"
+    master_dir.mkdir(parents=True, exist_ok=True)
+    stems_dir.mkdir(parents=True, exist_ok=True)
+
+    peaks = {name: float(abs(value).max()) for name, value in stems.items()}
+    clip_scale = max(1.01 * max(peaks.values()), 1.0)
+    print(f"[clip] tepeler={ {k: round(v, 4) for k, v in peaks.items()} }")
+    print(f"[clip] ortak scale={clip_scale:.4f}")
+
+    written = []
+    for name in STEM_ORDER:
+        if name not in stems:
+            continue
+        data = stems[name] / clip_scale
+        flac_path = master_dir / f"{name}.flac"
+        sf.write(str(flac_path), data.T, samplerate, subtype=FLAC_SUBTYPE,
+                 format="FLAC")
+        _run([
+            "ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(flac_path),
+            "-c:a", "aac", "-b:a", AAC_BITRATE,
+            "-ar", str(samplerate), "-ac", str(channels),
+            "-movflags", "+faststart", str(stems_dir / f"{name}.m4a"),
+        ])
+        written.append(name)
+
+    # Akor ve vuruş ORİJİNALDEN kopyalanıyor, yeniden hesaplanmıyor:
+    # karşılaştırmak istediğimiz ayrıştırma, analiz değil. Aynı ızgara
+    # olması zaten şart, yoksa şerit kayar.
+    copied = []
+    for name in ("chords.json", "beats.json"):
+        source = _song_dir(source_song) / name
+        if source.is_file():
+            shutil.copyfile(source, song_dir / name)
+            copied.append(name)
+
+    status = {
+        "id": song_id,
+        "title": title,
+        "state": "done",
+        "progress": 100,
+        "duration": duration,
+        "stems": written,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "experiment": meta,       # ölçümler status.json'da da dursun
+        "source_song": source_song,
+        "copied_analysis": copied,
+    }
+    (song_dir / "status.json").write_text(
+        json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    volume.commit()
+    return written
+
+
+def _peak_vram() -> dict:
+    import torch
+
+    if not torch.cuda.is_available():
+        return {}
+    return {
+        "vram_allocated_mb": round(torch.cuda.max_memory_allocated() / 1024**2, 1),
+        "vram_reserved_mb": round(torch.cuda.max_memory_reserved() / 1024**2, 1),
+    }
+
+
+# --------------------------------------------------------------------------
+# B: tek model, 6 stem
+# --------------------------------------------------------------------------
+
+@app.function(
+    image=gpu_image,
+    gpu="T4",
+    volumes={DATA_DIR: volume},
+    timeout=3600,          # B-max 8 örtüşme + TTA ile dakikalar sürebilir
+    max_containers=1,      # min_containers YOK: boştayken maliyet sıfır
+)
+def run_b(song_id: str, num_overlap: int = 2, tta: bool = False,
+          suffix: str = "b", label: str = "B") -> dict:
+    global _FIRST_CALL
+    import numpy as np
+    import torch
+
+    wall_started = time.time()
+    cold_seconds = round(time.time() - _CONTAINER_START, 2) if _FIRST_CALL else 0.0
+    was_cold = _FIRST_CALL
+    _FIRST_CALL = False
+
+    volume.reload()
+    root = pathlib.Path(EXP_WEIGHTS)
+    config = _load_config(root / "bs_roformer_sw.yaml")
+    samplerate = int(config["audio"]["sample_rate"])
+    channels = int(config["audio"]["num_channels"])
+
+    load_started = time.time()
+    model = _build_model("bs", config)
+    _load_checkpoint(model, root / "bs_roformer_sw.ckpt", "cuda")
+    model_load_seconds = round(time.time() - load_started, 2)
+    print(f"[model] B yuklendi {model_load_seconds} sn")
+
+    source_status = json.loads((_song_dir(song_id) / "status.json").read_text("utf-8"))
+    mix = _decode(_find_input(song_id), samplerate, channels)
+    duration = round(mix.shape[1] / samplerate, 3)
+    print(f"[decode] {mix.shape} -> {duration} sn")
+
+    torch.cuda.reset_peak_memory_stats()
+    gpu_started = time.time()
+    use_fp16 = True
+    if tta:
+        out, had_nan = _demix_tta(model, mix, config, num_overlap, use_fp16)
+    else:
+        out, had_nan = _demix(model, mix, config, num_overlap, use_fp16)
+    if had_nan:
+        # fp16'da NaN çıktı: aynı şarkıyı fp32'de yeniden koş, hangisinin
+        # kullanıldığını rapora yaz. Sessizce sıfırlamak sonucu bozar.
+        print("[fp16] NaN/Inf uretildi, fp32'ye dusuluyor")
+        use_fp16 = False
+        torch.cuda.reset_peak_memory_stats()
+        gpu_started = time.time()
+        if tta:
+            out, had_nan = _demix_tta(model, mix, config, num_overlap, use_fp16)
+        else:
+            out, had_nan = _demix(model, mix, config, num_overlap, use_fp16)
+    gpu_seconds = round(time.time() - gpu_started, 2)
+    vram = _peak_vram()
+    print(f"[demix] {gpu_seconds} sn, overlap={num_overlap}, tta={tta}, "
+          f"fp16={use_fp16}, {vram}")
+
+    names = list(config["training"]["instruments"])
+    stems = {name: out[index] for index, name in enumerate(names)}
+    missing = [name for name in STEM_ORDER if name not in stems]
+    if missing:
+        raise ValueError(f"model beklenen stem'leri vermedi, eksik: {missing}")
+
+    residual = _residual_report(mix, stems)
+    print(f"[artik] {residual}")
+
+    title = f"{source_status.get('title') or song_id[:12]} [{label}]"
+    target_id = f"{song_id}-{suffix}"
+    written = _write_outputs(target_id, title, stems, samplerate, channels,
+                             duration, song_id, meta={})
+
+    wall_seconds = round(time.time() - wall_started, 2)
+    report = {
+        "method": label,
+        "source_song": song_id,
+        "target_song": target_id,
+        "title": title,
+        "duration": duration,
+        "num_overlap": int(num_overlap),
+        "tta": bool(tta),
+        "precision": "fp16" if use_fp16 else "fp32",
+        "cold_start_seconds": cold_seconds,
+        "was_cold": bool(was_cold),
+        "model_load_seconds": model_load_seconds,
+        "gpu_seconds": gpu_seconds,
+        "wall_seconds": wall_seconds,
+        "usd": round(wall_seconds * T4_USD_PER_SECOND, 5),
+        "stems": written,
+        **{key: float(value) for key, value in vram.items()},
+        **{key: float(value) for key, value in residual.items()},
+    }
+    # status.json'a ölçümleri de yaz (yeniden çalıştırmadan bakılabilsin).
+    status_path = _song_dir(target_id) / "status.json"
+    status = json.loads(status_path.read_text("utf-8"))
+    status["experiment"] = report
+    status_path.write_text(json.dumps(status, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+    volume.commit()
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return report
+
 
 @app.local_entrypoint()
 def fetch(check_mirror: bool = True):
