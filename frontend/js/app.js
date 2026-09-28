@@ -746,7 +746,8 @@ function renderAlignment(rows) {
   const legend = document.createElement("small");
   legend.className = "align-legend";
   legend.textContent =
-    "Hiza farkı = metronom − stem. Artı: metronom GEÇ. Eksi: metronom ERKEN.";
+    "Hiza farkı = metronom − stem. Artı: metronom GEÇ, eksi: metronom ERKEN. " +
+    "Karar yalnız MEDYANA bakıyor; saçılma WSOLA'nın doğası, geçti/kaldıya girmiyor.";
   host.append(legend);
 }
 

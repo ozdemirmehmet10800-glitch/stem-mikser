@@ -167,26 +167,58 @@ yoksa tıklar zaman esnetmesinde yayılırdı.
 Bedeli: fader/solo/mute düğümün ÖNÜNDE, yani esnetici açıkken ~145 ms geç
 duyuluyorlar. Master düğümün ARDINDA, ana ses anında. Kabul edildi.
 
-### GECİKME: tahmin değil, ÖLÇÜM
-WSOLA `sampleReq` kadar girdi birikmeden çıkış üretmiyor ve o ana kadar çıkış
-TAM SIFIR. Bu yüzden sabit bir sinyali `OfflineAudioContext`'ten geçirip ilk
-sıfırdan farklı kareyi bulmak gecikmeyi tam veriyor (`stretch.js`).
+### GECİKME: İÇERİK gecikmesi, tahmin değil ölçüm
+Motorun zaman eşlemesinde gereken büyüklük şu: girişe t anında giren bir
+olay çıkışa t + D anında çıkıyor. **İlk sürüm yanlış şeyi ölçüyordu** -
+"çıkışın ilk sıfırdan farklı karesi", yani WSOLA'nın çıkış üretmeye başlaması
+için biriktirdiği BAŞLANGIÇ doluşu. Hiza testi farkı yakaladı: 0.8x'te
++34 ms, 1.2x'te +10 ms sapma (telefon ve masaüstü birebir aynı, yani model
+hatası, cihaz değil).
 
-Masaüstü Chrome'da ölçülen değerler:
+Sonda artık düzensiz aralıklı 24 tıklık bir treni gerçek hızda çalan bir
+kaynaktan düğüme geçirip gözlenen/beklenen medyan farkı alıyor. Aralıklar
+DÜZENSİZ olmak zorunda: eşit aralıklı trende D ile D+aralık ayırt edilemiyor.
+WSOLA bir tıkı düşürüp çiftleyebildiği için kaba hizalama oylamayla, ince
+ölçüm medyanla yapılıyor.
 
-| oran | yarım ses | 32 kHz | 44,1 kHz |
-|---|---|---|---|
-| 1.0 | 0 | 0 ms (bypass) | 0 ms |
-| 1.0 | +2 | 140 ms | |
-| 0.8 | 0 | 144 ms | |
-| 0.8 | +2 | 144 ms | 145 ms |
-| 1.25 | 0 | 124 ms | |
-| 1.5 | +6 | 136 ms | |
+**D SİNYALE BAĞLI.** Aynı hızda ölçüldü (0.8x, 32 kHz):
 
-Telafi edilmezse metronom ve akor imleci sesin ~140 ms ÖNÜNDE gider.
-Ölçüm (örnekleme hızı, 0.05'lik oran ızgarası, yarım ses) başına
-önbelleklenmiş; masaüstünde 38-53 ms sürüyor, bu yüzden kaydırıcı
-SÜRÜKLENİRKEN değil BIRAKILINCA yapılıyor. Başarısız olursa 135 ms.
+| sondanın sinyali | D |
+|---|---|
+| tıklar SESSİZLİK üzerinde | 122.3 ms |
+| tıklar + akor zemini | 110.6 ms |
+| tıklar + armonik/gürültü karışımı | 110.8 ms |
+| tıklar + saf sinüsler | 113.1 ms |
+| tıklar + gürültü | 114.1 ms |
+
+Sürekli zeminler 3.5 ms içinde uyuşuyor; ayrışan tek şey sessizlik. Gerçek
+müzik sürekli olduğu için sonda armonik + deterministik gürültü zemini
+kullanıyor (`Math.random` YOK, ölçüm tekrarlanabilir olmalı). Artakalan
+birkaç ms WSOLA'nın doğasından; tek tek tıklarda saçılma zaten ±17 ms.
+
+Ölçülen içerik gecikmeleri: 0.8x → 113.5, 1.1x → 123.5, 1.2x → 125.8,
+1.5x+6 → 126.2, 0.5x-6 → 109.7 ms. Ölçüm başına ~280 ms, (örnekleme hızı,
+0.05'lik oran ızgarası, yarım ses) başına önbellekli, kaydırıcı bırakılınca
+yapılıyor. Başarısız olursa 115 ms.
+
+### Canlı hız değişiminde yeniden çıpalama
+Değişim anında düğümden ÇIKAN konum ile GİREN konum aynı değil: aralarında
+`latency * rate` kadar şarkı zamanı var ve bu dolgu ESKİ hızla birikmişti.
+Kararlı rejimde çıkış(t) = giriş(t − D) olduğundan doğru çıpa giriş tarafı:
+
+```
+offset    = currentTime + latency_eski * rate_eski   // o anda GİREN konum
+startedAt = ctx.currentTime
+latency   = D_yeni
+```
+
+Önceki kod offset'e ÇIKAN konumu yazıyordu; hata
+`D_eski*hız_eski − D_yeni*hız_yeni` kadar oluyordu. 0.8x → 1.1x için
+0.11*(1.1−0.8) = 33 ms; hiza testi −34 ms ölçtü. Düzeltmeden sonra +3..5 ms.
+Yeniden başlatma gerekmedi.
+
+Bypass sınırı geçilirken (stop + play) boru hattı boşaldığı için orada ÇIKAN
+konum doğru çıpa; o dal değişmedi.
 
 ### Üç ayrı zaman (`engine.js`)
 | | ne | kim kullanıyor |
@@ -257,6 +289,48 @@ gösterimine düşüyor. Aralık ±%50 (oran 0.5-1.5), ton ±6 yarım ses.
   esnetici gecikmesi (yani hiza tam)
 - canlı ton/hız değişimi 0 yeniden başlatma; bypass sınırı 1
 - mobil yol: 32 kHz, mono tampon, 0.8x doğru, `processorerror` yok
+
+### Hiza testi (Ayarlar ekranında)
+Kulakla karar verilemeyen sorular için kalıcı ölçüm aracı: `aligncheck.js` +
+`tap-processor.js`. Sentetik tık stem'i motorun gerçek zincirinden geçiyor,
+master çıkışı ile metronom çıkışı ayrı ayrı bir AudioWorklet'te izleniyor,
+zaman damgası render iş parçacığında `currentFrame` + blok içi indeksten
+üretiliyor. Kendi Engine/Metronome örneğini kurup kapatıyor, açık şarkıya
+dokunmuyor; modül yalnız düğmeye basılınca yükleniyor.
+
+Gerçek davul KULLANILMIYOR, çünkü orada "atak anı" tanıma bağlı: aynı
+kayıtta akış tepesi ~10 ms geç, geri izleme ~15 ms erken okuyor. Sentetik
+tıkın ilk örneği tam genlikte.
+
+Ölçüt: medyan |fark| < 10 ms. Saçılma WSOLA'nın doğası - raporlanıyor ama
+geçti/kaldı kararına GİRMİYOR.
+
+Düzeneğin kendisi doğrulandı: 1.0x bypass'ta +0.0 ms, saçılma ±0.0 ms.
+
+Düzeltme sonrası masaüstü (48 kHz), iki koşuda aynı:
+
+| ölçüm | önce | sonra |
+|---|---|---|
+| 1.0x (bypass) | +0.0 ms | +0.0 ms |
+| 0.8x | +33.0 ms | **+2.5 ms** |
+| 1.2x | +4.5 ms | **+2.3 ms** |
+| canlı 0.8x → 1.1x | −27.8 ms | **+3.2 ms** |
+| seek sonrası bayat ses | yok | yok |
+| seek sonrası konum | −17.4 ms | **−7.6 ms** |
+
+### Bilinen, bilinçli DOKUNULMAYAN iki şey
+- **Vuruş ızgarası davuldan 8-15 ms ÖNDE.** `sarki.mp3`'ün davul stem'i ile
+  `beat_this` vuruşları çapraz ilintiyle karşılaştırıldı (ölçütün
+  doğrusallığı bilinen kaydırmalarla sınandı, hata ±1 ms): tüm vuruşlarda
+  +14.7 ms, ölçü başlarında +22.1 ms okundu; aynı ölçütün davulun kendi
+  onset'lerindeki yanlılığı +7.0 ms, düşülünce +7.7 / +15.1 ms. Tempo
+  sürüklenmesi yok (+0.1 ms/sn). Bu 1.0x'te de var, esneticiyle ilgisi yok
+  ve TEK ŞARKIDA ölçüldü - genellemeden düzeltme yapmak aşırı uyum riski.
+  Birkaç şarkı daha ölçülmeden dokunulmayacak.
+- **Android'de `ctx.outputLatency` 0 dönüyor.** Görsel imleçten düşülen
+  telafi (`visualTime`) o cihazda etkisiz kalıyor. Kod doğru ve destekleyen
+  tarayıcıda çalışıyor; Bluetooth kulaklıkta 200 ms'yi bulan gecikme için
+  tarayıcı doğru değeri bildirmek zorunda. Uğraşılmayacak.
 
 ### Plan B (kullanılmadı)
 Sunucuda render. Ölçüm iyi çıktığı için gerek kalmadı; her ayar değişiminde

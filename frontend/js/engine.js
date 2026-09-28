@@ -13,7 +13,8 @@
 // ZAMAN EŞLEMESİ. Üç ayrı zaman var, karıştırılmamalı:
 //   currentTime  esneticiden ÇIKMIŞ olanın şarkı konumu. Metronomun
 //                zamanlaması, duraklatma çıpası ve bitiş kontrolü bunu
-//                kullanıyor.
+//                kullanıyor. latency = düğümün İÇERİK gecikmesi, yani
+//                girişe t anında girenin çıkışa t + latency'de çıkması.
 //   visualTime   KULAĞA GİDENİN konumu; currentTime eksi ctx.outputLatency.
 //                Yalnızca görsel imleç (akor şeridi, süre çubuğu) için.
 //                Metronoma eklenmiyor: tıklar da aynı çıkıştan geçtiği için
@@ -268,7 +269,22 @@ export class Engine {
       return;
     }
 
-    const position = this.currentTime;
+    // Yeniden çıpalama, DÜĞÜMÜN İÇİNDEKİ sesi hesaba katarak.
+    //
+    // Değişim anında düğümden ÇIKAN şarkı konumu ile düğüme GİREN konum
+    // aynı değil: aralarında latency saniyelik gerçek zaman, yani
+    // latency * rate kadar şarkı zamanı var. Kaynağın hızı anında
+    // değişiyor ama düğümdeki bu dolgu eski hızla birikmişti.
+    //
+    // Kararlı rejimde çıkış(t) = giriş(t - D_yeni) olduğundan doğru çıpa
+    // GİRİŞ tarafı: offset = o anda giren konum, startedAt = şimdi.
+    //   giren(T) = çıkan(T) + D_eski * hız_eski
+    // Bu düzeltilmeden önce offset'e çıkan konum yazılıyordu; fark
+    // D_eski*hız_eski - D_yeni*hız_yeni kadar oluyordu ve hiza testi
+    // 0.8x -> 1.1x geçişinde tam bunu gösterdi: 0.11*(1.1-0.8) = 33 ms,
+    // ölçülen -34 ms.
+    const entering = this.currentTime + this.latency * this.rate;
+
     this.rate = nextRate;
     this.semitones = nextSemis;
     this.latency = nextLatency;
@@ -278,10 +294,8 @@ export class Engine {
         if (channel.source) channel.source.playbackRate.value = nextRate;
       }
     }
-    // Yeniden çıpalama: startedAt = şimdi - latency  =>  currentTime = offset.
-    // Hız değişimi ctx saatinde anlık olduğu için hata bir blok kadar.
-    this.offset = position;
-    this.startedAt = this.ctx.currentTime - this.latency;
+    this.offset = entering;
+    this.startedAt = this.ctx.currentTime;
   }
 
   resetTempoAndPitch() {
