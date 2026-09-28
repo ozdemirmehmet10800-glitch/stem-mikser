@@ -62,6 +62,8 @@ const FALLBACK_LATENCY = 0.135;
 // ayrı ölçüm yapmak yerine ızgaraya yuvarlıyoruz.
 const RATE_GRID = 0.05;
 
+// key -> {seconds, measured}. measured=false ise ölçüm başarısız olmuş ve
+// yedek değere düşülmüş demektir; hiza testi bunu ayrıca raporluyor.
 const latencyCache = new Map();
 const moduleCache = new WeakMap();
 let lastMeasured = null;
@@ -117,7 +119,18 @@ function quantizeRate(rate) {
 export function cachedLatency(sampleRate, rate, semitones) {
   if (isBypass(rate, semitones)) return 0;
   const hit = latencyCache.get(probeKey(sampleRate, rate, semitones));
-  return hit === undefined ? null : hit;
+  return hit === undefined ? null : hit.seconds;
+}
+
+/**
+ * Ölçümün ayrıntısı: {seconds, measured}. measured=false ise gerçek ölçüm
+ * yapılamamış ve yedek sabite düşülmüş. Hiza testi bunu gösteriyor.
+ * Henüz hiç denenmemişse null.
+ */
+export function latencyInfo(sampleRate, rate, semitones) {
+  if (isBypass(rate, semitones)) return { seconds: 0, measured: true };
+  const hit = latencyCache.get(probeKey(sampleRate, rate, semitones));
+  return hit === undefined ? null : { seconds: hit.seconds, measured: hit.measured };
 }
 
 /**
@@ -153,13 +166,17 @@ export async function measureLatency(sampleRate, rate, semitones) {
   if (hit !== undefined) return hit;
 
   let value = FALLBACK_LATENCY;
+  let measured = false;
   try {
     value = await renderProbe(sampleRate, rate, Math.round(semitones));
+    measured = true;
   } catch (error) {
     console.warn("[stretch] gecikme ölçülemedi, varsayılan kullanılıyor:", error);
   }
-  latencyCache.set(key, value);
-  lastMeasured = value;
+  latencyCache.set(key, { seconds: value, measured });
+  // Yedek değeri "son ölçüm" diye yaymıyoruz; yoksa tek bir hata bütün
+  // sürükleme tahminlerini kirletir.
+  if (measured) lastMeasured = value;
   return value;
 }
 

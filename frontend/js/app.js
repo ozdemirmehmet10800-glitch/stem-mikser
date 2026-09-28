@@ -713,6 +713,70 @@ on("master", "input", () => {
   el("master-value").textContent = `${gainToDb(gain)} dB`;
 });
 
+// ------------------------------------------------------------- hiza testi
+
+// aligncheck.js YALNIZCA test çalıştırılınca yükleniyor: normal açılışta
+// ne modül ne de worklet indiriliyor.
+function renderAlignment(rows) {
+  const host = el("align-results");
+  if (!host) return;
+  host.innerHTML = "";
+  const table = document.createElement("table");
+  table.className = "align-table";
+  table.innerHTML =
+    "<thead><tr><th>Ölçüm</th><th>Değer</th><th></th><th>Not</th></tr></thead>";
+  const body = document.createElement("tbody");
+  for (const item of rows) {
+    const tr = document.createElement("tr");
+    const verdict =
+      item.passed === null
+        ? '<span class="align-verdict info">bilgi</span>'
+        : item.passed
+        ? '<span class="align-verdict ok">geçti</span>'
+        : '<span class="align-verdict fail">kaldı</span>';
+    tr.innerHTML =
+      `<td>${item.name}</td>` +
+      `<td class="value">${item.measurement}</td>` +
+      `<td>${verdict}</td>` +
+      `<td class="note">${item.note || ""}</td>`;
+    body.append(tr);
+  }
+  table.append(body);
+  host.append(table);
+  const legend = document.createElement("small");
+  legend.className = "align-legend";
+  legend.textContent =
+    "Hiza farkı = metronom − stem. Artı: metronom GEÇ. Eksi: metronom ERKEN.";
+  host.append(legend);
+}
+
+on("align-run", "click", async () => {
+  const button = el("align-run");
+  const state = el("align-state");
+  const results = el("align-results");
+  button.disabled = true;
+  results.innerHTML = "";
+  state.hidden = false;
+  state.textContent = "Hazırlanıyor…";
+  try {
+    // Oynatıcı çalıyorsa durdur: iki AudioContext aynı anda ses vermesin.
+    if (engine.playing) stopPlayback();
+    const { runAlignmentCheck, PASS_MS } = await import("./aligncheck.js");
+    const rows = await runAlignmentCheck((text) => {
+      state.textContent = text;
+    });
+    renderAlignment(rows);
+    const failed = rows.filter((item) => item.passed === false).length;
+    state.textContent = failed
+      ? `${failed} ölçüm kaldı (eşik ±${PASS_MS} ms).`
+      : `Hepsi geçti (eşik ±${PASS_MS} ms).`;
+  } catch (error) {
+    state.textContent = `Test çalıştırılamadı: ${error && error.message ? error.message : error}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
 // ---------------------------------------------------------------- PWA
 
 async function registerServiceWorker() {

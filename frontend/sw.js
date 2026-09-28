@@ -9,7 +9,7 @@
 // yeni worker beklemeden devralıyor (skipWaiting + clients.claim), yoksa
 // GitHub Pages'e atılan bir düzeltme kullanıcıya günlerce ulaşmayabiliyor.
 
-const VERSION = "v10";
+const VERSION = "v11";
 const CACHE = `stem-mikser-${VERSION}`;
 
 // Göreli yollar: site /stem-mikser/ alt yolunda yayınlanıyor, kökte değil.
@@ -31,6 +31,8 @@ const SHELL = [
   "./js/settings.js",
   "./js/stretch.js",
   "./js/tonality.js",
+  "./js/aligncheck.js",
+  "./js/tap-processor.js",
   // Esnetici (Aşama 8). soundtouch-processor.js AudioWorklet'e
   // addModule ile yükleniyor; fetch olayına destination "script" olarak
   // düşüyor, yani aşağıdaki "önce cache" dalından geçiyor. Çevrimdışıyken

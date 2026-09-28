@@ -503,6 +503,47 @@ input[type="range"]::-moz-range-thumb {
 .tune-value span { display: block; font-size: 11px; color: var(--text-faint); }
 .tune-row input[type="range"] { width: 100%; margin-top: 8px; }
 
+/* ---------- hiza testi ---------- */
+
+.align-state {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  display: flex; align-items: center; gap: 8px;
+}
+.align-state[hidden] { display: none; }
+.align-table {
+  width: 100%;
+  margin-top: 10px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.align-table th, .align-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.align-table th { color: var(--text-faint); font-weight: 600; }
+.align-table td.value {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.align-table td.note { color: var(--text-faint); }
+.align-verdict {
+  display: inline-block;
+  min-width: 50px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px; font-weight: 700;
+  text-align: center;
+}
+.align-verdict.ok { background: rgba(52, 211, 153, 0.16); color: var(--ok); }
+.align-verdict.fail { background: rgba(248, 113, 113, 0.16); color: var(--danger); }
+.align-verdict.info { background: rgba(139, 149, 165, 0.16); color: var(--text-dim); }
+.align-legend { display: block; margin-top: 8px; color: var(--text-faint); }
+
 /* ---------- indirme menüsü ---------- */
 
 .dl { position: relative; }
