@@ -1,8 +1,30 @@
 // Web Audio motoru.
 //
 // AudioBufferSourceNode tek kullanımlık: play/pause/seek her seferinde altı
-// kaynağı yeniden kuruyor. Hepsi AYNI ctx zamanında başlatıldığı için tek
-// AudioContext içinde örnek hassasiyetinde hizalı kalıyorlar.
+// kaynağı yeniden kuruyor. Hepsi AYNI ctx zamanında ve AYNI playbackRate ile
+// başlatıldığı için tek AudioContext içinde örnek hassasiyetinde hizalı
+// kalıyorlar.
+//
+// Zincir, esnetici kapalıyken (varsayılan):
+//   source -> gainNode -> master -> destination
+// Esnetici açıkken TEK düğüm, toplama bus'ında (bkz. stretch.js):
+//   source -> gainNode -> bus -> SoundTouchNode -> master -> destination
+//
+// ZAMAN EŞLEMESİ. Üç ayrı zaman var, karıştırılmamalı:
+//   currentTime  esneticiden ÇIKMIŞ olanın şarkı konumu. Metronomun
+//                zamanlaması, duraklatma çıpası ve bitiş kontrolü bunu
+//                kullanıyor.
+//   visualTime   KULAĞA GİDENİN konumu; currentTime eksi ctx.outputLatency.
+//                Yalnızca görsel imleç (akor şeridi, süre çubuğu) için.
+//                Metronoma eklenmiyor: tıklar da aynı çıkıştan geçtiği için
+//                stem'lerle birlikte gecikiyorlar.
+//   songToCtx()  şarkı zamanından ctx saatine; metronom ileriye bakan
+//                zamanlayıcısında bunu kullanıyor.
+
+import {
+  MIN_RATE, MAX_RATE, MAX_SEMITONES,
+  isBypass, registerModule, createNode, updateNode,
+} from "./stretch.js";
 
 export const STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"];
 
@@ -43,6 +65,10 @@ export function gainToDb(gain) {
   return (20 * Math.log10(gain)).toFixed(1);
 }
 
+function clamp(value, min, max) {
+  return value < min ? min : value > max ? max : value;
+}
+
 export class Engine {
   constructor() {
     this.ctx = null;
@@ -55,6 +81,14 @@ export class Engine {
     this.onEnded = null;
     this.mobile = isMobile();
     this.monoDownmix = this.mobile;
+
+    // --- esnetme durumu ---
+    this.rate = 1;          // 1 = orijinal hız
+    this.semitones = 0;     // 0 = orijinal ton
+    this.latency = 0;       // esneticinin ölçülmüş çıkış gecikmesi (sn)
+    this.bus = null;        // stem'lerin toplandığı gain (yalnız esnetmede)
+    this.stretchNode = null;
+    this.channelLayout = 2; // bus'ın kanal sayısı; mobilde mono olabilir
   }
 
   // decodeAudioData mono'ya kendiliğinden indirmiyor, stereo tamponu yine de
@@ -88,11 +122,9 @@ export class Engine {
       this.master.connect(this.ctx.destination);
       // Motor kurulmadan önce yüklenen kanallar varsa şimdi bağla.
       for (const channel of this.channels.values()) {
-        if (!channel.gainNode) {
-          channel.gainNode = this.ctx.createGain();
-          channel.gainNode.connect(this.master);
-        }
+        if (!channel.gainNode) channel.gainNode = this.ctx.createGain();
       }
+      this.#routeChannels();
       this.#applyAllGains(true);
     }
     if (this.ctx.state === "suspended") {
@@ -101,11 +133,162 @@ export class Engine {
     return this.ctx;
   }
 
+  // --------------------------------------------------------------- zamanlar
+
+  // Çıkış gecikmesi (donanım + karıştırıcı). outputLatency Chrome/Firefox'ta
+  // var, Safari'de yok; baseLatency'ye düşüyoruz. Bluetooth kulaklıkta
+  // 200 ms'yi bulabiliyor, o yüzden görsel imleçten düşülüyor.
+  get outputLatency() {
+    if (!this.ctx) return 0;
+    const value = Number.isFinite(this.ctx.outputLatency)
+      ? this.ctx.outputLatency
+      : this.ctx.baseLatency;
+    return Number.isFinite(value) ? value : 0;
+  }
+
   get currentTime() {
     if (!this.playing || !this.ctx) return this.offset;
-    const elapsed = this.ctx.currentTime - this.startedAt;
-    return Math.min(Math.max(this.offset + elapsed, 0), this.duration);
+    // Esneticiden çıkan, girişe göre this.latency saniye geride; şarkı
+    // zamanı da gerçek zamana göre rate katı hızla akıyor.
+    const elapsed = this.ctx.currentTime - this.startedAt - this.latency;
+    return clamp(this.offset + elapsed * this.rate, 0, this.duration);
   }
+
+  get visualTime() {
+    if (!this.playing || !this.ctx) return this.offset;
+    return clamp(this.currentTime - this.outputLatency * this.rate, 0, this.duration);
+  }
+
+  // Şarkı zamanı -> ctx saati. currentTime'ın tersi; metronom bunu kullanıyor.
+  songToCtx(songTime) {
+    if (!this.ctx) return 0;
+    return this.startedAt + this.latency + (songTime - this.offset) / this.rate;
+  }
+
+  // -------------------------------------------------------- esnetici zinciri
+
+  get stretchActive() {
+    return !isBypass(this.rate, this.semitones);
+  }
+
+  #routeChannels() {
+    if (!this.ctx) return;
+    // Esnetici kapalıysa gain'ler DOĞRUDAN master'a gidiyor: varsayılan
+    // çalmada zincirde fazladan tek bir düğüm bile yok.
+    const target = this.stretchNode || this.master;
+    for (const channel of this.channels.values()) {
+      if (!channel.gainNode) continue;
+      try {
+        channel.gainNode.disconnect();
+      } catch {
+        /* bağlı değildi */
+      }
+      channel.gainNode.connect(target);
+    }
+  }
+
+  #teardownStretch() {
+    if (this.stretchNode) {
+      try {
+        this.stretchNode.disconnect();
+      } catch {
+        /* zaten kopmuş */
+      }
+      this.stretchNode = null;
+    }
+    if (this.bus) {
+      try {
+        this.bus.disconnect();
+      } catch {
+        /* zaten kopmuş */
+      }
+    }
+  }
+
+  // Düğüm HER çalmada yeniden kuruluyor. Kalıcı tutulsa boru hattında kalan
+  // ~150 ms henüz duyulmamış ses, duraklat/seek sonrası yeni konumun başında
+  // çalardı; düğümün kendini boşaltan bir mesajı yok.
+  async #rebuildStretch() {
+    this.#teardownStretch();
+    if (!this.stretchActive) {
+      this.#routeChannels();
+      return;
+    }
+    await registerModule(this.ctx);
+    if (!this.bus) {
+      this.bus = this.ctx.createGain();
+      this.bus.gain.value = 1;
+    }
+    this.stretchNode = createNode(this.ctx, this.channelLayout, {
+      rate: this.rate,
+      semitones: this.semitones,
+    });
+    this.bus.connect(this.stretchNode);
+    this.stretchNode.connect(this.master);
+    this.#routeChannels();
+  }
+
+  /**
+   * Hız ve tonu birlikte uygular.
+   *
+   * latency: bu ayar için ÖLÇÜLMÜŞ gecikme (stretch.js). Sürükleme sırasında
+   * son bilinen değer, kaydırıcı bırakılınca taze ölçüm veriliyor.
+   *
+   * Bypass sınırı geçilmiyorsa yeniden başlatma YOK: kaynakların
+   * playbackRate'i ve düğümün parametreleri canlı değişiyor, ardından duyulan
+   * konum sürekli kalacak şekilde yeniden çıpalanıyor.
+   */
+  async setTempoAndPitch(rate, semitones, latency) {
+    const nextRate = clamp(Number(rate) || 1, MIN_RATE, MAX_RATE);
+    const nextSemis = clamp(
+      Math.round(Number(semitones) || 0), -MAX_SEMITONES, MAX_SEMITONES
+    );
+    const nowActive = !isBypass(nextRate, nextSemis);
+    const nextLatency = nowActive
+      ? (Number.isFinite(latency) ? latency : this.latency)
+      : 0;
+
+    if (!this.playing) {
+      this.rate = nextRate;
+      this.semitones = nextSemis;
+      this.latency = nextLatency;
+      return;
+    }
+
+    if (this.stretchActive !== nowActive) {
+      // Bypass sınırı geçiliyor: zincir yeniden kurulmak zorunda. Tek
+      // yeniden başlatma (ve tek duyulur boşluk) buradan çıkıyor.
+      const position = this.currentTime;
+      this.stop();
+      this.rate = nextRate;
+      this.semitones = nextSemis;
+      this.latency = nextLatency;
+      this.offset = position;
+      await this.play();
+      return;
+    }
+
+    const position = this.currentTime;
+    this.rate = nextRate;
+    this.semitones = nextSemis;
+    this.latency = nextLatency;
+    if (nowActive) {
+      updateNode(this.stretchNode, { rate: nextRate, semitones: nextSemis });
+      for (const channel of this.channels.values()) {
+        if (channel.source) channel.source.playbackRate.value = nextRate;
+      }
+    }
+    // Yeniden çıpalama: startedAt = şimdi - latency  =>  currentTime = offset.
+    // Hız değişimi ctx saatinde anlık olduğu için hata bir blok kadar.
+    this.offset = position;
+    this.startedAt = this.ctx.currentTime - this.latency;
+  }
+
+  resetTempoAndPitch() {
+    return this.setTempoAndPitch(1, 0, 0);
+  }
+
+  // --------------------------------------------------------------- kanallar
 
   async setStems(entries) {
     // entries: [{name, arrayBuffer}]
@@ -113,6 +296,7 @@ export class Engine {
     this.stop();
     this.channels.clear();
     this.duration = 0;
+    this.channelLayout = 1;
 
     for (const entry of entries) {
       // decodeAudioData ArrayBuffer'ı tüketir; kopya vermiyoruz çünkü her
@@ -126,7 +310,6 @@ export class Engine {
         void stereo;
       }
       const gainNode = this.ctx.createGain();
-      gainNode.connect(this.master);
       this.channels.set(entry.name, {
         buffer,
         gainNode,
@@ -136,8 +319,12 @@ export class Engine {
         source: null,
       });
       this.duration = Math.max(this.duration, buffer.duration);
+      // Esnetici bus'ı stem'lerle aynı kanal sayısında olsun: mobilde mono
+      // indirme yapıldığında düğüm boşuna stereo işlemesin.
+      this.channelLayout = Math.max(this.channelLayout, buffer.numberOfChannels);
     }
     this.offset = 0;
+    this.#routeChannels();
     this.#applyAllGains(true);
     return this.duration;
   }
@@ -199,10 +386,14 @@ export class Engine {
     this.#applyAllGains();
   }
 
+  // Master esneticinin ARDINDA: ana ses değişimi gecikmeden duyuluyor.
+  // Fader/solo/mute ise ÖNÜNDE, yani esnetici açıkken ~150 ms geç duyuluyor.
   setMaster(value) {
     if (!this.master) return;
     this.master.gain.setTargetAtTime(value, this.ctx.currentTime, GAIN_GLIDE);
   }
+
+  // -------------------------------------------------------------- transport
 
   async play() {
     if (this.playing || !this.channels.size) return;
@@ -210,10 +401,15 @@ export class Engine {
 
     if (this.offset >= this.duration - 0.01) this.offset = 0;
 
+    await this.#rebuildStretch();
+
     const startAt = this.ctx.currentTime + START_LEAD;
     for (const channel of this.channels.values()) {
       const source = this.ctx.createBufferSource();
       source.buffer = channel.buffer;
+      // Tempo KAYNAKTAN geliyor, altısı da aynı oranda; esnetici düğümü
+      // perdeyi telafi ediyor.
+      source.playbackRate.value = this.rate;
       source.connect(channel.gainNode);
       // Altısı da AYNI startAt ile başlıyor -> aralarında sürüklenme yok.
       source.start(startAt, Math.min(this.offset, channel.buffer.duration));
@@ -236,6 +432,9 @@ export class Engine {
         channel.source = null;
       }
     }
+    // Düğümü de düşürüyoruz: içindeki ~150 ms henüz DUYULMAMIŞ ses, bir
+    // sonraki çalmada yanlış konumdan sızardı.
+    this.#teardownStretch();
     this.playing = false;
   }
 
@@ -246,7 +445,7 @@ export class Engine {
   }
 
   async seek(time) {
-    const target = Math.min(Math.max(time, 0), this.duration);
+    const target = clamp(time, 0, this.duration);
     if (this.playing) {
       this.stop();
       this.offset = target;
@@ -270,6 +469,7 @@ export class Engine {
   dispose() {
     this.stop();
     this.channels.clear();
+    this.bus = null;
     if (this.ctx) {
       this.ctx.close().catch(() => {});
       this.ctx = null;
