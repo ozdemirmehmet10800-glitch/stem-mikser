@@ -138,6 +138,77 @@ def _download(url: str, target: pathlib.Path) -> int:
     return total
 
 
+# --------------------------------------------------------------------------
+# MSST yaması: sdpa_kernel(set_priority=...) torch 2.6'da eklendi
+# --------------------------------------------------------------------------
+# Pinli MSST commit'i attend.py'de `sdpa_kernel(..., set_priority=True)`
+# çağırıyor. Bu kwarg torch 2.6'da geldi; imajdaki torch 2.5.1'de TypeError
+# atıyor ve çıkarım daha ilk parçada patlıyor.
+#
+# Torch YÜKSELTİLMİYOR: 2.5.1 demucs yüzünden bilinçli pinli - torch 2.6
+# torch.load varsayılanını weights_only=True yaptı ve demucs'un checkpoint
+# yükleyicisini kırabiliyor (app.py'de de aynı sebeple pinli). A yolunun
+# ikinci aşaması demucs olduğu için yükseltmek asıl riski oraya taşırdı.
+# MSST'yi eski bir commit'e almak da riskli: başka API'leri de geri gider.
+#
+# En az müdahale: çağrıyı çalışma anında uyarlanan bir sarmalayıcıya çevir.
+# set_priority yalnızca arka uç ÖNCELİK İPUCU (listeyi sıralı tercih sayar);
+# matematiği değiştirmiyor, düşürülmesi sonucu etkilemiyor. Yeni bir torch'ta
+# ipucu kendiliğinden geri kazanılıyor.
+#
+# attend.py'yi hem bs_roformer hem mel_band_roformer import ediyor, yani bu
+# TEK yama A ve B yollarının ikisini birden düzeltiyor. Üç MSST dosyasında
+# başka torch 2.6+ API'si taranmış, yok.
+
+_SDPA_CALL_OLD = (
+    "            with sdpa_kernel(INFERENCE_SDPA_BACKENDS, set_priority=True):"
+)
+_SDPA_CALL_NEW = "            with _sdpa_kernel_compat():"
+_SDPA_ANCHOR = "except ImportError:\n    _HAS_SDPA_KERNEL = False\n"
+_SDPA_HELPER = '''
+
+def _sdpa_kernel_compat():
+    """sdpa_kernel'i set_priority olmadan da cagirabilen sarmalayici.
+
+    set_priority torch 2.6'da eklendi; burada torch 2.5.1 var. Bayrak
+    yalnizca arka uc oncelik ipucu, matematigi degistirmiyor.
+    (stem-mikser Asama 9 deneyi tarafindan indirme sirasinda eklendi.)
+    """
+    try:
+        return sdpa_kernel(INFERENCE_SDPA_BACKENDS, set_priority=True)
+    except TypeError:
+        return sdpa_kernel(INFERENCE_SDPA_BACKENDS)
+'''
+
+
+def _patch_msst_attend(models_dir: pathlib.Path) -> dict:
+    """attend.py'yi torch 2.5.1 ile uyumlu hale getirir.
+
+    Yama uygulanamazsa HATA veriyor. Sessizce yamasız kalıp çıkarımın
+    ortasında patlamasındansa indirme adımında durması iyi.
+    """
+    path = models_dir / "attend.py"
+    source = path.read_text(encoding="utf-8")
+
+    if _SDPA_CALL_NEW in source:
+        return {"patched": False, "reason": "zaten yamalı"}
+    if _SDPA_CALL_OLD not in source:
+        raise ValueError(
+            f"attend.py beklenen sdpa_kernel cagrisini icermiyor - MSST "
+            f"commit {MSST_SHA} degismis olabilir, yama elden gecirilmeli"
+        )
+    if _SDPA_ANCHOR not in source:
+        raise ValueError("attend.py'de _HAS_SDPA_KERNEL blogu bulunamadi")
+
+    source = source.replace(_SDPA_ANCHOR, _SDPA_ANCHOR + _SDPA_HELPER, 1)
+    source = source.replace(_SDPA_CALL_OLD, _SDPA_CALL_NEW, 1)
+    compile(source, str(path), "exec")  # yamalı dosya gerçekten derleniyor mu
+    # Satır sonları belirlenimli kalsın (Windows'ta yerel sınarken tüm dosya
+    # değişmiş görünmesin); Modal tarafında zaten LF.
+    path.write_text(source, encoding="utf-8", newline="\n")
+    return {"patched": True}
+
+
 @app.function(
     image=fetch_image,
     volumes={DATA_DIR: volume},
@@ -208,7 +279,10 @@ def fetch_weights(check_mirror: bool = True) -> dict:
     for name in MSST_FILES:
         size = _download(f"{MSST_RAW}/models/bs_roformer/{name}", models_dir / name)
         print(f"[msst] {name}: {size} bayt")
+    patch = _patch_msst_attend(models_dir)
+    print(f"[msst] attend.py yamasi: {patch}")
     report["msst_commit"] = MSST_SHA
+    report["msst_patch"] = patch
 
     volume.commit()
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -310,6 +384,15 @@ def _load_config(path: pathlib.Path) -> dict:
 def _build_model(kind: str, config: dict):
     """kind: 'melband' (A, tek stem vokal) | 'bs' (B, 6 stem)."""
     import sys
+
+    # Yama burada da uygulanıyor, sadece fetch'te değil: Volume'da yamasız
+    # bir attend.py kalmışsa (eski bir fetch'ten) deney tek komutla kendini
+    # onarsın. İdempotent, yamalıysa dosyaya dokunmuyor.
+    models_dir = pathlib.Path(_msst_path()) / "models" / "bs_roformer"
+    result = _patch_msst_attend(models_dir)
+    if result.get("patched"):
+        print("[msst] attend.py calisma aninda yamalandi (torch 2.5.1 uyumu)")
+        volume.commit()
 
     if _msst_path() not in sys.path:
         sys.path.insert(0, _msst_path())

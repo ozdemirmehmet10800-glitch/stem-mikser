@@ -600,6 +600,33 @@ YAML **güvenli** yükleniyor: konfigler `!!python/tuple` kullanıyor,
 konfigi lisansı belirsiz bir aynadan geldiği için `SafeLoader`'a yalnız
 tuple kurucusu eklendi (yerelde doğrulandı: `python/object/apply` reddediliyor).
 
+### Torch uyum yaması (ilk koşumda çıktı)
+Pinli MSST commit'i `attend.py`'de `sdpa_kernel(..., set_priority=True)`
+çağırıyor. Bu kwarg **torch 2.6'da** eklendi; imajdaki **torch 2.5.1**'de
+`TypeError` atıp çıkarımı ilk parçada düşürüyor.
+
+Torch YÜKSELTİLMEDİ: 2.5.1 demucs yüzünden bilinçli pinli (2.6
+`torch.load` varsayılanını `weights_only=True` yaptı ve demucs'un
+checkpoint yükleyicisini kırabiliyor). A yolunun ikinci aşaması demucs
+olduğu için yükseltmek asıl riski oraya taşırdı. MSST'yi eski bir commit'e
+almak da başka API'leri geri götürürdü.
+
+Seçilen: indirme sırasında **13 satırlık** bir sarmalayıcı ekleniyor,
+`set_priority` desteklenmiyorsa kwarg'sız çağrılıyor. Bayrak yalnızca arka
+uç **öncelik ipucu** - matematiği değiştirmiyor, yeni bir torch'ta ipucu
+kendiliğinden geri kazanılıyor.
+
+`attend.py`'yi hem `bs_roformer` hem `mel_band_roformer` import ediyor,
+yani tek yama A ve B'nin ikisini birden düzeltiyor. Üç MSST dosyasında
+başka torch 2.6+ API'si tarandı, yok.
+
+Yama `_build_model`'da da uygulanıyor (idempotent): Volume'da yamasız bir
+kopya kalmışsa deney tek komutla kendini onarıyor. Yama tutmazsa HATA
+veriyor - sessizce yamasız kalıp çıkarımın ortasında patlamasındansa.
+
+T4 notu: log'daki "GPU Compute Capability below 8.0" beklenen, sm_75'te
+flash attention yok; math/mem-efficient çekirdek kullanılıyor.
+
 ### Hâlâ ölçülmemiş, deneyin cevaplayacağı
 - Roformer'ın T4'teki süresi (Demucs'a EK geliyor, yerine geçmiyor).
 - Enstrümantali `htdemucs_6s`'e vermek gitar/piyano kalitesini bozuyor mu?
