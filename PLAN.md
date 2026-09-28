@@ -147,21 +147,120 @@ derdi yok, fader değişimleri doğal çalışıyor. Parametreler AudioParam:
 signalsmith-stretch depoda kalıyor: ölçüm sayfası ikisini karşılaştırıyor,
 telefonda da aynı sonucu doğrulamak için.
 
-### Sıra
-1. **Önce ölçüm.** Telefonda 6 AudioWorklet esnetici aynı anda çalışabiliyor
-   mu? Ayrı bir ölçüm sayfası: kanal sayısını 1'den 6'ya çıkarıp ses kesilmesi
-   (underrun) ve CPU yükü ölçülecek. Karar bu sayılara göre verilecek.
-2. Yetiyorsa: her kanal `source -> stretch -> gain -> master`. Hız ve ton
-   bağımsız; ton yarım ses adımlarıyla (±6 veya ±12).
-3. Yetmiyorsa plan B: sunucuda render. Maliyeti var (her ayar değişiminde
-   yeniden render + indirme), anlık geri bildirim kayboluyor. Ancak ölçüm
-   kötü çıkarsa değerlendirilecek.
+### Telefon ölçümü (2026-09-28, Android 10 / Chrome 153 / 8 GB / 10 çekirdek)
+SoundTouchJS ile 6 kanal: oran **0.111**, `processorerror` **0**, ses geliyor,
+takılma yok. Tek kusur: 0.8x + 2 yarım seste sentetik sinyalde çok hafif bir
+gıcırtı. `quickSeek: false` bunun ilk şüphelisi olarak kapatıldı (aşağıda).
 
-### Bağlı işler
-- Akor şeridi tona göre transpoze edilecek. Yazım (bemol/diyez) yeni tona
-  göre yeniden seçilmeli - `_key_uses_flats` mantığı ön yüze taşınacak.
-- Metronom ve akor şeridi esnetilmiş zaman çizgisini takip etmeli.
-- bpm göstergesi hız çarpanıyla güncellenecek.
+### UYGULANDI - tek düğüm, toplama bus'ında
+```
+6 source (hepsi aynı playbackRate) -> stem gain'leri -> bus
+  -> tek SoundTouchNode -> master -> destination
+```
+Kanal başına ayrı düğüm bilinçli olarak REDDEDİLDİ. WSOLA her sekansta
+yapıştırma noktasını kendi sinyaline göre seçiyor; altı ayrı düğümde her stem
+kendi `seekWindow`'u (~23 ms) kadar bağımsız oynar ve davulla bas arasında
+flam çıkar. Tek düğümde bu yapısal olarak imkânsız, gecikme tek bir sayı,
+CPU altıya bölünmüyor. Metronom düğümün DIŞINDA (doğrudan `destination`),
+yoksa tıklar zaman esnetmesinde yayılırdı.
+
+Bedeli: fader/solo/mute düğümün ÖNÜNDE, yani esnetici açıkken ~145 ms geç
+duyuluyorlar. Master düğümün ARDINDA, ana ses anında. Kabul edildi.
+
+### GECİKME: tahmin değil, ÖLÇÜM
+WSOLA `sampleReq` kadar girdi birikmeden çıkış üretmiyor ve o ana kadar çıkış
+TAM SIFIR. Bu yüzden sabit bir sinyali `OfflineAudioContext`'ten geçirip ilk
+sıfırdan farklı kareyi bulmak gecikmeyi tam veriyor (`stretch.js`).
+
+Masaüstü Chrome'da ölçülen değerler:
+
+| oran | yarım ses | 32 kHz | 44,1 kHz |
+|---|---|---|---|
+| 1.0 | 0 | 0 ms (bypass) | 0 ms |
+| 1.0 | +2 | 140 ms | |
+| 0.8 | 0 | 144 ms | |
+| 0.8 | +2 | 144 ms | 145 ms |
+| 1.25 | 0 | 124 ms | |
+| 1.5 | +6 | 136 ms | |
+
+Telafi edilmezse metronom ve akor imleci sesin ~140 ms ÖNÜNDE gider.
+Ölçüm (örnekleme hızı, 0.05'lik oran ızgarası, yarım ses) başına
+önbelleklenmiş; masaüstünde 38-53 ms sürüyor, bu yüzden kaydırıcı
+SÜRÜKLENİRKEN değil BIRAKILINCA yapılıyor. Başarısız olursa 135 ms.
+
+### Üç ayrı zaman (`engine.js`)
+| | ne | kim kullanıyor |
+|---|---|---|
+| `currentTime` | esneticiden ÇIKMIŞ olanın şarkı konumu | metronom, duraklatma çıpası, bitiş kontrolü |
+| `visualTime` | KULAĞA GİDENİN konumu (`- ctx.outputLatency * rate`) | akor şeridi, süre çubuğu, Media Session |
+| `songToCtx(t)` | şarkı zamanı -> ctx saati | metronomun ileriye bakan zamanlayıcısı |
+
+`ctx.outputLatency` metronoma EKLENMİYOR: tıklar da stem'lerle aynı çıkıştan
+geçtiği için o gecikmeyi ikisi birlikte yiyor. Bluetooth kulaklıkta 200 ms'yi
+bulabildiği için yalnız görsel imleçten düşülüyor.
+
+### Bypass gerçek
+`rate === 1 && semitones === 0` iken düğüm hiç YARATILMIYOR, gain'ler
+doğrudan master'a gidiyor, worklet modülü bile yüklenmiyor. Sınır geçilirken
+(bypass <-> etkin) zincir yeniden kuruluyor - tek yeniden başlatma orada.
+Aynı kipte kalındığında değişim canlı, yeniden başlatma yok: kaynakların
+`playbackRate`'i ve düğüm parametreleri anında değişiyor, ardından
+`startedAt = şimdi - latency` ile yeniden çıpalanıyor.
+
+`stop()` esnetici düğümünü de düşürüyor: içinde henüz DUYULMAMIŞ ~145 ms ses
+var, kalıcı tutulsa her duraklat/seek sonrası yanlış konumdan sızardı.
+Düğümün kendini boşaltan bir mesajı yok.
+
+### SoundTouch kalite ayarları (erişilebilir)
+`stNode.setStretchParameters({...})` ile hepsi çalışma anında değiştirilebiliyor
+(mesaj sıraya alınıp bir sonraki render bloğunda uygulanıyor):
+
+| ayar | varsayılan | not |
+|---|---|---|
+| `sequenceMs` | 0 = otomatik | tempoya göre `130 - 20*tempo` ms, 50..125 arası kırpılmış |
+| `seekWindowMs` | 0 = otomatik | `25.67 - 2.67*tempo` ms, 15..25 arası |
+| `overlapMs` | 8 | çapraz geçiş; `calculateOverlapLength` 8'in katına yuvarlıyor |
+| `quickSeek` | true | kaba arama |
+
+**Seçim:** ilk üçü OTOMATİK bırakıldı - tempoya uyarlanan formül elle
+seçilmiş tek bir sabitten iyi. `quickSeek` KAPATILDI: tam arama örtüşme
+hizasını düzeltiyor ve telefonda bildirilen hafif gıcırtının ilk şüphelisi
+bu. Maliyeti `seekLength` (~23 ms = 736 kare) üzerinden birkaç kat ama tek
+düğüm olduğu için ölçülen 0.111 oranı kat kat baş bırakıyor.
+
+Gecikme ölçümüne bu üçlüyü vermek GEREKMİYOR: gecikme yalnızca
+`sequenceMs`/`seekWindowMs`/`overlapMs` ve tempodan çıkıyor, `quickSeek`
+tampon boyutlarını değiştirmiyor.
+
+### Arayüz
+Moises düzeni. Tempo kaydırıcısı BPM gösteriyor, ton kaydırıcısı yeni tonun
+adını (`Fm → Gm`); ikisinde de `-`/`+` ve "Orijinale geri dön".
+
+Tempo kaydırıcısının iç birimi BPM DEĞİL, orijinalden tam sayı BPM sapması.
+Sebep: 0 sapma tam olarak 1.0 oranı demek. Kaydırıcı doğrudan BPM tutsaydı
+127.12'lik bir tempo 127'ye yuvarlanır, "orijinal" konum 0.999 oranına düşer
+ve esnetici varsayılanda devre dışı KALMAZDI. Tempo bilinmiyorsa yüzde
+gösterimine düşüyor. Aralık ±%50 (oran 0.5-1.5), ton ±6 yarım ses.
+
+### Bağlı işler (bitti)
+- [x] Akor şeridi tona göre transpoze; yazım YENİ tona göre (`tonality.js`,
+      `_key_uses_flats`'ın ön yüz ikizi, 53 test: `node tests/tonality_test.mjs`).
+      Şerit yeniden kurulmuyor, yalnız etiketler yenileniyor.
+- [x] Metronom ve akor şeridi esnetilmiş zaman çizgisini takip ediyor.
+- [x] bpm göstergesi hız çarpanıyla güncelleniyor.
+- [x] Media Session `setPositionState`'e gerçek `playbackRate` veriliyor.
+
+### Yerel doğrulama (mock_server + gerçek stem'ler, masaüstü + mobil emülasyon)
+- 0.5x'te 4 sn'de 2 şarkı sn, 0.8x'te 3.2, 1.1x'te 4.4, bypass'ta 4.0
+- 6 kaynak da aynı `ctx` anında, aynı `playbackRate` ile başlıyor
+- metronom tıklarının ima ettiği gecikme her tıkta 0.144 sn = ölçülen
+  esnetici gecikmesi (yani hiza tam)
+- canlı ton/hız değişimi 0 yeniden başlatma; bypass sınırı 1
+- mobil yol: 32 kHz, mono tampon, 0.8x doğru, `processorerror` yok
+
+### Plan B (kullanılmadı)
+Sunucuda render. Ölçüm iyi çıktığı için gerek kalmadı; her ayar değişiminde
+yeniden render + indirme maliyeti ve anlık geri bildirimin kaybı vardı.
 
 ## Aşama 9 – Hi-Fi modu (daha kaliteli ayrıştırma)
 Öncelik 3. Yüklerken seçilir, `status.json`'a yazılır.
