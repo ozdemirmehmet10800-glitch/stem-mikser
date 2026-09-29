@@ -66,6 +66,11 @@ def find_songs():
         chords = None
         if chords_path.is_file():
             chords = json.loads(chords_path.read_text(encoding="utf-8"))
+        # Gercek API stems_version donduruyor (on yuz onbellek anahtarinda ve
+        # "ayni sarkiya hizli donus" kapisinda kullaniyor). Indirilmis test
+        # malzemesinde bu alan olmayabilir; stems klasorunun degisme zamanindan
+        # KARARLI bir sayi uretiyoruz, yoksa hizli yol yerelde hic denenemezdi.
+        status.setdefault("stems_version", int(stems_dir.stat().st_mtime))
         status.setdefault("id", entry.name)
         status.setdefault("title", entry.name[:12])
         status["state"] = "done"
@@ -237,6 +242,8 @@ class Handler(BaseHTTPRequestHandler):
                     "duration": song["status"].get("duration"),
                     "progress": 100,
                     "created_at": song["status"].get("created_at"),
+                    "stems_version": song["status"].get("stems_version"),
+                    "quality": song["status"].get("quality"),
                 }
                 for song in find_songs()
             ]

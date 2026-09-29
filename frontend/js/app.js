@@ -488,7 +488,10 @@ async function deleteSelected() {
 
     // Telefondaki sesler de gitsin, yoksa depolama boşuna şişer.
     let freed = { removed: 0, bytes: 0 };
-    if (gone.length) freed = await stemCache.removeSongs(gone);
+    if (gone.length) {
+      freed = await stemCache.removeSongs(gone);
+      dropMeta(gone);            // cihazdaki durum/akor kopyası da gitsin
+    }
 
     if (currentSong && gone.includes(currentSong.id)) closeCurrentSong();
 
@@ -564,7 +567,151 @@ Yine de açmayı deneyebilirsin.`
   );
 }
 
+// ------------------------------------------------- açılış hızı: bilgi önbelleği
+//
+// ÖLÇÜM (masaüstü, 110 sn şarkı, Yüksek kip):
+//   ilk açılış      2880 ms = bilgi 18 + indirme 253 + ÇÖZME 2593 + arayüz 16
+//   aynı şarkı      2953 ms = bilgi 15 + önbellek 19 + ÇÖZME 2914 + arayüz 5
+//   farklı şarkı    4145 ms = bilgi 18 + indirme 259 + ÇÖZME 3867 + arayüz 1
+// Yani zamanın %90'ından fazlası decodeAudioData'da. İki sonuç çıkıyor:
+//   1. Aynı şarkıya dönerken tamponlar ZATEN bellekte - yeniden çözmek saf
+//      israf. Hızlı yol bunu tamamen siliyor.
+//   2. Farklı şarkıda çözme kaçınılmaz; ikişerli çözmek (engine.loadStems)
+//      indirmeyi de altına saklıyor.
+// `bilgi` masaüstünde 18 ms ama telefonda Modal konteyneri soğuksa saniyeler
+// sürebiliyor; o yüzden durum/akor cihazda saklanıyor ve açılış onu bekletmiyor.
+
+const META_PREFIX = "stem-mikser.meta.";
+const META_LIMIT = 40;          // şarkı başına ~12 KB; localStorage'a rahat sığar
+
+function metaKey(id) {
+  return META_PREFIX + id;
+}
+
+function readMeta(id) {
+  try {
+    const raw = localStorage.getItem(metaKey(id));
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeMeta(id, detail) {
+  try {
+    localStorage.setItem(metaKey(id), JSON.stringify({
+      status: detail.status, chords: detail.chords, savedAt: Date.now(),
+    }));
+    pruneMeta();
+  } catch {
+    // Kota dolduysa önemli değil: açılış yavaşlar, bozulmaz.
+  }
+}
+
+function dropMeta(ids) {
+  for (const id of ids || []) {
+    try {
+      localStorage.removeItem(metaKey(id));
+    } catch {
+      /* yok say */
+    }
+  }
+}
+
+function pruneMeta() {
+  try {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(META_PREFIX)) keys.push(key);
+    }
+    if (keys.length <= META_LIMIT) return;
+    const aged = keys.map((key) => {
+      let savedAt = 0;
+      try {
+        savedAt = (JSON.parse(localStorage.getItem(key)) || {}).savedAt || 0;
+      } catch {
+        savedAt = 0;
+      }
+      return { key, savedAt };
+    }).sort((a, b) => a.savedAt - b.savedAt);
+    for (const item of aged.slice(0, aged.length - META_LIMIT)) {
+      localStorage.removeItem(item.key);
+    }
+  } catch {
+    /* yok say */
+  }
+}
+
+// Bellekte duran şarkının kimliği: hızlı yolun kapısı.
+let loadedState = null;   // {id, stemsVersion, audioMode}
+
+function canReuseLoaded(song) {
+  if (!loadedState || !currentSong || currentSong.id !== song.id) return false;
+  if (engine.channels.size === 0) return false;
+  // Sürüm BİLİNMİYORSA hızlı yol YOK: Hi-Fi'a yükseltilmiş bir şarkıyı eski
+  // sesiyle açmaktansa yeniden yüklemek iyidir. Sessiz bayat ses en kötüsü.
+  const version = Number(song.stems_version || 0);
+  if (!version || version !== loadedState.stemsVersion) return false;
+  return engine.audioMode === loadedState.audioMode;
+}
+
+// Cihazdaki bilgiyle açtıysak sunucuyu ARKADA yokluyoruz. stems_version
+// değiştiyse (ör. "Hi-Fi'a yükselt" başka bir cihazdan yapıldıysa) şarkı
+// yeniden yükleniyor - bu kontrol olmadan eski ses SESSİZCE çalardı.
+async function refreshSongDetail(song, usedVersion) {
+  try {
+    const detail = await api.getSong(song.id);
+    writeMeta(song.id, detail);
+    const fresh = Number((detail.status && detail.status.stems_version) || 0);
+    if (!fresh || fresh === usedVersion) return;
+    if (!currentSong || currentSong.id !== song.id || views.player.hidden) return;
+    console.info(`[acilis] stems_version degisti ${usedVersion} -> ${fresh}, yeniden yukleniyor`);
+    showMessage(el("player-message"),
+                "Bu şarkının sesi sunucuda yenilenmiş, yeni sürüm yükleniyor…", "warn");
+    loadedState = null;
+    await openSong({ ...song, ...detail, stems_version: fresh });
+  } catch {
+    // Ağ yoksa cihazdaki bilgiyle devam: çevrimdışı açılış zaten kazanç.
+  }
+}
+
+// Açılışın nereye gittiğini ÖLÇÜYORUZ: bilgi isteği, önbellekten okuma, ağ,
+// çözme, arayüz. Telefonda konsol zor okunuyor ama tek satır özet yeterli ve
+// tahminle iyileştirme yapmanın önünü kesiyor.
+function openTimer() {
+  const t0 = performance.now();
+  let last = t0;
+  const marks = [];
+  return {
+    mark(name) {
+      const now = performance.now();
+      marks.push(`${name} ${Math.round(now - last)}`);
+      last = now;
+    },
+    done(prefix) {
+      const total = Math.round(performance.now() - t0);
+      console.info(`[acilis] ${prefix} toplam ${total} ms | ${marks.join(" | ")}`);
+      return total;
+    },
+  };
+}
+
 async function openSong(song) {
+  const timer = openTimer();
+
+  // HIZLI YOL: aynı şarkı, aynı sürüm, aynı kalite kipi ve tamponlar hâlâ
+  // bellekte. İndirme de çözme de yok, oynatıcı olduğu gibi duruyor -
+  // duraklatılan konum bile korunuyor.
+  if (canReuseLoaded(song)) {
+    showView("player");
+    pushLayer("view");
+    lastPositionSync = -1;
+    startLoop();
+    timer.done("hizli acilis (bellekte)");
+    return;
+  }
+
   showView("player");
   pushLayer("view");
   el("player-title").textContent = song.title || song.id.slice(0, 12);
@@ -585,10 +732,30 @@ async function openSong(song) {
   // kipi: 350 + 350 MB). Kütüphaneye dönüşte BIRAKILMIYOR - aynı şarkıya
   // hızlı dönebilmek bilinçli olarak korunuyor.
   engine.releaseStems();
+  // Tamponlar gitti: hızlı yolun kapısı kapansın. Yükleme başarısız bitse
+  // bile burada null kalıyor, yoksa boş motorla "bellekte" denirdi.
+  loadedState = null;
 
   setOverlay(true, "Şarkı bilgileri alınıyor…");
   try {
-    const detail = await api.getSong(song.id);
+    // Sürümün otoritesi KİTAPLIK SATIRI: /songs listesi stems_version'ı
+    // veriyor ve az önce tazelendi. Cihazdaki bilgi yalnız o sürümle
+    // eşleşiyorsa kullanılıyor, yani bayat akor/vuruşla açma ihtimali yok.
+    const listVersion = Number(song.stems_version || 0);
+    const cached = listVersion ? readMeta(song.id) : null;
+    const cachedOk = cached && cached.status
+      && Number(cached.status.stems_version || 0) === listVersion;
+
+    let detail;
+    if (cachedOk) {
+      detail = { status: cached.status, chords: cached.chords };
+      timer.mark("bilgi-cihazdan");
+      refreshSongDetail(song, listVersion);   // await YOK: arkada koşuyor
+    } else {
+      detail = await api.getSong(song.id);
+      writeMeta(song.id, detail);
+      timer.mark("bilgi");
+    }
     currentSong = { ...song, ...detail };
     const stems = (detail.status && detail.status.stems) || STEM_ORDER;
     // Yeniden işlemede stem dosyaları değişiyor; sürüm önbellek anahtarına
@@ -613,9 +780,13 @@ async function openSong(song) {
     }
 
     setOverlay(true, "Kanallar hazırlanıyor…");
-    const entries = [];
+    // Getirme ve çözme TEK boru hattında, ikişerli. Eskiden önce altı dosya
+    // iniyor, sonra çözme başlıyordu; indirme artık çözmenin altında saklanıyor.
+    // İkiden fazlası yok: "Tasarruf" kipinde her çözme kendi stereo ara
+    // tamponunu açıyor (9 dk / 32 kHz için ~69 MB), ikisi aynı anda +138 MB.
     let fromCache = 0;
-    for (const name of stems) {
+    setOverlay(true, "Kanallar hazırlanıyor…");
+    const duration = await engine.loadStems(stems, async (name) => {
       const fill = fills.get(name);
       // Önce cihazdaki kopya: ikinci açılışta ağa hiç çıkılmıyor.
       let arrayBuffer = await stemCache.get(song.id, name, stemsVersion);
@@ -631,15 +802,13 @@ async function openSong(song) {
         // ÖNCE yazıp sonra çözüyoruz.
         await stemCache.put(song.id, name, arrayBuffer.slice(0), stemsVersion);
       }
-      entries.push({ name, arrayBuffer });
-    }
+      return arrayBuffer;
+    }, { concurrency: 2 });
     console.info(`[stem] ${fromCache}/${stems.length} kanal cihazdan geldi`);
-
-    setOverlay(true, "Ses çözülüyor…");
-    const duration = await engine.setStems(entries);
+    timer.mark(fromCache === stems.length ? "onbellek+cozme" : "indirme+cozme");
     measureAacDelta(detail.status, duration);
 
-    mixer.render(entries.map((entry) => entry.name));
+    mixer.render(stems.filter((name) => engine.channels.has(name)));
     strip.build(detail.chords, duration);
 
     const chords = detail.chords;
@@ -682,6 +851,12 @@ async function openSong(song) {
     lastPositionSync = -1;
     setOverlay(false);
     startLoop();
+    // Hızlı yolun kapısı: ne yüklü olduğunu burada kayda geçiyoruz.
+    loadedState = {
+      id: song.id, stemsVersion, audioMode: engine.audioMode,
+    };
+    timer.mark("arayuz");
+    timer.done(cachedOk ? "tam yukleme (bilgi cihazdan)" : "tam yukleme");
   } catch (error) {
     setOverlay(false);
     showMessage(el("player-message"), describeError(error));

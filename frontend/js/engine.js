@@ -502,37 +502,80 @@ export class Engine {
 
   async setStems(entries) {
     // entries: [{name, arrayBuffer}]
+    const byName = new Map(entries.map((entry) => [entry.name, entry]));
+    return this.loadStems(
+      entries.map((entry) => entry.name),
+      (name) => {
+        const entry = byName.get(name);
+        const buffer = entry ? entry.arrayBuffer : null;
+        if (entry) entry.arrayBuffer = null;   // referansı bırak
+        return buffer;
+      },
+      { concurrency: 1 }
+    );
+  }
+
+  /**
+   * Stem'leri getirip çözer. `provide(name)` ArrayBuffer (ya da onu veren
+   * Promise) döndürüyor - getirmenin nereden olduğunu motor bilmiyor.
+   *
+   * `concurrency`: aynı anda kaç stem getirilip çözülecek. ÖLÇÜLEN pay:
+   * açılışın %90'ından fazlası decodeAudioData'da geçiyor (110 sn'lik şarkı,
+   * masaüstü: 2593 ms çözme / 253 ms indirme). İkişerli gitmek indirmeyi de
+   * çözmenin altına saklıyor.
+   *
+   * BELLEK: "Yüksek" kipte çözülen tampon zaten saklanan tamponun kendisi,
+   * yani ikişerli çözmek PCM'i artırmıyor. "Tasarruf" kipinde mono'ya
+   * indirme var, orada aynı anda iki stereo ara tampon açık olabiliyor:
+   * 9 dk / 32 kHz stereo için +138 MB. Bu yüzden sınır 2, daha fazlası değil.
+   */
+  async loadStems(names, provide, options = {}) {
     await this.ensureContext();
     this.stop();
     this.channels.clear();
     this.duration = 0;
     this.channelLayout = 1;
 
-    for (const entry of entries) {
-      // decodeAudioData ArrayBuffer'ı tüketir; kopya vermiyoruz çünkü her
-      // stem'i bir kez çözüyoruz.
-      let buffer = await this.ctx.decodeAudioData(entry.arrayBuffer);
-      if (this.monoDownmix) {
-        const stereo = buffer;
-        buffer = this.#toMono(stereo);
-        // Referansı bırak ki bir sonraki decode'dan önce toplanabilsin.
-        entry.arrayBuffer = null;
-        void stereo;
+    const wanted = [...names];
+    const queue = [...names];
+    const loaded = new Map();
+    const limit = Math.max(1, Math.min(Number(options.concurrency) || 1, queue.length));
+
+    const worker = async () => {
+      while (queue.length) {
+        const name = queue.shift();
+        const arrayBuffer = await provide(name);
+        if (!arrayBuffer) continue;
+        let buffer = await this.ctx.decodeAudioData(arrayBuffer);
+        if (this.monoDownmix) {
+          const stereo = buffer;
+          buffer = this.#toMono(stereo);
+          void stereo;   // ara tampon burada bırakılıyor
+        }
+        loaded.set(name, buffer);
+        this.duration = Math.max(this.duration, buffer.duration);
+        // Esnetici bus'ı stem'lerle aynı kanal sayısında olsun: mobilde mono
+        // indirme yapıldığında düğüm boşuna stereo işlemesin.
+        this.channelLayout = Math.max(this.channelLayout, buffer.numberOfChannels);
       }
-      const gainNode = this.ctx.createGain();
-      this.channels.set(entry.name, {
+    };
+    await Promise.all(Array.from({ length: limit }, worker));
+
+    // Kanal sırası İSTENEN sırada kuruluyor: paralel yüklemede bitiş sırası
+    // karışık oluyor, Map'in ekleme sırası da öyle kalırdı.
+    for (const name of wanted) {
+      const buffer = loaded.get(name);
+      if (!buffer) continue;
+      this.channels.set(name, {
         buffer,
-        gainNode,
+        gainNode: this.ctx.createGain(),
         fader: 1,
         solo: false,
         mute: false,
         source: null,
       });
-      this.duration = Math.max(this.duration, buffer.duration);
-      // Esnetici bus'ı stem'lerle aynı kanal sayısında olsun: mobilde mono
-      // indirme yapıldığında düğüm boşuna stereo işlemesin.
-      this.channelLayout = Math.max(this.channelLayout, buffer.numberOfChannels);
     }
+
     this.offset = 0;
     this.#routeChannels();
     this.#applyAllGains(true);
