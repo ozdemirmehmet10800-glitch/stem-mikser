@@ -1765,10 +1765,10 @@ async function refreshAudioUi() {
   const note = el("audio-note");
   if (note) {
     note.textContent = engine.mobile
-      ? "Tasarruf: AudioContext 32 kHz'e zorlanır ve stem'ler mono'ya "
-        + "indirilir (8 dk şarkıda ~350 MB). Yüksek: zorlama yok, stereo "
-        + "(~1 GB) - telefonda açılıp açılmadığı ÖLÇÜLMEDİ, takılma ya da "
-        + "sekme çökmesi görürsen Tasarruf'a dön."
+      ? "Yüksek (varsayılan): cihazın kendi hızı, stereo. 9 dakikalık bir "
+        + "şarkı (~1.25 GB) telefonda sorunsuz çalıştı ve hiza testi 48 kHz'de "
+        + "geçti. Tasarruf: AudioContext 32 kHz'e zorlanır, stem'ler mono'ya "
+        + "iner (8 dk şarkıda ~350 MB); yalnız belleği dar bir cihazda gerekir."
       : "Bu ayar yalnız mobilde etkili; masaüstünde zaten tam kalite "
         + "(cihaz hızı, stereo) çalışıyor.";
   }
