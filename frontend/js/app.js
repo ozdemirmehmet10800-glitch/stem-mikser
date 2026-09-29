@@ -2,7 +2,7 @@
 // oynatıcının bağlanması.
 
 import { loadSettings, saveSettings, isConfigured } from "./settings.js";
-import { Api, ApiError } from "./api.js";
+import { Api, ApiError, isDefinitelyOffline } from "./api.js";
 import {
   Engine, STEM_ORDER, STEM_LABELS, gainToDb, isMobile, longSongThresholdSec,
   nativeSampleRate,
@@ -103,6 +103,8 @@ function describeError(error) {
       return "API adresi ve token ayarlı değil. Ayarlar ekranını aç.";
     case "auth":
       return `Token kabul edilmedi (401).\n${error.hint}`;
+    case "offline":
+      return `${error.message} ${error.hint}`;
     case "network":
       return `${error.message}\n${error.hint}`;
     case "notfound":
@@ -142,17 +144,60 @@ let librarySongs = [];
 // Uzun basıştan sonra parmak kalkarken gelen click şarkıyı açmasın.
 let suppressClick = false;
 
+// Açılıştan sonra bir yerden gelen "bunu kullanıcıya söyle" notu. refreshLibrary
+// ilk iş mesajı temizlediği için, oynatıcıdan dönerken yazılan hata yoksa
+// oluyordu; artık tazeleme bittikten SONRA yazılıyor.
+let pendingLibraryNote = "";
+let libraryRefresh = null;
+
 async function refreshLibrary() {
-  hideMessage(el("library-message"));
-  try {
-    const songs = await api.listSongs();
-    renderLibrary(songs);
-    if (songs.some((song) => song.state !== "done" && song.state !== "error")) {
-      schedulePoll();
+  // Aynı anda iki tazeleme yok: oynatıcı katmanı kapanırken kapatıcı da
+  // çağırıyor, çevrimdışıyken her biri zaman aşımı kadar bekletirdi.
+  if (libraryRefresh) return libraryRefresh;
+  libraryRefresh = (async () => {
+    // Bekleyen not varsa HEMEN göster: oynatıcıdan bir hatayla dönüldüyse
+    // sebebi öğrenmek için tazelemenin bitmesini (çevrimdışıyken saniyeler)
+    // beklemek gerekmesin. finally'de bir kez daha yazılıyor, çünkü arada
+    // gelen sonuç mesajı değiştirmiş olabilir.
+    if (pendingLibraryNote) {
+      showMessage(el("library-message"), pendingLibraryNote, "warn");
+    } else {
+      hideMessage(el("library-message"));
     }
-  } catch (error) {
-    showMessage(el("library-message"), describeError(error));
-  }
+    try {
+      const songs = await api.listSongs();
+      markOnlineState(true);
+      writeLibraryCache(songs);       // çevrimdışı açılış için cihazda dursun
+      renderLibrary(songs);
+      if (songs.some((song) => song.state !== "done" && song.state !== "error")) {
+        schedulePoll();
+      }
+    } catch (error) {
+      if (error instanceof ApiError
+          && (error.kind === "offline" || error.kind === "network")) {
+        markOnlineState(false);
+      }
+      // Cihazdaki liste duruyorsa onu göstermeye DEVAM et: çevrimdışıyken
+      // kitaplığın boşalması en can sıkıcı kusurdu.
+      const cached = readLibraryCache();
+      if (cached && cached.length) {
+        renderLibrary(cached);
+        showMessage(el("library-message"),
+                    `${describeError(error)}
+Liste cihazdaki kopyadan gösteriliyor.`,
+                    "warn");
+      } else {
+        showMessage(el("library-message"), describeError(error));
+      }
+    } finally {
+      if (pendingLibraryNote) {
+        showMessage(el("library-message"), pendingLibraryNote, "warn");
+        pendingLibraryNote = "";
+      }
+      libraryRefresh = null;
+    }
+  })();
+  return libraryRefresh;
 }
 
 // Uzun basış. Kaydırmayı bozmamak için 10 px'den fazla hareket iptal ediyor;
@@ -414,6 +459,14 @@ function renderLibrary(songs) {
 
     item.append(thumb, info);
 
+    // Çevrimdışıyken: cihazda sesi olan şarkı normal, olmayan SOLUK.
+    const offline = isOffline();
+    const ready = song.state === "done" && isOfflineReady(song);
+    item.classList.toggle("offline-missing", offline && !ready);
+    if (offline && !ready) {
+      item.title = "İnternet yok, bu şarkı telefonda kayıtlı değil";
+    }
+
     // Tek click işleyici: seçim modunda seçer, dışında açar.
     item.addEventListener("click", () => {
       if (suppressClick) {
@@ -422,6 +475,12 @@ function renderLibrary(songs) {
       }
       if (selectMode) {
         toggleSelect(song.id);
+        return;
+      }
+      if (offline && !ready) {
+        // Mikser AÇILMIYOR: boş mikserde bırakmaktansa tek cümle söylemek iyi.
+        showMessage(el("library-message"),
+                    "İnternet yok, bu şarkı telefonda kayıtlı değil.", "warn");
         return;
       }
       if (song.state === "done") {
@@ -457,6 +516,8 @@ function closeCurrentSong() {
 async function deleteSelected() {
   const ids = [...selectedIds];
   if (!ids.length) return;
+  // Silme SUNUCUDA oluyor; çevrimdışı "sildim" demek yalan olurdu.
+  if (!requireOnline(el("library-message"), "şarkı silmek")) return;
 
   const titles = librarySongs
     .filter((song) => selectedIds.has(song.id))
@@ -531,6 +592,7 @@ function schedulePoll() {
 }
 
 async function handleUpload(file) {
+  if (!requireOnline(el("library-message"), "şarkı yüklemek")) return;
   const status = el("upload-status");
   status.hidden = false;
   status.textContent = `${file.name} yükleniyor… %0`;
@@ -642,6 +704,98 @@ function pruneMeta() {
     /* yok say */
   }
 }
+
+// ---------------------------------------------------------------- çevrimdışı
+//
+// İki ayrı kusur vardı ve ikisi de yerelde tekrar üretildi:
+//   1. İnternet yokken uygulama yeniden açılınca kitaplık BOMBOŞ geliyordu -
+//      liste yalnız ağdan (`GET /songs`). Yani sesi cihazda duran şarkıya bile
+//      ulaşılamıyordu.
+//   2. Cihazda kopyası olmayan bir şarkı açılınca uzun uzun bekleyip alakasız
+//      "antivirüs / VPN / ALLOWED_ORIGINS" tanı metnini gösteriyor, sonra boş
+//      mikserde kalıyordu.
+//
+// Çözüm sırası: listeyi cihazda tut, isteklere zaman aşımı koy (api.js),
+// çevrimdışıyken neyin açılabileceğini kitaplıkta GÖSTER.
+
+const LIBRARY_KEY = "stem-mikser.library";
+
+function readLibraryCache() {
+  try {
+    const raw = localStorage.getItem(LIBRARY_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && Array.isArray(parsed.songs) ? parsed.songs : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLibraryCache(songs) {
+  try {
+    localStorage.setItem(LIBRARY_KEY, JSON.stringify({
+      songs, savedAt: Date.now(),
+    }));
+  } catch {
+    // Kota dolduysa önemli değil: çevrimdışı açılış kötüleşir, uygulama değil.
+  }
+}
+
+// Sunucuya ulaşılabiliyor mu? navigator.onLine yalnız NEGATİF yönde güvenilir
+// (internetsiz Wi-Fi'da da true diyebiliyor), o yüzden son isteğin sonucunu da
+// hesaba katıyoruz.
+let serverReachable = true;
+
+function isOffline() {
+  return isDefinitelyOffline() || !serverReachable;
+}
+
+/** Bu şarkı ağ olmadan açılabilir mi? (bilgi + bütün stem'ler cihazda) */
+function isOfflineReady(song) {
+  const meta = readMeta(song.id);
+  const stems = meta && meta.status && meta.status.stems;
+  if (!stems || !stems.length) return false;
+  const version = Number(song.stems_version || (meta.status.stems_version || 0));
+  return stemCache.indexHas(song.id, stems, version);
+}
+
+/** Ağ gerektiren bir işlemden önce: çevrimdışıysak tek cümleyle söyle. */
+function requireOnline(node, what) {
+  if (!isOffline()) return true;
+  showMessage(node, `İnternet yok, ${what} için bağlantı gerekiyor.`, "warn");
+  return false;
+}
+
+function markOnlineState(reachable) {
+  const changed = serverReachable !== reachable;
+  serverReachable = reachable;
+  if (changed && !views.library.hidden) renderLibrary(librarySongs);
+  syncOfflineUi();
+}
+
+// Yükleme düğmesi çevrimdışıyken kapalı: dosya seçtirip sonra hata vermek
+// kullanıcıyı boşuna uğraştırırdı.
+function syncOfflineUi() {
+  const offline = isOffline();
+  const label = el("upload-label");
+  if (label) {
+    label.classList.toggle("disabled", offline);
+    const input = el("upload-input");
+    if (input) input.disabled = offline;
+    label.title = offline ? "İnternet yok" : "";
+  }
+}
+
+// Tarayıcı ağ durumunu bildirince kitaplığı hemen tazele: "online" olduğunda
+// listeyi de yenilemek gerekiyor, çevrimdışıyken eskimiş olabilir.
+window.addEventListener("online", () => {
+  serverReachable = true;
+  syncOfflineUi();
+  if (!views.library.hidden && isConfigured(settings)) refreshLibrary();
+  else if (!views.library.hidden) renderLibrary(librarySongs);
+});
+window.addEventListener("offline", () => {
+  markOnlineState(false);
+});
 
 // Bellekte duran şarkının kimliği: hızlı yolun kapısı.
 let loadedState = null;   // {id, stemsVersion, audioMode}
@@ -858,8 +1012,29 @@ async function openSong(song) {
     timer.mark("arayuz");
     timer.done(cachedOk ? "tam yukleme (bilgi cihazdan)" : "tam yukleme");
   } catch (error) {
+    // AÇILIŞ HERHANGİ BİR ADIMDA DÜŞERSE boş mikserde kalınmıyor: oynatıcı
+    // katmanı kapanıyor ve sebep kitaplıkta yazıyor. Mesaj pendingLibraryNote
+    // üzerinden gidiyor, çünkü katmanı kapatan yol kitaplığı tazeliyor ve
+    // tazeleme ilk iş mesajı siliyor.
     setOverlay(false);
-    showMessage(el("player-message"), describeError(error));
+    stopPlayback();
+    stopLoop();
+    engine.releaseStems();
+    loadedState = null;
+    currentSong = null;
+    const offlineMissing = error instanceof ApiError
+      && (error.kind === "offline" || error.kind === "network");
+    // Sunucuya ulaşılamadığı buradan da öğreniliyor: kitaplık hemen
+    // çevrimdışı görünümüne geçsin, hangi şarkının açılabileceği belli olsun.
+    if (offlineMissing) markOnlineState(false);
+    pendingLibraryNote = offlineMissing && isOffline()
+      ? "İnternet yok, bu şarkı telefonda kayıtlı değil."
+      : describeError(error);
+    if (nav.peek() === "view") history.back();
+    else {
+      showView("library");
+      await refreshLibrary();
+    }
   }
 }
 
@@ -1261,6 +1436,7 @@ on("play", "click", async () => {
 
 on("reprocess", "click", async () => {
   if (!currentSong) return;
+  if (!requireOnline(el("player-message"), "Hi-Fi'a yükseltmek")) return;
   const button = el("reprocess");
   button.disabled = true;
   showMessage(el("player-message"),
@@ -1626,6 +1802,11 @@ stemCache.requestPersistence();
 
 if (isConfigured(settings)) {
   showView("library");
+  // ÖNCE cihazdaki liste: internet yokken (ya da API soğuk başlarken)
+  // kitaplık boş açılmasın. Sunucu hemen ardından arkada yoklanıyor.
+  const cachedSongs = readLibraryCache();
+  if (cachedSongs && cachedSongs.length) renderLibrary(cachedSongs);
+  syncOfflineUi();
   refreshLibrary();
 } else {
   el("setting-url").value = settings.url;

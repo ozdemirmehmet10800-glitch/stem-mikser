@@ -138,6 +138,14 @@ html, body {
   user-select: none;
 }
 
+/* Çevrimdışıyken cihazda kopyası olmayan şarkı: soluk ama TIKLANABİLİR -
+   dokununca tek cümlelik açıklama veriyor, mikser açılmıyor. */
+.song-row.offline-missing { opacity: 0.42; }
+.song-row.offline-missing .song-thumb svg { fill: var(--text-faint); }
+
+/* Yükleme düğmesi çevrimdışıyken kapalı görünsün. */
+.btn.disabled { opacity: 0.5; cursor: default; }
+
 /* Onay kutusu yalnız seçim modunda görünüyor; yeri ayrılmadığı için satır
    düzeni seçim modu dışında hiç değişmiyor. */
 .song-check { display: none; }

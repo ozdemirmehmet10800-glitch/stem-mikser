@@ -123,6 +123,21 @@ export class StemCache {
     saveIndex(index);
   }
 
+  /**
+   * Bu şarkının BÜTÜN stem'leri cihazda mı? (çevrimdışı açılabilir mi)
+   *
+   * Cache Storage'a değil İNDEKSE bakıyor: senkron olması gerekiyor, kitaplık
+   * her çizimde altı şarkı için bunu soruyor. İndeks put/remove ile birlikte
+   * güncelleniyor, yani yanılma payı yalnızca "sistem Cache Storage'ı silmiş
+   * ama localStorage kalmış" durumunda - o zaman şarkı açılışta ağa düşer,
+   * zaten olması gereken de bu.
+   */
+  indexHas(songId, names, version = 0) {
+    if (!songId || !names || !names.length) return false;
+    const index = loadIndex();
+    return names.every((name) => Boolean(index[keyFor(songId, name, version)]));
+  }
+
   async usage() {
     const index = loadIndex();
     const entries = Object.values(index);

@@ -82,37 +82,45 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      Tasarruf kipinde her çözme kendi stereo ara tamponunu açıyor.
    - Çözülmüş sesi diske yazmak YOK (9 dk ≈ 1.25 GB PCM).
 
+6. [x] **Çevrimdışı davranışı.** (2026-09-29)
+   - **Kitaplık listesi cihazda** (`stem-mikser.library`): açılışta önce o
+     gösteriliyor, sunucu arkada yoklanıyor. İnternet yokken uygulama yeniden
+     açılınca kitaplığın bomboş gelmesi böyle bitti.
+   - **Her GET'e zaman aşımı** (8 sn, `AbortController`) ve bu zaman aşımı
+     YANIT BAŞLAYANA kadar geçerli - gövde okuma sınırsız, yani büyük bir stem
+     yavaş şebekede rahatça inebiliyor. Yükleme (XHR) zaman aşımsız.
+     "Sonsuza kadar hazırlanıyor" kusurunun kökü buydu: bağlantı reddedilmek
+     yerine asılı kalırsa bekleme sınırsızdı.
+   - `navigator.onLine` YALNIZ NEGATİF yönde kullanılıyor (false ise gerçekten
+     ağ yok); true olması internet olduğunu kanıtlamadığı için asıl kapı zaman
+     aşımı. Ayrıca son isteğin sonucu (`serverReachable`) da hesaba katılıyor.
+   - Çevrimdışıyken: sesi cihazda olan şarkılar **normal**, olmayanlar
+     **soluk**; soluğa dokununca tek cümle ("İnternet yok, bu şarkı telefonda
+     kayıtlı değil") ve **mikser açılmıyor**. Yükleme düğmesi kapalı; silme ve
+     Hi-Fi'a yükseltme tek cümleyle reddediliyor.
+   - Uzun "antivirüs / VPN / ALLOWED_ORIGINS" tanı metni artık **yalnız
+     internet varken** çıkıyor; çevrimdışıyken tek cümle.
+   - **Açılış herhangi bir adımda düşerse kütüphaneye dönülüyor**, boş
+     mikserde kalınmıyor; sebep kitaplıkta hemen yazıyor.
+   - Yerelde doğrulandı (mock API kapatılarak ve `navigator.onLine` false'a
+     çevrilerek): çevrimdışı yeniden açılışta liste cihazdan geliyor, cihazda
+     sesi olan şarkı ağsız açılıyor (6 kanal), olmayan soluk ve tek cümle
+     veriyor, bağlantı geri gelince görünüm kendiliğinden düzeliyor.
+
 ### Sırada
-6. [ ] **İnternetsizken eksik şarkı.** Telefonda çevrimdışı kopyası olmayan
-   bir şarkı internet yokken açılınca "hazırlanıyor"da bekliyor. Olması
-   gereken: "İnternet yok, bu şarkı telefonda kayıtlı değil" deyip kütüphaneye
-   dönmek.
-
-   **Yerelde tekrar üretildi** (mock API kapatılarak, iki senaryo da):
-   - Ses cihazda yok, bilgi de yok → `getSong` düşüyor.
-   - Ses cihazda yok ama bilgi cihazda var → açılış anında başlıyor, sonra
-     `api.stemBuffer` düşüyor.
-   - İkisinde de: örtü ~6 saniye sonra kapanıyor, ekranda uzun ve ALAKASIZ
-     "Bağlantı kesildi… antivirüs / VPN / ALLOWED_ORIGINS" tanı metni
-     görünüyor, **oynatıcı ekranında boş mikserle kalınıyor** (kütüphaneye
-     dönülmüyor). 6 saniyenin sebebi `api.js`'in GET'leri 1.5 sn bekleyip bir
-     kez yeniden denemesi.
-   - **Hiçbir yerde zaman aşımı yok:** bağlantı reddedilmek yerine ASILI
-     KALIRSA (zayıf şebeke) bekleme sınırsız - "sonsuza kadar" gözlemi bununla
-     uyuşuyor. Yerelde bağlantı hemen reddedildiği için 6 sn'de bitiyor.
-
-   **Ayrıca çıkan, ayrı ve daha büyük kusur:** internet yokken uygulama
-   yeniden açılırsa **kütüphane listesi bomboş** geliyor (liste yalnız ağdan:
-   `GET /songs`). Yani çevrimdışı, önbellekte sesi olan şarkıya bile
-   ulaşılamıyor. "Uçak modunda açılıyor" testi uygulama AÇIKKEN yapıldığı için
-   bunu göstermemişti. Liste de cihazda saklanmalı (durum/akor için yapılanın
-   aynısı).
-
-   Yapılacaklar: (a) `navigator.onLine` ile hızlı karar + istek başına zaman
-   aşımı (`AbortController`), (b) stem'i olmayan + ağ yok durumunda anlaşılır
-   tek cümlelik mesaj ve kütüphaneye dönüş, (c) kütüphane listesinin cihaz
-   kopyası, (d) çevrimdışı açılabilen şarkıları listede işaretlemek.
-7. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
+7. [ ] **Piyano ve davulu Hi-Fi modelden (BS-RoFormer SW) almak.** SW 6
+   stem'li bir model ve Hi-Fi yolunda ZATEN çalışıyor; şu an yalnız vokal
+   çıkışı alınıp piyano/davul çıkışı hesaplanıp ATILIYOR. Yani ek GPU maliyeti
+   yok denecek kadar az - model bir kez koşuyor, yalnız hangi çıkışları
+   kullandığımız değişiyor.
+   **Dikkat:** kulak testi ŞART. Deneyde (Aşama 9) Zeus'ta B, bas ile klavye
+   arasındaki bir sesi tamamen piyanoya atmıştı; ayrıca B'nin bas ve gitarı
+   kayıp çıkmıştı (bkz. Aşama 9 kulak testi tablosu). Bu yüzden vokalde B,
+   bas/gitarda demucs seçilmişti. Davul/piyanoyu da B'den almak o kararın
+   yalnız iki stem'de gözden geçirilmesi demek: C'nin iskeleti buna hazır
+   (vokal gibi davul/piyano da B'den alınıp enstrümantalden çıkarılabilir,
+   kalan stem'ler demucs'ta kalır).
+8. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
 
 ### Kalite zinciri (2026-09-29 sonrası)
 | adım | format | kHz | kanal | derinlik/bit hızı |

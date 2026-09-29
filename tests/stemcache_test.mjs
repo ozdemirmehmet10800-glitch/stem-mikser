@@ -182,8 +182,28 @@ async function testMultipleSongs() {
         indexKeys().join(","));
 }
 
+async function testIndexHas() {
+  await reset();
+  const stems = new StemCache();
+  const names = ["vocals", "drums", "bass"];
+  check("bos onbellekte false", stems.indexHas(A, names, 5) === false);
+  await stems.put(A, "vocals", buffer(10), 5);
+  await stems.put(A, "drums", buffer(10), 5);
+  check("eksik stem varken false", stems.indexHas(A, names, 5) === false);
+  await stems.put(A, "bass", buffer(10), 5);
+  check("hepsi varken true", stems.indexHas(A, names, 5) === true);
+  // Surum onemli: Hi-Fi'a yukseltilmis sarkinin ESKI kopyasi sayilmamali.
+  check("baska surumde false", stems.indexHas(A, names, 6) === false);
+  check("baska sarkida false", stems.indexHas(B, names, 5) === false);
+  check("isim listesi bossa false", stems.indexHas(A, [], 5) === false);
+  check("kimlik yoksa false", stems.indexHas("", names, 5) === false);
+  await stems.removeSongs([A]);
+  check("silindikten sonra false", stems.indexHas(A, names, 5) === false);
+}
+
 for (const test of [testRemovesOneSong, testVersionedKeys, testOnlyInCacheStorage,
-                    testOnlyInIndex, testNoopCases, testMultipleSongs]) {
+                    testOnlyInIndex, testNoopCases, testMultipleSongs,
+                    testIndexHas]) {
   console.log(`\n--- ${test.name} ---`);
   await test();
 }

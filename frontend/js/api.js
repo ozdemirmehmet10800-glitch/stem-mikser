@@ -13,7 +13,28 @@ export class ApiError extends Error {
 
 const RETRY_DELAY_MS = 1500;
 
+// Zaman aşımı YANIT BAŞLAYANA kadar geçerli, gövde okuma sınırsız: 10 MB'lık
+// bir stem yavaş şebekede uzun sürebilir ve bu normaldir. Ölçmek istediğimiz
+// şey "sunucu hiç cevap vermiyor mu". Zaman aşımı olmadan, bağlantı
+// reddedilmek yerine ASILI KALIRSA (zayıf şebeke) bekleme sınırsız oluyordu -
+// çevrimdışı "sonsuza kadar hazırlanıyor" kusurunun sebebi buydu.
+const RESPONSE_TIMEOUT_MS = 8000;
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// navigator.onLine YALNIZCA NEGATİF yönde güvenilir: false ise gerçekten ağ
+// yok. true olması internet olduğunu KANITLAMIYOR (internetsiz bir Wi-Fi da
+// true der), o yüzden tek başına ona güvenilmiyor - asıl kapı zaman aşımı.
+export function isDefinitelyOffline() {
+  return typeof navigator !== "undefined" && navigator.onLine === false;
+}
+
+function offlineError() {
+  return new ApiError("İnternet yok.", {
+    kind: "offline",
+    hint: "Cihaz çevrimdışı. Telefonda kayıtlı şarkılar açılabilir.",
+  });
+}
 
 // fetch YALNIZCA ağ/CORS hatasında TypeError atar; HTTP hata kodları buraya
 // düşmez. Ama tarayıcı hangi sebep olduğunu JavaScript'e söylemiyor, bu yüzden
@@ -21,9 +42,16 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // (ör. AVG'nin tarayıcı trafiğine karışması), VPN'in ya da güvenlik duvarının
 // eseri olabileceği gibi CORS reddi de olabilir. Olası sebepleri sayıyoruz.
 function networkError(cause, apiUrl) {
-  return new ApiError("Bağlantı kesildi.", {
+  // UZUN TANI METNİ YALNIZCA İNTERNET VARKEN: cihaz çevrimdışıyken
+  // "antivirüs / VPN / ALLOWED_ORIGINS" listesi hem yanlış hem korkutucu.
+  if (isDefinitelyOffline()) return offlineError();
+  const timedOut = cause && cause.name === "AbortError";
+  return new ApiError(timedOut ? "Sunucu yanıt vermedi." : "Bağlantı kesildi.", {
     kind: "network",
     hint:
+      (timedOut
+        ? `Sunucu ${RESPONSE_TIMEOUT_MS / 1000} saniyede yanıt vermedi.\n`
+        : "") +
       `Sunucuya ulaşılamadı. Olası sebepler:\n` +
       `• Antivirüs / VPN / güvenlik duvarı tarayıcı trafiğine karışıyor\n` +
       `  (aynı adres curl veya başka bir tarayıcıda çalışıyorsa sebep büyük\n` +
@@ -50,11 +78,22 @@ export class Api {
     if (!this.url || !this.token) {
       throw new ApiError("API adresi veya token ayarlı değil.", { kind: "config" });
     }
-    const request = () =>
-      fetch(this.url + path, {
-        ...options,
-        headers: { ...this.headers, ...(options.headers || {}) },
-      });
+    const request = async () => {
+      if (isDefinitelyOffline()) throw offlineError();
+      // AbortController yalnız YANITIN BAŞLAMASINI sınırlıyor; yanıt gelince
+      // sayaç iptal ediliyor, gövde okuma sınırsız.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), RESPONSE_TIMEOUT_MS);
+      try {
+        return await fetch(this.url + path, {
+          ...options,
+          signal: controller.signal,
+          headers: { ...this.headers, ...(options.headers || {}) },
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+    };
 
     // GET'ler bir kez otomatik yeniden denenir: API boştayken ilk istek soğuk
     // başlangıçta düşebiliyor. Yalnızca GET, çünkü POST/DELETE'i tekrarlamak
@@ -65,11 +104,14 @@ export class Api {
     try {
       response = await request();
     } catch (firstCause) {
+      // Çevrimdışıyken yeniden denemenin anlamı yok, bekleme boşuna uzar.
+      if (firstCause instanceof ApiError) throw firstCause;
       if (retriable) {
         await sleep(RETRY_DELAY_MS);
         try {
           response = await request();
         } catch (secondCause) {
+          if (secondCause instanceof ApiError) throw secondCause;
           throw networkError(secondCause, this.url);
         }
       } else {
