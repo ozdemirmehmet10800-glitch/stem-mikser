@@ -28,7 +28,9 @@ A ağırlıkları - KimberleyJSN/melbandroformer, HF commit
   alındı: MIT. Depo public olduğu için GPL kabul edilemezdi.
 
 A mimarisi - ZFTurbo/Music-Source-Separation-Training, MIT, gerçek LICENSE
-  dosyası var. Commit 84b1eac0887756b4f1a9d7a1ff49105939749ed2'ye PİNLİ.
+  dosyası var. Commit 84b1eac0887756b4f1a9d7a1ff49105939749ed2'ye PİNLİ ve
+  dosyalar DEPODA: backend/vendor/msst/ (lisans, hash'ler ve attend.py
+  yaması orada belgeli). İmaja add_local_dir ile giriyor, indirilmiyor.
   KimberleyJensen/Mel-Band-Roformer-Vocal-Model deposu KULLANILMIYOR:
   hiçbir lisans dosyası yok, yani varsayılan olarak her hakkı saklı.
 
@@ -62,10 +64,14 @@ AAC_BITRATE = "160k"          # app.py ile aynı olmalı: oynatıcı aynı
 FLAC_SUBTYPE = "PCM_24"
 T4_USD_PER_SECOND = 0.000164  # ölçümü paraya çevirmek için
 
-# MSST (MIT) mimari dosyaları - PİNLİ commit.
+# MSST (MIT) mimari dosyaları - PİNLİ commit. Artık DEPODA (canlı app.py ile
+# aynı kaynak: backend/vendor/msst/, imaja add_local_dir ile giriyor).
+# Önceden hem fetch hem çalışma anında indirilip metin yamasıyla torch 2.5.1'e
+# uyarlanıyorlardı; yama şimdi depodaki dosyada görünür durumda.
 MSST_SHA = "84b1eac0887756b4f1a9d7a1ff49105939749ed2"
 MSST_RAW = f"https://raw.githubusercontent.com/ZFTurbo/Music-Source-Separation-Training/{MSST_SHA}"
-MSST_FILES = ("attend.py", "bs_roformer.py", "mel_band_roformer.py")
+MSST_DIR = "/msst"
+MSST_LOCAL = str(pathlib.Path(__file__).resolve().parent / "vendor" / "msst")
 
 # İndirilecek ağırlıklar. sha256'lar HF API'sinden alındı (LFS meta verisi),
 # koda GÖMÜLÜ: indirilen dosya bunlarla tutmuyorsa hata veriyoruz.
@@ -138,77 +144,6 @@ def _download(url: str, target: pathlib.Path) -> int:
     return total
 
 
-# --------------------------------------------------------------------------
-# MSST yaması: sdpa_kernel(set_priority=...) torch 2.6'da eklendi
-# --------------------------------------------------------------------------
-# Pinli MSST commit'i attend.py'de `sdpa_kernel(..., set_priority=True)`
-# çağırıyor. Bu kwarg torch 2.6'da geldi; imajdaki torch 2.5.1'de TypeError
-# atıyor ve çıkarım daha ilk parçada patlıyor.
-#
-# Torch YÜKSELTİLMİYOR: 2.5.1 demucs yüzünden bilinçli pinli - torch 2.6
-# torch.load varsayılanını weights_only=True yaptı ve demucs'un checkpoint
-# yükleyicisini kırabiliyor (app.py'de de aynı sebeple pinli). A yolunun
-# ikinci aşaması demucs olduğu için yükseltmek asıl riski oraya taşırdı.
-# MSST'yi eski bir commit'e almak da riskli: başka API'leri de geri gider.
-#
-# En az müdahale: çağrıyı çalışma anında uyarlanan bir sarmalayıcıya çevir.
-# set_priority yalnızca arka uç ÖNCELİK İPUCU (listeyi sıralı tercih sayar);
-# matematiği değiştirmiyor, düşürülmesi sonucu etkilemiyor. Yeni bir torch'ta
-# ipucu kendiliğinden geri kazanılıyor.
-#
-# attend.py'yi hem bs_roformer hem mel_band_roformer import ediyor, yani bu
-# TEK yama A ve B yollarının ikisini birden düzeltiyor. Üç MSST dosyasında
-# başka torch 2.6+ API'si taranmış, yok.
-
-_SDPA_CALL_OLD = (
-    "            with sdpa_kernel(INFERENCE_SDPA_BACKENDS, set_priority=True):"
-)
-_SDPA_CALL_NEW = "            with _sdpa_kernel_compat():"
-_SDPA_ANCHOR = "except ImportError:\n    _HAS_SDPA_KERNEL = False\n"
-_SDPA_HELPER = '''
-
-def _sdpa_kernel_compat():
-    """sdpa_kernel'i set_priority olmadan da cagirabilen sarmalayici.
-
-    set_priority torch 2.6'da eklendi; burada torch 2.5.1 var. Bayrak
-    yalnizca arka uc oncelik ipucu, matematigi degistirmiyor.
-    (stem-mikser Asama 9 deneyi tarafindan indirme sirasinda eklendi.)
-    """
-    try:
-        return sdpa_kernel(INFERENCE_SDPA_BACKENDS, set_priority=True)
-    except TypeError:
-        return sdpa_kernel(INFERENCE_SDPA_BACKENDS)
-'''
-
-
-def _patch_msst_attend(models_dir: pathlib.Path) -> dict:
-    """attend.py'yi torch 2.5.1 ile uyumlu hale getirir.
-
-    Yama uygulanamazsa HATA veriyor. Sessizce yamasız kalıp çıkarımın
-    ortasında patlamasındansa indirme adımında durması iyi.
-    """
-    path = models_dir / "attend.py"
-    source = path.read_text(encoding="utf-8")
-
-    if _SDPA_CALL_NEW in source:
-        return {"patched": False, "reason": "zaten yamalı"}
-    if _SDPA_CALL_OLD not in source:
-        raise ValueError(
-            f"attend.py beklenen sdpa_kernel cagrisini icermiyor - MSST "
-            f"commit {MSST_SHA} degismis olabilir, yama elden gecirilmeli"
-        )
-    if _SDPA_ANCHOR not in source:
-        raise ValueError("attend.py'de _HAS_SDPA_KERNEL blogu bulunamadi")
-
-    source = source.replace(_SDPA_ANCHOR, _SDPA_ANCHOR + _SDPA_HELPER, 1)
-    source = source.replace(_SDPA_CALL_OLD, _SDPA_CALL_NEW, 1)
-    compile(source, str(path), "exec")  # yamalı dosya gerçekten derleniyor mu
-    # Satır sonları belirlenimli kalsın (Windows'ta yerel sınarken tüm dosya
-    # değişmiş görünmesin); Modal tarafında zaten LF.
-    path.write_text(source, encoding="utf-8", newline="\n")
-    return {"patched": True}
-
-
 @app.function(
     image=fetch_image,
     volumes={DATA_DIR: volume},
@@ -270,26 +205,12 @@ def fetch_weights(check_mirror: bool = True) -> dict:
         finally:
             alt.unlink(missing_ok=True)
 
-    # MSST mimari dosyaları da volume'a: imaj build'i ağa bağımlı olmasın.
-    models_dir = root / "msst" / "models" / "bs_roformer"
-    models_dir.mkdir(parents=True, exist_ok=True)
-    (root / "msst" / "models" / "__init__.py").write_text("", encoding="utf-8")
-    # ZFTurbo'nun __init__.py'si conformer'ları da import ediyor; bize gerekmiyor.
-    (models_dir / "__init__.py").write_text("", encoding="utf-8")
-    for name in MSST_FILES:
-        size = _download(f"{MSST_RAW}/models/bs_roformer/{name}", models_dir / name)
-        print(f"[msst] {name}: {size} bayt")
-    # MSST'nin gerçek demix'i referans kontrolü için gerekiyor.
-    utils_dir = root / "msst" / "utils"
-    utils_dir.mkdir(parents=True, exist_ok=True)
-    (utils_dir / "__init__.py").write_text("", encoding="utf-8")
-    size = _download(f"{MSST_RAW}/utils/model_utils.py", utils_dir / "model_utils.py")
-    print(f"[msst] utils/model_utils.py: {size} bayt")
-
-    patch = _patch_msst_attend(models_dir)
-    print(f"[msst] attend.py yamasi: {patch}")
+    # MSST mimari dosyaları BURADA İNMİYOR: depoda (backend/vendor/msst/) ve
+    # imaja add_local_dir ile giriyorlar. Eski koşumlardan Volume'da kalmış
+    # `weights-exp/msst` kopyası varsa artık KULLANILMIYOR (sys.path imajı
+    # gösteriyor); silinmesi gerekmiyor, yalnızca ölü veri.
     report["msst_commit"] = MSST_SHA
-    report["msst_patch"] = patch
+    report["msst_source"] = f"repo: backend/vendor/msst -> imaj: {MSST_DIR}"
 
     volume.commit()
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -333,6 +254,11 @@ gpu_image = (
     .env({"HF_HOME": DEMUCS_WEIGHTS, "TORCH_HOME": DEMUCS_WEIGHTS})
     .run_function(_warm_demucs)
     .env({"HF_HUB_OFFLINE": "1"})
+    # MSST mimari dosyaları (MIT, pinli commit) depodan - canlı app.py ile aynı
+    # kaynak. copy=False: konteyner açılışında bağlanıyor, imaj katmanına
+    # girmiyor, yani değişse bile demucs ağırlığı yeniden inmiyor. Modal'da
+    # mount katmanından sonra build adımı olamaz, bu yüzden en sonda.
+    .add_local_dir(MSST_LOCAL, MSST_DIR)
 )
 
 # Konteyner ne zaman ayağa kalktı? Soğuk başlangıcı ölçmek için.
@@ -366,8 +292,8 @@ def _find_input(song_id: str) -> pathlib.Path:
 
 
 def _msst_path() -> str:
-    """MSST model dosyaları volume'da; import edilebilmesi için sys.path'e."""
-    return str(pathlib.Path(EXP_WEIGHTS) / "msst")
+    """MSST model dosyaları imajda (depodan gelir); sys.path'e eklenecek yol."""
+    return MSST_DIR
 
 
 def _load_config(path: pathlib.Path) -> dict:
@@ -395,15 +321,8 @@ def _build_model(kind: str, config: dict):
     """kind: 'melband' (A, tek stem vokal) | 'bs' (B, 6 stem)."""
     import sys
 
-    # Yama burada da uygulanıyor, sadece fetch'te değil: Volume'da yamasız
-    # bir attend.py kalmışsa (eski bir fetch'ten) deney tek komutla kendini
-    # onarsın. İdempotent, yamalıysa dosyaya dokunmuyor.
-    models_dir = pathlib.Path(_msst_path()) / "models" / "bs_roformer"
-    result = _patch_msst_attend(models_dir)
-    if result.get("patched"):
-        print("[msst] attend.py calisma aninda yamalandi (torch 2.5.1 uyumu)")
-        volume.commit()
-
+    # Çalışma anı yaması KALKTI: attend.py depoda yamalı geliyor
+    # (backend/vendor/msst/models/bs_roformer/attend.py).
     if _msst_path() not in sys.path:
         sys.path.insert(0, _msst_path())
 
