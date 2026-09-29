@@ -107,6 +107,20 @@ altına iner.
 Ölçü hizalaması **yalnızca tam ölçü** cinsinden aranır; vuruş düzeyindeki
 kayma ayrıca ölçülüp raporlanır (`downbeat'lerin beat indeksi mod 4`).
 
+**Oynatma dosyalarını yeniden kodlama (kalite değişince):**
+
+```powershell
+.\.venv\Scripts\python.exe -m modal run backend\app.py::reencode
+```
+
+Önce ne yapacağını listeler; uygulamak için sonuna `--yes` ekle. Kaynak
+`master/*.flac` (44.1 kHz, 24-bit): ses ikinci kez kayıplı kodlamadan
+geçmiyor. **GPU yok, yeniden ayırma yok, akor/vuruş yeniden hesaplanmıyor.**
+Çıktı AAC 256k / 48 kHz; yeniden örnekleme mümkünse soxr ile yapılıyor,
+değilse ffmpeg'in kendi örnekleyicisine düşülüyor ve bu log'a yazılıyor.
+`stems_version` artıyor, yoksa telefon eski dosyaları sessizce çalardı.
+Tek şarkı için `--song-id <id>`.
+
 **Hi-Fi vokal yolunun GPU duman testi (Aşama 9):**
 
 ```powershell

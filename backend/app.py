@@ -36,7 +36,19 @@ MODEL_NAME = "htdemucs_6s"
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024  # 30 MB
 MAX_DURATION_SEC = 10 * 60  # 10 dakika
 
-AAC_BITRATE = "160k"
+# Telefona giden oynatma dosyaları.
+#
+# 256k: 160k'dan yükseltildi. Mikserde altı kayıplı akış ÜST ÜSTE toplanıyor
+# ve bir stem solo yapıldığında onun kendi artefaktını maskeleyecek başka
+# sinyal kalmıyor - tek bir akış dinlemekten daha zorlayıcı bir kullanım.
+#
+# 48 kHz: telefonun (ve çoğu Android cihazın) doğal çıkış hızı 48 kHz -
+# ölçüldü. Dosyalar 44.1 kHz olunca decodeAudioData her açılışta yeniden
+# örnekliyordu; 48 kHz'e sunucuda bir kez, iyi bir yeniden örnekleyiciyle
+# (mümkünse soxr) geçmek hem o işi kaldırıyor hem açılışı hızlandırıyor.
+# FLAC ASILLAR 44.1 kHz KALIYOR: model oradan çıkıyor, asıl kayıt o.
+AAC_BITRATE = "256k"
+STEM_SAMPLE_RATE = 48000
 FLAC_SUBTYPE = "PCM_24"  # 24-bit kayıpsız master
 
 # --- Aşama 9: Hi-Fi vokal yolu ------------------------------------------
@@ -504,6 +516,53 @@ def _decode_pcm(path: pathlib.Path, samplerate: int, channels: int):
     return np.frombuffer(proc.stdout, dtype="<f4").reshape(-1, channels).T.copy()
 
 
+# soxr bu imajın ffmpeg'inde var mı? Denenip öğreniliyor: "-filters"
+# çıktısında görünmesi kütüphanenin BAĞLI olduğunu kanıtlamıyor, gerçek
+# çağrıyı denemek kanıtlıyor. Sonuç konteyner ömrü boyunca hatırlanıyor.
+_SOXR_OK = None
+
+
+def _encode_stem_m4a(flac_path: pathlib.Path, m4a_path: pathlib.Path,
+                     channels: int) -> str:
+    """FLAC aslından oynatma dosyası: AAC, STEM_SAMPLE_RATE, AAC_BITRATE.
+
+    Yeniden örnekleme (44.1 -> 48 kHz) soxr ile yapılıyor; bu ffmpeg
+    yapısında soxr yoksa ffmpeg'in kendi (swr) örnekleyicisine düşülüyor.
+    Hangisinin kullanıldığı log'a yazılıyor - sessizce kaliteden ödün
+    vermeyelim.
+    """
+    global _SOXR_OK
+
+    base = [
+        "ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(flac_path),
+        "-c:a", "aac", "-b:a", AAC_BITRATE,
+        "-ar", str(STEM_SAMPLE_RATE), "-ac", str(channels),
+        "-movflags", "+faststart", str(m4a_path),
+    ]
+    # Filtre GİRDİDEN SONRA gelmek zorunda: "-i" kendinden sonraki ilk
+    # belirteci girdi dosyası sayıyor, "-af"i araya sokmak komutu bozuyordu.
+    input_end = base.index(str(flac_path)) + 1
+    soxr = base[:input_end] + [
+        "-af", f"aresample={STEM_SAMPLE_RATE}:resampler=soxr:precision=28",
+    ] + base[input_end:]
+
+    if _SOXR_OK is not False:
+        try:
+            _run(soxr)
+            if _SOXR_OK is None:
+                _SOXR_OK = True
+                print("[encode] soxr kullaniliyor (precision 28)")
+            return "soxr"
+        except RuntimeError as error:
+            if _SOXR_OK is True:
+                raise
+            _SOXR_OK = False
+            print(f"[encode] soxr YOK, ffmpeg swr'ye dusuluyor: {str(error)[:200]}")
+
+    _run(base)
+    return "swr"
+
+
 def _decode_mono(path: pathlib.Path, samplerate: int):
     """ffmpeg ile mono float32 numpy dizisi. torchaudio I/O yok."""
     import numpy as np
@@ -963,6 +1022,139 @@ def fetch_hifi_weights() -> dict:
 
     volume.commit()
     return _assert_plain(report)
+
+
+# --------------------------------------------------------------------------
+# Mevcut şarkıların oynatma dosyalarını yeniden kodlama
+# --------------------------------------------------------------------------
+# GPU YOK, yeniden AYIRMA yok, akor/vuruş yeniden hesaplanmıyor. Kaynak
+# `master/*.flac`, yani ayrıştırmanın kayıpsız çıktısı - ses ikinci kez
+# kayıplı kodlamadan geçmiyor, ilk kez geçiyor.
+#
+# Akor ve vuruş dosyaları SANİYE cinsinden; örnekleme hızı değişikliği
+# onları etkilemiyor, o yüzden dokunulmuyorlar.
+#
+# stems_version ARTIRILIYOR: telefon stem'leri stems/<id>/<ad>@<sürüm>.m4a
+# anahtarıyla saklıyor. Artırılmazsa cihaz eski dosyaları çalmaya devam eder,
+# üstelik sessizce.
+
+
+@app.function(
+    image=light_image,
+    volumes={DATA_DIR: volume},
+    timeout=3600,
+)
+def reencode_stems(song_ids: list, dry_run: bool = True) -> dict:
+    """Verilen şarkıların m4a'larını FLAC asıllardan yeniden üretir."""
+    volume.reload()
+    root = pathlib.Path(DATA_DIR) / "songs"
+    report = {"dry_run": bool(dry_run), "songs": [], "resampler": "",
+              "bitrate": AAC_BITRATE, "samplerate": STEM_SAMPLE_RATE}
+
+    wanted = set(song_ids or [])
+    for entry in sorted(root.iterdir()) if root.is_dir() else []:
+        if wanted and entry.name not in wanted:
+            continue
+        status_path = entry / "status.json"
+        master_dir = entry / "master"
+        if not status_path.is_file() or not master_dir.is_dir():
+            continue
+        try:
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if status.get("state") != "done":
+            print(f"[atla] {entry.name}: durum {status.get('state')}")
+            continue
+
+        flacs = sorted(master_dir.glob("*.flac"))
+        if not flacs:
+            continue
+        item = {
+            "id": str(status.get("id", entry.name)),
+            "title": str(status.get("title") or entry.name[:12]),
+            "stems": [path.stem for path in flacs],
+            "was": {
+                "samplerate": status.get("stem_samplerate") or status.get("samplerate"),
+                "bitrate": status.get("stem_bitrate") or "160k",
+                "stems_version": status.get("stems_version"),
+            },
+        }
+
+        if dry_run:
+            report["songs"].append(item)
+            continue
+
+        channels = int(status.get("channels") or 2)
+        stems_dir = entry / "stems"
+        stems_dir.mkdir(parents=True, exist_ok=True)
+        started = time.time()
+        for flac_path in flacs:
+            resampler = _encode_stem_m4a(
+                flac_path, stems_dir / f"{flac_path.stem}.m4a", channels
+            )
+            report["resampler"] = resampler
+        status["stems"] = [path.stem for path in flacs]
+        status["stem_samplerate"] = STEM_SAMPLE_RATE
+        status["stem_bitrate"] = AAC_BITRATE
+        status["stems_version"] = int(time.time())
+        status["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        status_path.write_text(json.dumps(status, ensure_ascii=False, indent=2),
+                               encoding="utf-8")
+        item["seconds"] = round(time.time() - started, 1)
+        item["stems_version"] = status["stems_version"]
+        item["bytes"] = int(sum(
+            (stems_dir / f"{path.stem}.m4a").stat().st_size for path in flacs
+        ))
+        report["songs"].append(item)
+        print(f"[kodlandi] {item['title'][:40]}: {len(flacs)} stem, "
+              f"{item['seconds']} sn, surum {item['stems_version']}")
+
+    if not dry_run:
+        volume.commit()
+    return _assert_plain(report)
+
+
+@app.local_entrypoint()
+def reencode(yes: bool = False, song_id: str = ""):
+    """Oynatma dosyalarını (m4a) FLAC asıllardan yeniden kodlar.
+
+        modal run backend/app.py::reencode            # yalnız listeler
+        modal run backend/app.py::reencode --yes      # uygular
+
+    GPU yok, yeniden ayırma yok, akor/vuruş yeniden hesaplanmıyor.
+    """
+    ids = [song_id] if song_id else []
+    report = reencode_stems.remote(ids, not yes)
+    songs = report.get("songs") or []
+    if not songs:
+        print("Yeniden kodlanacak sarki yok (master/*.flac bulunamadi).")
+        return
+
+    print("")
+    print(f"Hedef: AAC {report['bitrate']}, {report['samplerate']} Hz, "
+          f"kaynak master/*.flac (44.1 kHz, 24-bit)")
+    print("")
+    for item in songs:
+        was = item.get("was") or {}
+        line = (f"  {item['title'][:44]:<46} {len(item['stems'])} stem   "
+                f"{was.get('samplerate')} Hz / {was.get('bitrate')}")
+        if not yes:
+            print(line + "  ->  yeniden kodlanacak")
+        else:
+            print(line + f"  ->  bitti, {item.get('seconds')} sn, "
+                  f"surum {item.get('stems_version')}")
+
+    if not yes:
+        print("")
+        print(f"{len(songs)} sarki. Uygulamak icin:")
+        print("  modal run backend/app.py::reencode --yes")
+        return
+
+    print("")
+    print(f"{len(songs)} sarki yeniden kodlandi "
+          f"(yeniden orneklemede {report.get('resampler')}).")
+    print("Telefonda: uygulamayi ac, sarkilari bir kez ac - yeni dosyalar inecek.")
 
 
 @app.local_entrypoint()
@@ -1554,14 +1746,7 @@ def separate(song_id: str, quality: str = DEFAULT_QUALITY,
 
             m4a_path = stems_dir / f"{name}.m4a"
             step = time.time()
-            _run(
-                [
-                    "ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(flac_path),
-                    "-c:a", "aac", "-b:a", AAC_BITRATE,
-                    "-ar", str(samplerate), "-ac", str(channels),
-                    "-movflags", "+faststart", str(m4a_path),
-                ]
-            )
+            _encode_stem_m4a(flac_path, m4a_path, channels)
             aac_seconds += time.time() - step
             written.append(name)
             print(f"[yaz] {name}: tepe {raw_peaks[name]:.4f} -> flac + m4a")
@@ -1626,7 +1811,11 @@ def separate(song_id: str, quality: str = DEFAULT_QUALITY,
             state="done" if skip_analyze else "analyzing",
             progress=100 if skip_analyze else 70,
             error=None, stems=written,
-            samplerate=samplerate, channels=channels, gpu_seconds=gpu_seconds,
+            # samplerate = modelin ve FLAC asılların hızı (44.1 kHz).
+            # stem_* alanları telefona giden m4a'ları anlatıyor.
+            samplerate=samplerate, channels=channels,
+            stem_samplerate=STEM_SAMPLE_RATE, stem_bitrate=AAC_BITRATE,
+            gpu_seconds=gpu_seconds,
             timing=result["timing"], quality=quality,
             stems_version=int(time.time()),
         )

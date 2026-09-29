@@ -412,11 +412,95 @@ def test_delete_block_reason(app):
           isinstance(app.MAX_DELETE_IDS, int) and 1 < app.MAX_DELETE_IDS <= 1000,
           str(app.MAX_DELETE_IDS))
 
+
+def test_stem_encoding(app):
+    """Telefona giden m4a'lar: 256k, 48 kHz, mumkunse soxr.
+
+    ffmpeg yerelde yok; `_run` degistirilip KOMUTUN kendisi sinaniyor.
+    """
+    import pathlib
+
+    check("oynatma bit hizi 256k", app.AAC_BITRATE == "256k", app.AAC_BITRATE)
+    check("stem ornekleme hizi 48 kHz", app.STEM_SAMPLE_RATE == 48000,
+          str(app.STEM_SAMPLE_RATE))
+    check("FLAC asillar 24-bit kaldi", app.FLAC_SUBTYPE == "PCM_24",
+          app.FLAC_SUBTYPE)
+
+    calls = []
+    original_run = app._run
+
+    class Fake:
+        returncode = 0
+        stdout = b""
+
+    def record(cmd):
+        calls.append(list(cmd))
+        return Fake()
+
+    # --- soxr'in oldugu durum -------------------------------------------
+    app._run = record
+    app._SOXR_OK = None
+    try:
+        used = app._encode_stem_m4a(pathlib.Path("a.flac"), pathlib.Path("a.m4a"), 2)
+    finally:
+        app._run = original_run
+    check("soxr varsa soxr kullaniliyor", used == "soxr", used)
+    check("tek ffmpeg cagrisi", len(calls) == 1, str(len(calls)))
+    cmd = " ".join(calls[0]) if calls else ""
+    check("aresample soxr filtresi var",
+          "resampler=soxr" in cmd and "precision=28" in cmd, cmd[:160])
+    check("cikis hizi 48000", "-ar" in calls[0]
+          and calls[0][calls[0].index("-ar") + 1] == "48000", cmd[:160])
+    check("bit hizi 256k", "256k" in calls[0], cmd[:160])
+    check("aac kodlayici", "aac" in calls[0])
+    check("faststart var", "+faststart" in calls[0])
+    check("kanal sayisi veriliyor",
+          "-ac" in calls[0] and calls[0][calls[0].index("-ac") + 1] == "2")
+    check("kaynak FLAC asil", "a.flac" in cmd and "a.m4a" in cmd)
+    # "-i" kendinden sonraki ilk belirteci girdi sayiyor: filtre ARAYA
+    # girerse ffmpeg "-af"i dosya adi sanip patlar. Bu test onu yakaladi.
+    check("-i'den hemen sonra girdi dosyasi geliyor",
+          calls[0][calls[0].index("-i") + 1] == "a.flac",
+          calls[0][calls[0].index("-i") + 1])
+    check("-af girdiden SONRA",
+          calls[0].index("-af") > calls[0].index("a.flac"),
+          f"-af {calls[0].index('-af')} / a.flac {calls[0].index('a.flac')}")
+
+    # --- soxr'in olmadigi durum: swr'ye dusmeli -------------------------
+    calls.clear()
+    attempts = {"n": 0}
+
+    def failing(cmd):
+        calls.append(list(cmd))
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("ffmpeg basarisiz: Unknown resampler soxr")
+        return Fake()
+
+    app._run = failing
+    app._SOXR_OK = None
+    try:
+        used = app._encode_stem_m4a(pathlib.Path("b.flac"), pathlib.Path("b.m4a"), 2)
+    finally:
+        app._run = original_run
+        app._SOXR_OK = None
+    check("soxr yoksa swr'ye dusuluyor", used == "swr", used)
+    check("iki deneme yapildi", len(calls) == 2, str(len(calls)))
+    check("yedek komutta soxr yok", "soxr" not in " ".join(calls[1]),
+          " ".join(calls[1])[:160])
+    check("yedek komutta da 48000 var",
+          calls[1][calls[1].index("-ar") + 1] == "48000")
+
+    check("reencode entrypoint'i kayitli",
+          "reencode" in app.app.registered_entrypoints)
+    check("reencode_stems fonksiyonu kayitli",
+          "reencode_stems" in app.app.registered_functions)
+
 def main():
     app = load_app()
     for test in (test_parse_range, test_signature, test_gate, test_constants,
                  test_vendored_msst, test_song_id_validation,
-                 test_delete_block_reason):
+                 test_delete_block_reason, test_stem_encoding):
         print(f"\n--- {test.__name__} ---")
         test(app)
     print(f"\n{'=' * 60}")

@@ -8,13 +8,18 @@
 // kullanıyoruz; sw.js ses dosyalarına hiç karışmıyor, burası tamamen
 // uygulamanın denetiminde.
 //
-// Boyut sınırı 300 MB, dolunca EN ESKİ KULLANILAN siliniyor. Kullanım
+// Boyut sınırı 2 GB, dolunca EN ESKİ KULLANILAN siliniyor. Kullanım
 // zamanları localStorage'da: Cache Storage kendi başına "ne zaman okundu"
 // bilgisini tutmuyor.
+//
+// Sınır 300 MB'dan 2 GB'a çıkarıldı: telefon depolaması bol ve stem'ler 256k
+// olunca şarkı başı ~11.5 MB/dk (6 kanal). 2 GB ~40 şarkı demek; 300 MB
+// altı şarkıda kalıyordu ve çevrimdışı kopyalar boşuna düşüyordu.
+// Tarayıcının kendi kotası ayrı bir tavan: dolarsa put sessizce vazgeçiyor.
 
 const CACHE_NAME = "stem-mikser-stems-v1";
 const INDEX_KEY = "stem-mikser.stemcache";
-const MAX_BYTES = 300 * 1024 * 1024;
+const MAX_BYTES = 2 * 1024 * 1024 * 1024;
 
 function loadIndex() {
   try {

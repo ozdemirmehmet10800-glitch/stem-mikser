@@ -38,9 +38,31 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE: `modal run backend/app.py::h
    çıkıyor, şimdilik Escape'e bağlı.
 2. [ ] **Deney şarkılarını temizle.** `modal run backend/experiment.py::cleanup`
    (önce listeler, `--yes` ile siler). Orijinal şarkılara dokunmuyor.
-3. [~] **Kalite paketi.** Rapor çıkarıldı, anahtar kondu, **telefonda ölçüldü
-   ve varsayılan Yüksek oldu** (48 kHz stereo). Kalan: sunucu tarafı (AAC
-   256k + 48 kHz kodlama, mevcut şarkıların yeniden kodlanması). Ayarlarda "Mobil ses kalitesi": Tasarruf (32 kHz mono,
+3. [x] **Kalite paketi BİTTİ.** Telefonda ölçüldü, varsayılan **Yüksek**
+   (cihaz hızı 48 kHz, stereo). Sunucu tarafı: oynatma dosyaları **AAC 256k,
+   48 kHz** (FLAC asıllar 44.1 kHz kalıyor - model oradan çıkıyor), yeniden
+   örnekleme mümkünse **soxr** ile, değilse ffmpeg'in swr'si (log'a yazılıyor).
+   Mevcut şarkılar için `modal run backend/app.py::reencode` (önce listeler,
+   `--yes` uygular): GPU yok, yeniden ayırma yok, akor/vuruş yeniden
+   hesaplanmıyor - kaynak `master/*.flac`, yani ses ikinci kez kayıplı
+   kodlamadan GEÇMİYOR. `stems_version` artıyor, yoksa telefon eski dosyaları
+   sessizce çalardı. Çevrimdışı önbellek sınırı 300 MB → **2 GB**.
+   Açılış hızlandırıldı: aynı şarkıya dönüş 0 ms, diğerleri ~2 kat
+   (ölçümler commit `b5ee797`'de).
+
+### Kalite zinciri (2026-09-29 sonrası)
+| adım | format | kHz | kanal | derinlik/bit hızı |
+|---|---|---|---|---|
+| sunucu decode | ham f32 PCM | 44.1 | 2 | float32 |
+| BS-Roformer (Hi-Fi vokal) | tensör | 44.1 | 2 | fp32 |
+| htdemucs_6s | tensör | 44.1 | 2 | float32 |
+| `master/*.flac` (asıl) | FLAC | 44.1 | 2 | 24-bit |
+| `stems/*.m4a` (telefon) | AAC | **48** | 2 | **256 kbps** |
+| telefonda decodeAudioData | AudioBuffer | 48 (cihaz hızı) | 2 | float32 |
+| bus + esnetici | — | 48 | 2 | — |
+
+Yeniden örnekleme zincirde **bir kez** ve sunucuda (44.1 → 48, soxr).
+Telefon artık hiç yeniden örneklemiyor. Ayarlarda "Mobil ses kalitesi": Tasarruf (32 kHz mono,
    varsayılan) / Yüksek (cihaz hızı, stereo). Kip değişince AudioContext
    yeniden kuruluyor, açık şarkı kapanıyor (AudioBuffer'lar context hızına
    bağlı, taşınamıyor). Ayarlar ekranı cihazın doğal hızını ve o an kullanılan
@@ -1060,7 +1082,8 @@ ediyor, fader'lar çalışıyor. İki açık madde, her biri AYRI commit:
       en az 10 saniye yapılacak (8 kHz 8-bit mono ile ~80 KB kalır).
       play() kullanıcı hareketi İÇİNDE çağrılmalı, playbackState ayarlanmalı.
 - [x] **Her açılışta 6 stem yeniden iniyor.** Stem m4a'ları cihazda
-      önbelleğe alınacak (şarkı id'siyle), 300 MB sınır, en eski kullanılan
+      önbelleğe alınacak (şarkı id'siyle), 300 MB sınır (2026-09-29: 2 GB),
+      en eski kullanılan
       silinecek (LRU). `navigator.storage.persist()` istenecek. Ayarlara
       "çevrimdışı kopyaları sil" düğmesi. İkinci açılışta stem için ağ
       isteği OLMAMALI.
