@@ -923,6 +923,29 @@ def fetch_hifi():
 # Karşılaştırma: aynı şarkının deneydeki C-fp32 vokali (`{id}-cfp32`) aynı
 # modelden, aynı fp32 / overlap 2 ayarıyla çıktı. Aradaki tek meşru fark
 # FLAC'in 24-bit nicelemesi (ve kaydederken uygulanan ortak clip_scale).
+#
+# Referans koşumunun koşulları `backend/experiment.py`'den OKUNARAK doğrulandı
+# ve rapora yazılıyor; "SNR düşük çıktı, herhalde GPU/decode farklıdır"
+# bahanesinin geçerli olup olmadığı buna bakılarak söylenebilsin diye.
+REFERENCE_RUN = {
+    # experiment.py::run_c -> @app.function(gpu="T4"), üretimdeki separate ile
+    # aynı GPU.
+    "gpu": "T4",
+    # experiment.py::_decode, ffmpeg argümanları _decode_pcm ile BİREBİR aynı:
+    # -nostdin -v error -i <yol> -f f32le -acodec pcm_f32le -ar <sr> -ac <ch> -
+    # ardından frombuffer("<f4").reshape(-1, kanal).T.copy()
+    "decode_identical": True,
+    "decode": "experiment.py::_decode == app.py::_decode_pcm (ayni ffmpeg args)",
+    # main() -> run_c.remote(id, fp32=True, suffix="cfp32"); num_overlap
+    # varsayılanı 2, yani üretimdeki HIFI_OVERLAP ile aynı.
+    "entrypoint": "experiment.py::run_c(fp32=True, suffix='cfp32')",
+    "precision": "fp32",
+    "num_overlap": 2,
+    # Farklı olan tek şey: deneyin imajında librosa/ml_collections/tqdm da var
+    # ve MSST dosyaları o koşumda Volume'dan geliyordu (artık depodan).
+    # torch/numpy sürümleri aynı (2.5.1 / 1.26.4), yama içeriği aynı.
+    "notes": "ayni torch 2.5.1 + numpy 1.26.4; MSST dosyalari o kosumda Volume'dan",
+}
 
 
 def _pick_source_song(must_contain: str) -> tuple:
@@ -1103,24 +1126,73 @@ def hifi_smoke_run(song_id: str = "", must_contain: str = "HAZBIN",
         quant_step = scale * 2.0 ** -23
         snr_db = (round(20.0 * float(np.log10(rms_ours / rms_diff)), 1)
                   if rms_diff > 0 else 999.0)
+
+        # Kararın ÜÇ kademesi. 24-bit niceleme gürültüsü bu sinyalde ~120 dB
+        # SNR veriyor; 90 dB eşiği GPU'nun koşumlar arası belirlenimsizliğine
+        # de yer bırakıyor. 60-90 dB arası kulakla duyulmaz ama niceleme
+        # düzeyinin üstündedir: gerçek ama küçük bir fark var.
+        verdict_note = ""
+        if snr_db >= 90.0:
+            verdict = "ayni (FLAC niceleme duzeyinde)"
+            verdict_level = "ok"
+        elif snr_db >= 60.0:
+            verdict = ("fark duyulmaz duzeyde; deney GPU'su veya decode "
+                       "farkli olabilir")
+            verdict_level = "uyari"
+            # Bu bahane BURADA GEÇERSİZ ve bunu biliyoruz: deneydeki C-fp32
+            # da T4'te ve AYNI decode'la koştu (aşağıdaki reference_run).
+            if (REFERENCE_RUN["gpu"] == "T4"
+                    and REFERENCE_RUN["decode_identical"]):
+                verdict_note = (
+                    "AMA deney de T4'te ve ayni decode ile kostu, yani GPU/"
+                    "decode farki bu araligi ACIKLAMIYOR - sebep baska "
+                    "(vendored dosya, agirlik, overlap, precision?)"
+                )
+        else:
+            verdict = "FARK VAR"
+            verdict_level = "hata"
+
+        # Kestirilen ölçek = üretim/deney. Deney stem'leri clip_scale >= 1'e
+        # BÖLÜNMÜŞ kaydedildiği için deney/üretim oranı 1.0 ya da biraz altı
+        # olmak zorunda. 1.01'in üstü kazanç hatası demek (normalizasyon ya da
+        # ref_mean tarafı); 0.7'nin altı da şüpheli ama clip_scale büyük bir
+        # tepeden gelmiş olabilir.
+        ratio = round(1.0 / scale, 6) if scale > 0 else -1.0
+        scale_note = ""
+        if ratio < 0.0:
+            scale_level = "hata"
+            scale_note = "olcek kestirilemedi: referans sessiz ya da isaret ters"
+        elif ratio > 1.01:
+            scale_level = "hata"
+            scale_note = ("deney/uretim orani 1.01'in ustunde: normalizasyon "
+                          "ya da ref_mean tarafinda kazanc hatasi")
+        elif ratio < 0.7:
+            scale_level = "uyari"
+            scale_note = ("deney/uretim orani 0.7'nin altinda: clip_scale "
+                          "beklenenden buyuk, tepeler karsilastirilmali")
+        else:
+            scale_level = "ok"
+
         compare = {
             "found": True,
             "reference": reference_id,
             "reference_samplerate": int(reference_sr),
             "reference_samples": int(theirs.shape[1]),
             "length_match": bool(ours.shape[1] == theirs.shape[1]),
+            "reference_run": dict(REFERENCE_RUN),
             "clip_scale_estimated": round(scale, 6),
+            "ratio_reference_over_ours": ratio,
+            "scale_level": scale_level,
+            "scale_note": scale_note,
             "max_abs_diff": float(f"{max_diff:.3e}"),
             "rms_diff": float(f"{rms_diff:.3e}"),
             "snr_db": snr_db,
             "flac_quant_step": float(f"{quant_step:.3e}"),
             "max_diff_in_quant_steps": (round(max_diff / quant_step, 2)
                                         if quant_step > 0 else -1.0),
-            # 24-bit niceleme gürültüsü bu sinyalde ~120 dB SNR veriyor. 90 dB
-            # eşiği GPU'nun koşumlar arası belirlenimsizliğine de yer bırakıyor;
-            # altına düşerse gerçek bir fark var.
-            "verdict": ("ayni (FLAC niceleme duzeyinde)" if snr_db >= 90.0
-                        else "FARK VAR"),
+            "verdict": verdict,
+            "verdict_level": verdict_level,
+            "verdict_note": verdict_note,
         }
     else:
         compare = {
@@ -1179,14 +1251,29 @@ def hifi_smoke(song_id: str = "", must_contain: str = "HAZBIN",
     if compare.get("found"):
         if not compare.get("length_match"):
             problems.append("uzunluklar tutmuyor: parca izgarasi kaymis olabilir")
-        if str(compare.get("verdict", "")).startswith("FARK"):
-            problems.append(f"C-fp32 ile fark var: SNR {compare.get('snr_db')} dB, "
-                            f"max {compare.get('max_abs_diff')}")
+        # SNR üç kademeli: >=90 dB sessiz geç, 60-90 dB UYARI, altı HATA.
+        line = (f"C-fp32 ile SNR {compare.get('snr_db')} dB, max fark "
+                f"{compare.get('max_abs_diff')} -> {compare.get('verdict')}")
+        if compare.get("verdict_note"):
+            line += f" | {compare.get('verdict_note')}"
+        if compare.get("verdict_level") == "hata":
+            problems.append(line)
+        elif compare.get("verdict_level") == "uyari":
+            warnings.append(line)
+        # Ölçek: >1.01 HATA, <0.7 UYARI.
+        if compare.get("scale_note"):
+            scale_line = (f"deney/uretim orani "
+                          f"{compare.get('ratio_reference_over_ours')}: "
+                          f"{compare.get('scale_note')}")
+            if compare.get("scale_level") == "hata":
+                problems.append(scale_line)
+            else:
+                warnings.append(scale_line)
     else:
         warnings.append(f"karsilastirma yapilamadi: {compare.get('note')}")
     if report.get("sdpa_compat_calls") == 0:
-        warnings.append("yamali satir hic calismadi (flash dalina girilmemis): "
-                        "kosum gecerli ama yama SINANMADI")
+        warnings.append("flash kapali, yamali satir uretimde de calismiyor; "
+                        "yama gereksiz ama zararsiz")
     if not report.get("samplerate_channels_match_demucs"):
         warnings.append("konfig 44100/2 demiyor; uretimde uyusmazlik kontrolu "
                         "_hifi_vocals icinde yapiliyor")
@@ -1207,12 +1294,22 @@ def hifi_smoke(song_id: str = "", must_contain: str = "HAZBIN",
           f"(set_priority destegi: {report.get('set_priority_supported')})")
     print(f"yuklenen models/utils modulleri: {report.get('loaded_modules')}")
     if compare.get("found"):
+        run = compare.get("reference_run") or {}
+        print(f"referans kosumu: {run.get('entrypoint')} / GPU {run.get('gpu')} "
+              f"/ {run.get('precision')} / overlap {run.get('num_overlap')} / "
+              f"decode {'AYNI' if run.get('decode_identical') else 'FARKLI'}")
         print(f"C-fp32 karsilastirmasi ({compare.get('reference')}): "
               f"SNR {compare.get('snr_db')} dB, max fark "
               f"{compare.get('max_abs_diff')} = "
-              f"{compare.get('max_diff_in_quant_steps')} FLAC niceleme adimi, "
-              f"kestirilen olcek {compare.get('clip_scale_estimated')}")
+              f"{compare.get('max_diff_in_quant_steps')} FLAC niceleme adimi")
+        print(f"deney/uretim orani (en kucuk kareler): "
+              f"{compare.get('ratio_reference_over_ours')} "
+              f"[kestirilen clip_scale {compare.get('clip_scale_estimated')}, "
+              f"beklenen oran 1.0 ya da biraz alti] -> "
+              f"{compare.get('scale_level')}")
         print(f"karar: {compare.get('verdict')}")
+        if compare.get("verdict_note"):
+            print(f"       {compare.get('verdict_note')}")
     for line in warnings:
         print(f"UYARI: {line}")
     print("=" * 72)
