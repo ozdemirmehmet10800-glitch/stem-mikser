@@ -39,10 +39,13 @@ AAC_BITRATE = "160k"
 FLAC_SUBTYPE = "PCM_24"  # 24-bit kayıpsız master
 
 # --- Aşama 9: Hi-Fi vokal yolu ------------------------------------------
-# MSST (ZFTurbo, MIT) mimari dosyaları imajda; pinli commit.
+# MSST (ZFTurbo, MIT) mimari dosyaları DEPODA: backend/vendor/msst/.
+# Eskiden build sırasında curl ile iniyorlardı; temel imajda curl olmadığı
+# için build patlıyordu (exit 127) ve build'in ağa bağlı olmasının pinli bir
+# commit'te hiçbir faydası yok. Lisans/commit/yama notu: vendor/msst/README.md.
 MSST_SHA = "84b1eac0887756b4f1a9d7a1ff49105939749ed2"
-MSST_RAW = f"https://raw.githubusercontent.com/ZFTurbo/Music-Source-Separation-Training/{MSST_SHA}"
 MSST_DIR = "/msst"
+MSST_LOCAL = str(pathlib.Path(__file__).resolve().parent / "vendor" / "msst")
 # Ağırlık aynası. Orijinal sahip (jarredou) HF hesabini silmis; bu kopya
 # birebir ayni dosya (sha256 asagida). Ayrintili lisans notu NOTICE.md'de.
 HIFI_CKPT_URL = ("https://huggingface.co/enerjazzer/BS-ROFO-SW-Fixed/resolve/"
@@ -318,56 +321,6 @@ def _warm_weights():
     print(f"toplam agirlik: {total / 1024**2:.1f} MB")
 
 
-def _patch_msst_for_torch25():
-    """MSST'nin attend.py'sini torch 2.5.1 ile uyumlu hale getirir.
-
-    Pinli MSST commit'i `sdpa_kernel(..., set_priority=True)` çağırıyor;
-    bu kwarg torch 2.6'da eklendi. Torch YÜKSELTİLMİYOR: 2.5.1 demucs
-    yüzünden bilinçli pinli (2.6 torch.load varsayılanını
-    weights_only=True yaptı). Bayrak yalnızca arka uç öncelik ipucu -
-    matematiği değiştirmiyor, düşürülmesi sonucu etkilemiyor.
-
-    Yama tutmazsa HATA veriyor: sessizce yamasız kalıp çıkarımın ortasında
-    patlamasındansa build'de durması iyi.
-    """
-    import pathlib as _pathlib
-
-    path = _pathlib.Path(MSST_DIR) / "models" / "bs_roformer" / "attend.py"
-    source = path.read_text(encoding="utf-8")
-    call_old = (
-        "            with sdpa_kernel(INFERENCE_SDPA_BACKENDS, set_priority=True):"
-    )
-    call_new = "            with _sdpa_kernel_compat():"
-    anchor = "except ImportError:\n    _HAS_SDPA_KERNEL = False\n"
-    helper = '''
-
-def _sdpa_kernel_compat():
-    """sdpa_kernel'i set_priority olmadan da cagirabilen sarmalayici.
-
-    set_priority torch 2.6'da eklendi; burada torch 2.5.1 var. Bayrak
-    yalnizca arka uc oncelik ipucu, matematigi degistirmiyor.
-    (stem-mikser Asama 9 tarafindan build sirasinda eklendi.)
-    """
-    try:
-        return sdpa_kernel(INFERENCE_SDPA_BACKENDS, set_priority=True)
-    except TypeError:
-        return sdpa_kernel(INFERENCE_SDPA_BACKENDS)
-'''
-    if call_new in source:
-        print("[msst] attend.py zaten yamali")
-        return
-    if call_old not in source or anchor not in source:
-        raise ValueError(
-            f"attend.py beklenen bicimde degil - MSST commit {MSST_SHA} "
-            f"degismis olabilir, yama elden gecirilmeli"
-        )
-    source = source.replace(anchor, anchor + helper, 1)
-    source = source.replace(call_old, call_new, 1)
-    compile(source, str(path), "exec")
-    path.write_text(source, encoding="utf-8", newline="\n")
-    print("[msst] attend.py yamalandi (torch 2.5.1 uyumu)")
-
-
 separate_image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("ffmpeg")
@@ -395,22 +348,17 @@ separate_image = (
     # Hi-Fi vokal yolu (Aşama 9). librosa GEREKMİYOR: onu yalnız
     # mel_band_roformer istiyordu, o model elendi.
     .pip_install("beartype==0.19.0", "PyYAML==6.0.2")
-    .run_commands(
-        f"mkdir -p {MSST_DIR}/models/bs_roformer",
-        f"touch {MSST_DIR}/models/__init__.py {MSST_DIR}/models/bs_roformer/__init__.py",
-        *[
-            f"curl -sSfL {MSST_RAW}/models/bs_roformer/{name} "
-            f"-o {MSST_DIR}/models/bs_roformer/{name}"
-            for name in ("attend.py", "bs_roformer.py")
-        ],
-    )
-    .run_function(_patch_msst_for_torch25)
     # Ağırlıklar build'de bu iki yola inecek ve imaja gömülecek.
     .env({"HF_HOME": WEIGHTS_DIR, "TORCH_HOME": WEIGHTS_DIR})
     .run_function(_warm_weights)
     # Build'den SONRA offline'a al: soğuk başlangıçta sessizce yeniden indirme
     # olursa gürültüsüzce yavaşlamak yerine hata versin.
     .env({"HF_HUB_OFFLINE": "1"})
+    # MSST mimari dosyaları (MIT, pinli commit) depodan. copy=False bilinçli:
+    # dosyalar konteyner açılışında bağlanıyor, imaj katmanına girmiyor, yani
+    # burada bir şey değişse bile htdemucs ağırlığı yeniden indirilmiyor.
+    # Modal'da mount katmanından SONRA build adımı olamaz - bu yüzden en sonda.
+    .add_local_dir(MSST_LOCAL, MSST_DIR)
 )
 
 # Analiz imajı: torch YOK, GPU YOK. librosa 1.0.0 çıktı ama python>=3.12 +
