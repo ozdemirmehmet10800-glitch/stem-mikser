@@ -119,6 +119,29 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      tekrarlamak beklemeyi ikiye katlamaktan başka bir şey yapmıyor).
      Yeniden deneme yalnız ANINDA düşen bağlantı için duruyor.
 
+6.5 [x] **Önden indirme + telefon ölçümleri.** (2026-09-29)
+   **Telefonda ölçülen:** cihazda kayıtlı şarkılar **1-2 saniyede** açılıyor
+   (Karabasan, 558 sn: **6 sn**). İlk açılışta darboğaz **İNDİRME**
+   (~0.6-1.2 MB/sn), çözme değil.
+   - **Paralel çözme varsayılanı 3**, 6 seçeneği KALDIRILDI: telefonda 6'lı
+     çözmede toplam çözme işi 4 katına çıktı (8 sn → 32 sn). Masaüstünde duvar
+     saati kazanıyordu (2→2147, 3→1542, 6→1181 ms) ama telefonda çekirdekler
+     doyuyor.
+   - **Şarkı bitince ses ÖNDEN iniyor:** ayrıştırma bittiğinde (durum → done)
+     ya da Hi-Fi'a yükseltme bitince (aynı şarkının `stems_version`'ı
+     değişince), uygulama açıksa stem'ler arka planda cihaza indiriliyor.
+     Kitaplıkta "cihaza iniyor %X" + ince çubuk görünüyor. Kullanıcı bir şarkı
+     açarsa indirme **anında duraklıyor** (`AbortController`; yarım kalan stem
+     sonra baştan iniyor - telefonda bir stem 10-20 sn sürebildiği için "bir
+     sonraki stem'i bekle" çok kaba kalırdı) ve açılış bitince devam ediyor.
+     Kuyruğa yalnız GÖZÜN ÖNÜNDE biten şarkılar giriyor; açılışta bütün
+     kitaplığı indirmeye kalkmıyor.
+   - **Çevrimdışı önbellek sınırı 20 GB** (2 GB'dan). 256k'da şarkı başı
+     ~11.5 MB/dk, yani ~400 şarkı. Asıl tavan tarayıcının kotası.
+   - Yerelde doğrulandı (mock'a "ayrıştırma bitiyor" ve "yavaş stem" taklidi
+     eklendi): geçiş yakalanıyor, 6 stem kendiliğinden iniyor, yüzde ilerliyor,
+     başka şarkı açılınca %17'de duruyor ve açılış bitince %67'ye devam ediyor.
+
 ### Sırada
 7. [ ] **Piyano ve davulu Hi-Fi modelden (BS-RoFormer SW) almak.** SW 6
    stem'li bir model ve Hi-Fi yolunda ZATEN çalışıyor; şu an yalnız vokal
@@ -132,7 +155,15 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
    yalnız iki stem'de gözden geçirilmesi demek: C'nin iskeleti buna hazır
    (vokal gibi davul/piyano da B'den alınıp enstrümantalden çıkarılabilir,
    kalan stem'ler demucs'ta kalır).
-8. [ ] **Anında başlatma (önizleme dosyaları).** KOD YOK, plan.
+8. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
+
+### Sonra (şimdilik gerek yok)
+**Anında başlatma (önizleme dosyaları).** KOD YOK, plan. **ERTELENDİ
+(2026-09-29):** telefon ölçümünde cihazda kayıtlı şarkılar 1-2 saniyede
+(9 dakikalık şarkı 6 saniyede) açılıyor ve ilk açılıştaki darboğaz İNDİRME
+(~0.6-1.2 MB/sn), çözme değil. Önden indirme (madde 7) ilk açılış beklemesini
+de büyük ölçüde kaldırdığı için bu işin kazancı kalmadı. Plan duruyor,
+gerekirse buradan devam edilir.
 
    **Sunucu:** her stem için ilk 30 saniyeyi ayrı bir dosya olarak da üret
    (`stems/preview/<ad>.m4a`). Kesme `ffmpeg -c copy` ile, YENİDEN KODLAMA
@@ -164,7 +195,7 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
    **Bilinen risk:** esnetici açıkken düğümün içinde ~120 ms duyulmamış ses
    var; kaynak değişimi o boru hattının hesabını bozmamalı (Aşama 8'deki
    "yeniden çıpalama" kuralı burada da geçerli).
-9. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
+
 
 ### Kalite zinciri (2026-09-29 sonrası)
 | adım | format | kHz | kanal | derinlik/bit hızı |

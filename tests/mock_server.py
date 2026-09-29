@@ -49,6 +49,16 @@ SONG_ID_RE = re.compile(r"^[0-9a-f]{64}(-[a-z0-9]{1,12})?$")
 COLD_DELAY = 0.0
 _warm = {"done": False}
 
+# "Ayristirma yeni bitti" taklidi: bir sarki ilk N listelemede "separating"
+# gorunur, sonra "done" olur. On yuzun biten sarkiyi yakalayip sesi ONDEN
+# indirmeye baslamasi baska turlu denenemiyor.
+PENDING_POLLS = 0
+_pending = {"left": 0}
+
+# Stem servisini yavaslatma: telefondaki ~0.6-1.2 MB/sn'yi taklit etmek ve
+# ilerleme/duraklatma davranisini gorebilmek icin.
+STEM_DELAY = 0.0
+
 
 def cold_start_delay():
     if COLD_DELAY <= 0 or _warm["done"]:
@@ -250,18 +260,24 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/songs":
             if not self._authorized():
                 return
+            # Ilk sarki, --pending verildiyse birkac listelemede "isleniyor"
+            # gorunsun; sonraki listelemede "done" olsun.
+            pending_now = _pending["left"] > 0
+            if pending_now:
+                _pending["left"] -= 1
             songs = [
                 {
                     "id": song["status"]["id"],
                     "title": song["status"].get("title"),
-                    "state": "done",
+                    "state": ("separating" if (pending_now and index == 0)
+                              else "done"),
                     "duration": song["status"].get("duration"),
-                    "progress": 100,
+                    "progress": 40 if (pending_now and index == 0) else 100,
                     "created_at": song["status"].get("created_at"),
                     "stems_version": song["status"].get("stems_version"),
                     "quality": song["status"].get("quality"),
                 }
-                for song in find_songs()
+                for index, song in enumerate(find_songs())
             ]
             self._json(200, {"songs": songs})
             return
@@ -335,6 +351,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"detail": f"{filename} yok"})
             return
 
+        if STEM_DELAY and folder == "stems":
+            time.sleep(STEM_DELAY)
         data = path.read_bytes()
         size = len(data)
         header = self.headers.get("Range", "")
@@ -371,10 +389,17 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--cold", type=float, default=0.0,
                         help="ilk istegi bu kadar saniye beklet (soguk baslangic taklidi)")
+    parser.add_argument("--pending", type=int, default=0,
+                        help="ilk sarki bu kadar listelemede 'isleniyor' gorunsun")
+    parser.add_argument("--stem-delay", type=float, default=0.0,
+                        help="her stem istegini bu kadar saniye beklet (yavas ag taklidi)")
     args = parser.parse_args()
 
     global COLD_DELAY
     COLD_DELAY = args.cold
+    _pending["left"] = args.pending
+    global STEM_DELAY
+    STEM_DELAY = args.stem_delay
     if COLD_DELAY:
         print(f"Soguk baslangic taklidi: ilk istek {COLD_DELAY} sn gec")
 

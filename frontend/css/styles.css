@@ -138,6 +138,10 @@ html, body {
   user-select: none;
 }
 
+/* Arka planda cihaza inen şarkının çubuğu: işlenme çubuğundan ayrı renk,
+   ikisi aynı anda görünmüyor ama karışmasın. */
+.mini-progress.prefetch i { background: var(--text-faint); }
+
 /* Çevrimdışıyken cihazda kopyası olmayan şarkı: soluk ama TIKLANABİLİR -
    dokununca tek cümlelik açıklama veriyor, mikser açılmıyor. */
 .song-row.offline-missing { opacity: 0.42; }

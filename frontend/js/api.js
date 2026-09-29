@@ -91,6 +91,15 @@ export class Api {
       // sayaç iptal ediliyor, gövde okuma sınırsız.
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), RESPONSE_TIMEOUT_MS);
+      // Dışarıdan iptal (arka plan indirmesi duraklatılınca): gövde okunurken
+      // de geçerli, yoksa duraklatma bir sonraki stem'e kadar beklerdi -
+      // telefonda bir stem 10-20 saniye sürebiliyor.
+      const outside = options.signal;
+      const forward = () => controller.abort();
+      if (outside) {
+        if (outside.aborted) controller.abort();
+        else outside.addEventListener("abort", forward, { once: true });
+      }
       try {
         return await fetch(this.url + path, {
           ...options,
@@ -99,6 +108,7 @@ export class Api {
         });
       } finally {
         clearTimeout(timer);
+        if (outside) outside.removeEventListener("abort", forward);
       }
     };
 
@@ -172,8 +182,9 @@ export class Api {
     return (await this.#request(`/songs/${id}`)).json();
   }
 
-  async stemBuffer(id, name, onProgress) {
-    const response = await this.#request(`/songs/${id}/stems/${name}.m4a`);
+  async stemBuffer(id, name, onProgress, signal = null) {
+    const response = await this.#request(`/songs/${id}/stems/${name}.m4a`,
+                                         signal ? { signal } : {});
     const total = Number(response.headers.get("content-length")) || 0;
     if (!response.body || !total || !onProgress) {
       return response.arrayBuffer();

@@ -30,17 +30,22 @@ const KEY = "stem-mikser.settings";
 export const AUDIO_SAVE = "save";
 export const AUDIO_HIGH = "high";
 
-// Kaç stem aynı anda getirilip çözülsün? GEÇİCİ DENEY AYARI.
+// Kaç stem aynı anda getirilip çözülsün?
+//
 // Chrome decodeAudioData'yı worker havuzunda koşturuyor (base_audio_context.cc
-// -> worker_pool::PostTask), yani çağrılar gerçekten paralel. Bedeli bellek:
-// her çözme arka planda bir AudioBus üretiyor, sonra ana iş parçacığında
-// AudioBuffer'a KOPYALANIYOR; kopya bitene kadar ikisi birden bellekte.
-// Ayrıntılı hesap PLAN.md'de.
-export const DECODE_PARALLEL = [2, 3, 6];
+// -> worker_pool::PostTask), yani çağrılar gerçekten paralel. Bedeli iki türlü:
+// bellek (her çözme arka planda bir AudioBus üretip ana iş parçacığında
+// AudioBuffer'a kopyalıyor, kopya bitene kadar ikisi de bellekte) ve çekirdek
+// paylaşımı.
+//
+// 6 SEÇENEĞİ KALDIRILDI (telefon ölçümü): 6'lı çözmede telefonda toplam çözme
+// İŞİ 4 katına çıktı (8 sn -> 32 sn). Masaüstünde duvar saati kazanıyordu ama
+// telefonda çekirdekler doyuyor ve kazanç kayba dönüyor. Varsayılan 3.
+export const DECODE_PARALLEL = [2, 3];
 
 const DEFAULTS = {
   url: "", token: "", stretcher: "signalsmith", formants: false,
-  mobileAudio: AUDIO_HIGH, decodeParallel: 2,
+  mobileAudio: AUDIO_HIGH, decodeParallel: 3,
 };
 
 export function normalizeParallel(value) {

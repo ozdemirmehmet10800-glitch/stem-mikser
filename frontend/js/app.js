@@ -2,7 +2,7 @@
 // oynatıcının bağlanması.
 
 import {
-  loadSettings, saveSettings, isConfigured, DECODE_PARALLEL,
+  loadSettings, saveSettings, isConfigured, DECODE_PARALLEL, normalizeParallel,
 } from "./settings.js";
 import { Api, ApiError, isDefinitelyOffline } from "./api.js";
 import {
@@ -171,6 +171,9 @@ async function refreshLibrary() {
       markOnlineState(true);
       writeLibraryCache(songs);       // çevrimdışı açılış için cihazda dursun
       renderLibrary(songs);
+      // Biten ayrıştırmaları / Hi-Fi yükseltmelerini yakala ve sesi önceden
+      // indirmeye başla.
+      noteSongsForPrefetch(songs);
       if (songs.some((song) => song.state !== "done" && song.state !== "error")) {
         schedulePoll();
       }
@@ -504,6 +507,7 @@ function renderLibrary(songs) {
     bindLongPress(item, () => enterSelectMode(song.id));
 
     list.append(item);
+    if (prefetchProgress.has(song.id)) updatePrefetchRow(song.id);
   }
 }
 
@@ -799,12 +803,189 @@ function syncOfflineUi() {
 window.addEventListener("online", () => {
   serverReachable = true;
   syncOfflineUi();
+  runPrefetch();
   if (!views.library.hidden && isConfigured(settings)) refreshLibrary();
   else if (!views.library.hidden) renderLibrary(librarySongs);
 });
 window.addEventListener("offline", () => {
   markOnlineState(false);
 });
+
+// ------------------------------------------- arka planda stem indirme (önden)
+//
+// Telefon ölçümü: cihazda kayıtlı şarkı 1-2 saniyede (9 dakikalık şarkı 6 sn)
+// açılıyor; İLK açılışta darboğaz indirme (~0.6-1.2 MB/sn), çözme değil. Yani
+// beklemeyi bitirmenin yolu sesi ÖNCEDEN indirmek.
+//
+// Ne zaman: bir şarkının ayrıştırması bittiğinde (durum -> done) ya da
+// Hi-Fi'a yükseltme bitince (aynı şarkının stems_version'ı değişince) -
+// yani kullanıcı zaten uygulamayı açık tutup beklerken.
+//
+// Kullanıcı bir şarkı açarsa indirme DURAKLIYOR: açılıştaki indirmeyle
+// bant genişliği paylaşmak, beklenen şeyi yavaşlatmak demek. Duraklatma
+// AbortController ile anında; yarım kalan stem sonra baştan iniyor (bir
+// stem 2-10 MB, telefonda 10-20 saniye - "bir sonraki stem'i bekle" çok kaba
+// kalırdı).
+
+const prefetchQueue = [];          // [{id, title, version}]
+const prefetchQueued = new Set();  // kuyrukta ya da inen kimlikler
+const prefetchProgress = new Map(); // id -> {done, total, ratio}
+let prefetchRunning = false;
+let prefetchPaused = false;
+let prefetchAbort = null;
+// Kitaplıkta en son görülen durum: geçişi (bitti / sürüm değişti) yakalamak
+// için. İlk listede kuyruğa hiçbir şey eklenmiyor - açılışta bütün kitaplığı
+// indirmeye kalkmak istemiyoruz, yalnız GÖZÜMÜZÜN ÖNÜNDE biteni.
+const seenSongs = new Map();       // id -> {state, version}
+
+function noteSongsForPrefetch(songs) {
+  for (const song of songs) {
+    const id = song.id;
+    const version = Number(song.stems_version || 0);
+    const before = seenSongs.get(id);
+    seenSongs.set(id, { state: song.state, version });
+    if (!before) continue;                     // ilk görüş: geçiş sayılmaz
+    if (song.state !== "done") continue;
+    const finished = before.state !== "done";  // ayrıştırma bitti
+    const upgraded = before.version && version && before.version !== version;
+    if (finished || upgraded) enqueuePrefetch(song);
+  }
+}
+
+function enqueuePrefetch(song) {
+  if (!song || !song.id || prefetchQueued.has(song.id)) return;
+  if (isOffline()) return;
+  prefetchQueued.add(song.id);
+  prefetchQueue.push({
+    id: song.id,
+    title: song.title || song.id.slice(0, 12),
+    version: Number(song.stems_version || 0),
+  });
+  runPrefetch();
+}
+
+function pausePrefetch() {
+  prefetchPaused = true;
+  if (prefetchAbort) prefetchAbort.abort();
+}
+
+function resumePrefetch() {
+  prefetchPaused = false;
+  runPrefetch();
+}
+
+async function runPrefetch() {
+  if (prefetchRunning || prefetchPaused) return;
+  if (!prefetchQueue.length) return;
+  prefetchRunning = true;
+  try {
+    while (prefetchQueue.length && !prefetchPaused && !isOffline()) {
+      const item = prefetchQueue[0];
+      const ok = await prefetchSong(item);
+      if (!ok) break;              // duraklatıldı ya da hata: kuyrukta kalsın
+      prefetchQueue.shift();
+      prefetchQueued.delete(item.id);
+      prefetchProgress.delete(item.id);
+      updatePrefetchRow(item.id);
+    }
+  } finally {
+    prefetchRunning = false;
+  }
+}
+
+/** Tek şarkı. true = bitti, false = yarıda kaldı (kuyrukta kalmalı). */
+async function prefetchSong(item) {
+  try {
+    // Stem listesi cihazda yoksa bir kez sunucudan: küçük istek.
+    let meta = readMeta(item.id);
+    if (!meta || !meta.status || Number(meta.status.stems_version || 0) !== item.version) {
+      const detail = await api.getSong(item.id);
+      writeMeta(item.id, detail);
+      meta = readMeta(item.id);
+    }
+    const stems = (meta && meta.status && meta.status.stems) || STEM_ORDER;
+    const version = Number((meta && meta.status && meta.status.stems_version) || item.version);
+    if (stemCache.indexHas(item.id, stems, version)) return true;  // zaten var
+
+    prefetchProgress.set(item.id, { done: 0, total: stems.length, ratio: 0 });
+    updatePrefetchRow(item.id);
+
+    for (let i = 0; i < stems.length; i += 1) {
+      const name = stems[i];
+      if (prefetchPaused || isOffline()) return false;
+      if (await stemCache.get(item.id, name, version)) {
+        // Zaten cihazda: okuduğumuzu geri yazmıyoruz, sadece sayacı ilerlet.
+        prefetchProgress.set(item.id, { done: i + 1, total: stems.length, ratio: 0 });
+        updatePrefetchRow(item.id);
+        continue;
+      }
+      prefetchAbort = new AbortController();
+      try {
+        const buffer = await api.stemBuffer(item.id, name, (ratio) => {
+          const entry = prefetchProgress.get(item.id);
+          if (entry) {
+            entry.ratio = ratio;
+            updatePrefetchRow(item.id);
+          }
+        }, prefetchAbort.signal);
+        await stemCache.put(item.id, name, buffer, version);
+      } finally {
+        prefetchAbort = null;
+      }
+      prefetchProgress.set(item.id, { done: i + 1, total: stems.length, ratio: 0 });
+      updatePrefetchRow(item.id);
+    }
+    console.info(`[onden] ${item.title} cihaza indi (${stems.length} kanal)`);
+    return true;
+  } catch (error) {
+    // Duraklatma da buraya düşüyor (AbortError). Sessizce bırakıyoruz:
+    // önden indirme bir kolaylık, hata mesajı göstermeye değmez.
+    if (!prefetchPaused) {
+      console.info(`[onden] ${item.title} indirilemedi: `
+        + `${error && error.message ? error.message : error}`);
+      // Ağ sorunu ise kuyrukta bırakıp duruyoruz; kullanıcı yenileyince ya da
+      // bağlantı gelince yeniden denenecek.
+      return false;
+    }
+    return false;
+  }
+}
+
+// Satırı yerinde güncelliyoruz: bütün listeyi yeniden çizmek her yüzde
+// değişiminde seçim modunu ve kaydırma konumunu hırpalardı.
+function updatePrefetchRow(songId) {
+  const row = el("song-list") && el("song-list").querySelector(`[data-id="${songId}"]`);
+  if (!row) return;
+  const sub = row.querySelector(".song-sub");
+  const entry = prefetchProgress.get(songId);
+  if (!entry) {
+    if (sub && sub.dataset.original) {
+      sub.textContent = sub.dataset.original;
+      delete sub.dataset.original;
+    }
+    const bar = row.querySelector(".mini-progress.prefetch");
+    if (bar) bar.remove();
+    return;
+  }
+  const percent = Math.min(
+    99,
+    Math.round(((entry.done + entry.ratio) / entry.total) * 100)
+  );
+  if (sub) {
+    if (!sub.dataset.original) sub.dataset.original = sub.textContent;
+    sub.textContent = `${sub.dataset.original} · cihaza iniyor %${percent}`;
+  }
+  let bar = row.querySelector(".mini-progress.prefetch");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.className = "mini-progress prefetch";
+    bar.append(document.createElement("i"));
+    const info = row.querySelector(".song-info");
+    if (info) info.append(bar);
+  }
+  const fill = bar.querySelector("i");
+  if (fill) fill.style.width = `${Math.max(percent, 3)}%`;
+}
 
 // Bellekte duran şarkının kimliği: hızlı yolun kapısı.
 let loadedState = null;   // {id, stemsVersion, audioMode}
@@ -890,6 +1071,9 @@ function openTimer() {
 
 async function openSong(song) {
   const timer = openTimer();
+  // Arka plan indirmesi kullanıcının beklediği indirmeyle bant genişliği
+  // paylaşmasın.
+  pausePrefetch();
 
   // HIZLI YOL: aynı şarkı, aynı sürüm, aynı kalite kipi ve tamponlar hâlâ
   // bellekte. İndirme de çözme de yok, oynatıcı olduğu gibi duruyor -
@@ -899,6 +1083,7 @@ async function openSong(song) {
     pushLayer("view");
     lastPositionSync = -1;
     startLoop();
+    resumePrefetch();   // hızlı yolda indirme yapılmadı, hemen devam
     timer.done("hizli acilis (bellekte)", {
       source: "bellek", concurrency: 0,
       duration: Number(song.duration) || 0,
@@ -1055,6 +1240,7 @@ async function openSong(song) {
       id: song.id, stemsVersion, audioMode: engine.audioMode,
     };
     timer.mark("arayuz");
+    resumePrefetch();
     timer.done(cachedOk ? "tam yukleme (bilgi cihazdan)" : "tam yukleme", {
       source: fromCache === stems.length ? "cihaz"
         : (fromCache === 0 ? "ağ" : `karışık ${fromCache}/${stems.length}`),
@@ -1092,6 +1278,7 @@ async function openSong(song) {
       showView("library");
       await refreshLibrary();
     }
+    resumePrefetch();
   }
 }
 
@@ -1612,10 +1799,13 @@ function buildParallelOptions() {
   const select = el("setting-parallel");
   if (!select) return;
   select.innerHTML = "";
+  // "Varsayılan" etiketi settings.js'teki değerden geliyor, elle yazılmıyor:
+  // varsayılan değişince etiket de değişsin.
+  const fallback = normalizeParallel(undefined);
   for (const value of DECODE_PARALLEL) {
     const option = document.createElement("option");
     option.value = String(value);
-    option.textContent = value === 2 ? `${value} (varsayılan)` : String(value);
+    option.textContent = value === fallback ? `${value} (varsayılan)` : String(value);
     select.append(option);
   }
 }

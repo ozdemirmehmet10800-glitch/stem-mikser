@@ -12,14 +12,15 @@
 // zamanları localStorage'da: Cache Storage kendi başına "ne zaman okundu"
 // bilgisini tutmuyor.
 //
-// Sınır 300 MB'dan 2 GB'a çıkarıldı: telefon depolaması bol ve stem'ler 256k
-// olunca şarkı başı ~11.5 MB/dk (6 kanal). 2 GB ~40 şarkı demek; 300 MB
-// altı şarkıda kalıyordu ve çevrimdışı kopyalar boşuna düşüyordu.
+// Sınır 300 MB -> 2 GB -> 20 GB. Telefon depolaması bol; stem'ler 256k
+// olunca şarkı başı ~11.5 MB/dk (6 kanal), yani 20 GB ~400 şarkı demek.
+// Asıl tavan artık tarayıcının kendi kotası: dolarsa put sessizce vazgeçiyor
+// ve uygulama ağdan çalışmaya devam ediyor.
 // Tarayıcının kendi kotası ayrı bir tavan: dolarsa put sessizce vazgeçiyor.
 
 const CACHE_NAME = "stem-mikser-stems-v1";
 const INDEX_KEY = "stem-mikser.stemcache";
-const MAX_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_BYTES = 20 * 1024 * 1024 * 1024;
 
 function loadIndex() {
   try {
