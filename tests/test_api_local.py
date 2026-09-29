@@ -283,10 +283,140 @@ def test_vendored_msst(app):
     check("hifi_smoke_run fonksiyonu kayitli",
           "hifi_smoke_run" in app.app.registered_functions)
 
+
+def test_song_id_validation(app):
+    """Silme uclarinin kimlik dogrulamasi.
+
+    Asil derdi: "../" gibi bir kimlikle sarki klasoru DISINA, ozellikle model
+    agirliklarina (/data/weights) ulasilamamasi. Silme ozyinelemeli oldugu icin
+    burada bir kacak pahaliya gelir.
+    """
+    import pathlib
+
+    valid = "a" * 64
+    check("64 hex kimlik gecerli", app._is_valid_song_id(valid))
+    check("gercekci sha256 gecerli",
+          app._is_valid_song_id(
+              "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"))
+    check("deney eki gecerli (-cfp32)", app._is_valid_song_id(valid + "-cfp32"))
+
+    # --- yol kacisi denemeleri: HEPSI reddedilmeli --------------------------
+    escapes = [
+        "..",
+        "../",
+        "../..",
+        "../weights",
+        "../../weights",
+        "../weights/bs_roformer_sw.ckpt",
+        f"{valid}/../../weights",
+        f"{valid}/..",
+        "songs/../weights",
+        "/data/weights",
+        "/data/songs/" + valid,
+        "\\..\\weights",
+        "..\\..\\weights",
+        ".",
+        "./" + valid,
+        valid + "/",
+        valid + "/.",
+        # yuzde kodlu haller: uvicorn yolu cozdukten SONRA bunlar gelir
+        "%2e%2e%2fweights",
+        "..%2fweights",
+        # null bayt ve satir sonu ile kandirma
+        valid + "\x00../weights",
+        valid + "\n../weights",
+        valid + "\x00",
+        # baska kabuller
+        "",
+        " ",
+        " " + valid,
+        valid + " ",
+        valid.upper(),                      # buyuk harf yok
+        "g" * 64,                           # hex olmayan harf
+        "a" * 63,                           # kisa
+        "a" * 65,                           # uzun
+        valid + "-",                        # bos ek
+        valid + "-" + "x" * 13,             # cok uzun ek
+        valid + "-CFP32",                   # ekte buyuk harf
+        valid + "-c.p32",                   # ekte nokta
+        valid + "--cfp32",
+        "weights",
+        "songs",
+        "*",
+        "~",
+        "$HOME",
+    ]
+    bad = [item for item in escapes if app._is_valid_song_id(item)]
+    check(f"{len(escapes)} kacis denemesi reddedildi", not bad, str(bad))
+
+    # Tip karismasi: None/int/liste/bayt dizisi de reddedilmeli.
+    others = [None, 0, 1, 3.5, True, [], {}, b"a" * 64, ("a",)]
+    bad = [repr(item) for item in others if app._is_valid_song_id(item)]
+    check("str olmayan kimlikler reddedildi", not bad, str(bad))
+
+    # --- _safe_song_dir: gecerli kimlikte dogru yol, digerlerinde ValueError -
+    songs_root = pathlib.Path(app.DATA_DIR) / "songs"
+    resolved = app._safe_song_dir(valid)
+    check("gecerli kimlikte dogru klasor",
+          resolved == (songs_root / valid).resolve(), str(resolved))
+    check("sonuc /data/songs altinda",
+          songs_root.resolve() in resolved.parents, str(resolved))
+
+    leaked = []
+    for item in escapes + others:
+        try:
+            got = app._safe_song_dir(item)
+        except ValueError:
+            continue
+        leaked.append(f"{item!r} -> {got}")
+    check("kacis denemelerinde _safe_song_dir ValueError atti", not leaked,
+          str(leaked))
+
+    # Agirliklara ulasan bir yol URETILEMEDIGI de ayrica soylensin: silme
+    # cagrisi volume yolunu f"songs/{id}" diye kuruyor, kimlik icinde ".."
+    # olmadigi icin o dize de /weights'e cikamiyor.
+    weights = pathlib.Path(app.WEIGHTS_DIR).resolve()
+    reachable = []
+    for item in escapes:
+        try:
+            got = app._safe_song_dir(item)
+        except ValueError:
+            continue
+        if got == weights or weights in got.parents or got in weights.parents:
+            reachable.append(f"{item!r} -> {got}")
+    check("hicbir kimlik /weights'e ulasmiyor", not reachable, str(reachable))
+
+
+def test_delete_block_reason(app):
+    """Islenmekte olan sarki silinemez, biten silinebilir."""
+    check("queued engelli", bool(app._delete_block_reason({"state": "queued"})))
+    check("separating engelli",
+          bool(app._delete_block_reason({"state": "separating"})))
+    check("analyzing engelli",
+          bool(app._delete_block_reason({"state": "analyzing"})))
+    check("done serbest", app._delete_block_reason({"state": "done"}) is None)
+    check("error serbest", app._delete_block_reason({"state": "error"}) is None)
+    check("durum yoksa serbest", app._delete_block_reason(None) is None)
+    check("bos sozluk serbest", app._delete_block_reason({}) is None)
+    check("bilinmeyen durum serbest",
+          app._delete_block_reason({"state": "zamazingo"}) is None)
+
+    message = app._delete_block_reason({"state": "separating"})
+    check("engel mesaji anlasilir",
+          "silinemez" in message.lower() and "bekle" in message.lower(),
+          message)
+
+    check("BUSY_STATES done/error icermiyor",
+          "done" not in app.BUSY_STATES and "error" not in app.BUSY_STATES)
+    check("coklu silme siniri makul",
+          isinstance(app.MAX_DELETE_IDS, int) and 1 < app.MAX_DELETE_IDS <= 1000,
+          str(app.MAX_DELETE_IDS))
+
 def main():
     app = load_app()
     for test in (test_parse_range, test_signature, test_gate, test_constants,
-                 test_vendored_msst):
+                 test_vendored_msst, test_song_id_validation,
+                 test_delete_block_reason):
         print(f"\n--- {test.__name__} ---")
         test(app)
     print(f"\n{'=' * 60}")

@@ -18,6 +18,7 @@ import hmac
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -381,6 +382,67 @@ app = modal.App(APP_NAME)
 
 def _song_dir(song_id: str) -> pathlib.Path:
     return pathlib.Path(DATA_DIR) / "songs" / song_id
+
+
+# --------------------------------------------------------------------------
+# Şarkı kimliği doğrulaması
+#
+# Kimlik, yüklenen dosyanın sha256'sı: 64 küçük harf onaltılık. Deney
+# çıktılarının kimliği aynı hash + kısa bir ek (`...-cfp32`), onlar da
+# kitaplıkta görünebiliyor (bkz. experiment.py), o yüzden ek de kabul edilir.
+#
+# Desen NOKTA, EĞİK ÇİZGİ ve ters eğik çizgiyi HİÇ kabul etmiyor - "..",
+# "../", "%2e%2e" çözülmüş hali, mutlak yol, null bayt, hepsi eleniyor. Silme
+# uçları model ağırlıklarına (/data/weights) ya da Volume'un başka bir yerine
+# ASLA ulaşamasın; tek dosya silmek yerine bir dizini özyinelemeli silen bir
+# uçta bunun bedeli ağır olurdu. `_safe_song_dir` ayrıca sonucun gerçekten
+# /data/songs altında kaldığını da doğruluyor: desen bir gün gevşetilirse
+# ikinci kapı devrede kalsın.
+# --------------------------------------------------------------------------
+SONG_ID_RE = re.compile(r"^[0-9a-f]{64}(-[a-z0-9]{1,12})?$")
+
+# Bu durumlarda silinmiyor: ayrıştırma ya da Hi-Fi yükseltmesi sürüyor.
+# Sadece kullanıcıyı korumak için değil - süren `separate` girdisini
+# bulamayınca status.json'a "error" yazar ve kitaplıkta boş bir şarkı
+# canlanırdı.
+BUSY_STATES = ("queued", "separating", "analyzing")
+
+# Çoklu silmede tek istekteki üst sınır. Tek kullanıcılı bir sistemde bunu
+# aşmak kullanıcı hatasıdır; sınır, kazayla tüm kitaplığı tek istekte silen
+# bir hatayı da yakalar.
+MAX_DELETE_IDS = 200
+
+
+def _is_valid_song_id(song_id) -> bool:
+    return isinstance(song_id, str) and bool(SONG_ID_RE.match(song_id))
+
+
+def _safe_song_dir(song_id: str) -> pathlib.Path:
+    """Kimliği doğrulayıp şarkı klasörünü döndürür.
+
+    Geçersiz kimlikte ya da (olmaması gereken bir durumda) sonuç
+    /data/songs dışına çıkarsa ValueError atar.
+    """
+    if not _is_valid_song_id(song_id):
+        raise ValueError(f"gecersiz sarki kimligi: {str(song_id)[:80]!r}")
+    root = (pathlib.Path(DATA_DIR) / "songs").resolve()
+    target = (root / song_id).resolve()
+    if target != root / song_id or root not in target.parents:
+        raise ValueError(f"sarki klasoru /data/songs disina cikiyor: {target}")
+    return target
+
+
+def _delete_block_reason(status):
+    """Silmeyi engelleyen bir durum varsa açıklamasını döndürür."""
+    if not status:
+        return None
+    state = str(status.get("state") or "")
+    if state in BUSY_STATES:
+        labels = {"queued": "sirada bekliyor", "separating": "ayristiriliyor",
+                  "analyzing": "analiz ediliyor"}
+        return (f"Sarki islenirken silinemez ({labels.get(state, state)}). "
+                "Bitmesini bekleyip tekrar dene.")
+    return None
 
 
 def _read_status(song_id: str):
@@ -2516,6 +2578,10 @@ def api():
         return json.loads(raw.decode("utf-8"))
 
     async def require_status(song_id: str) -> dict:
+        # Kimlik doğrulaması BURADA, yani yol parametresi alan her uçta:
+        # geçersiz bir kimlik dosya sistemine hiç dokunmadan eleniyor.
+        if not _is_valid_song_id(song_id):
+            raise HTTPException(status_code=400, detail="Gecersiz sarki kimligi")
         status = await load_status(song_id)
         if status is None:
             await gate.refresh(force=True)
@@ -2793,13 +2859,98 @@ def api():
         call = analyze.spawn(song_id, beats)
         return {"id": song_id, "call_id": str(call.object_id), "state": "analyzing"}
 
+    # Silme: tek şarkı ve çoklu. İkisi de aynı yardımcıdan geçiyor.
+    #
+    # `outcome` alanı: deleted | not_found | busy | invalid
+    # Olmayan bir kimliği silmek HATA DEĞİL: kullanıcı iki cihazdan aynı
+    # şarkıyı silmiş olabilir, ya da liste bayattır. İstenen sonuç zaten
+    # gerçekleşmiş durumda.
+    async def remove_one(song_id: str, commit: bool = True) -> dict:
+        try:
+            song_dir = _safe_song_dir(song_id)
+        except ValueError as error:
+            print(f"[sil] REDDEDILDI: {error}")
+            return {"id": str(song_id)[:80], "outcome": "invalid",
+                    "detail": "Gecersiz sarki kimligi"}
+
+        status = await load_status(song_id)
+        if status is None:
+            # Liste bayat olabilir; silmeden önce bir kez tazeleyip bakıyoruz.
+            await gate.refresh(force=True)
+            status = await load_status(song_id)
+        exists = status is not None or await asyncio.to_thread(song_dir.is_dir)
+        if not exists:
+            return {"id": song_id, "outcome": "not_found"}
+
+        reason = _delete_block_reason(status)
+        if reason:
+            return {"id": song_id, "outcome": "busy", "detail": reason,
+                    "state": str((status or {}).get("state") or "")}
+
+        title = str((status or {}).get("title") or "")
+        try:
+            # Klasörün TAMAMI gidiyor: stems/, master/ (FLAC asıllar),
+            # status.json, chords.json, beats.json, input.* - yani kütüphane
+            # kaydı da. Hash'e bağlı başka bir kayıt yok (kitaplık listesi
+            # klasörleri tarayarak üretiliyor), dolayısıyla aynı dosya
+            # yeniden yüklenirse sıfırdan işlenir.
+            await volume.remove_file.aio(f"songs/{song_id}", recursive=True)
+        except FileNotFoundError:
+            return {"id": song_id, "outcome": "not_found"}
+        if commit:
+            await volume.commit.aio()
+            await gate.refresh(force=True)
+        print(f"[sil] {song_id} ({title})")
+        return {"id": song_id, "outcome": "deleted", "title": title}
+
     @web.delete("/songs/{song_id}")
     async def delete_song(song_id: str, _=auth):
-        await require_status(song_id)
-        await volume.remove_file.aio(f"songs/{song_id}", recursive=True)
-        await volume.commit.aio()
-        await gate.refresh(force=True)
-        return JSONResponse({"id": song_id, "deleted": True})
+        result = await remove_one(song_id)
+        if result["outcome"] == "invalid":
+            raise HTTPException(status_code=400, detail=result["detail"])
+        if result["outcome"] == "busy":
+            raise HTTPException(status_code=409, detail=result["detail"])
+        return JSONResponse({
+            "id": result["id"],
+            "deleted": result["outcome"] == "deleted",
+            "outcome": result["outcome"],
+        })
+
+    @web.post("/songs/delete")
+    async def delete_songs(request: Request, _=auth):
+        """Çoklu silme. Gövde: {"ids": [...]}.
+
+        Kısmi başarı normal sayılıyor: her kimlik için ayrı `outcome`
+        dönüyor, HTTP durumu 200. Tek tek istek atmak yerine tek istek
+        olmasının sebebi Volume: commit ve reload silme başına değil, sonunda
+        BİR KEZ yapılıyor.
+        """
+        try:
+            body = await request.json()
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Govde JSON olmali")
+        ids = body.get("ids") if isinstance(body, dict) else None
+        if not isinstance(ids, list) or not ids:
+            raise HTTPException(status_code=400, detail="ids listesi gerekli")
+        if len(ids) > MAX_DELETE_IDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tek istekte en fazla {MAX_DELETE_IDS} sarki silinebilir",
+            )
+
+        results = []
+        for song_id in ids:
+            results.append(await remove_one(song_id, commit=False))
+
+        if any(item["outcome"] == "deleted" for item in results):
+            await volume.commit.aio()
+            await gate.refresh(force=True)
+
+        counts = {}
+        for item in results:
+            counts[item["outcome"]] = counts.get(item["outcome"], 0) + 1
+        return {"results": results, "counts": counts,
+                "deleted": counts.get("deleted", 0)}
 
     return web
 
