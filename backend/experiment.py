@@ -1860,39 +1860,91 @@ def delete_experiment_songs(ids: list) -> dict:
     return {"removed": removed, "count": len(removed)}
 
 
+@app.function(image=fetch_image, volumes={DATA_DIR: volume}, timeout=300)
+def stale_msst(delete: bool = False) -> dict:
+    """Volume'da kalmış ÖLÜ MSST kopyasını bildirir, istenirse siler.
+
+    MSST mimari dosyaları artık depoda (`backend/vendor/msst`) ve imaja
+    `add_local_dir` ile giriyor; `_msst_path()` /msst'yi döndürüyor. Eski
+    koşumlardan kalan `weights-exp/msst` hiçbir yerden okunmuyor.
+
+    AĞIRLIKLARA DOKUNMUYOR (`bs_roformer_sw.ckpt`/`.yaml`,
+    `melband_vocals.*`): deney yeniden koşarsa onlar gerekiyor ve 1.6 GB'ı
+    tekrar indirmek anlamsız.
+    """
+    volume.reload()
+    target = pathlib.Path(EXP_WEIGHTS) / "msst"
+    if not target.is_dir():
+        return {"exists": False, "path": str(target), "files": 0, "bytes": 0,
+                "deleted": False}
+
+    files = [item for item in target.rglob("*") if item.is_file()]
+    report = {
+        "exists": True,
+        "path": str(target),
+        "files": len(files),
+        "bytes": int(sum(item.stat().st_size for item in files)),
+        "deleted": False,
+    }
+    if delete:
+        shutil.rmtree(target, ignore_errors=True)
+        volume.commit()
+        report["deleted"] = bool(not target.exists())
+        print(f"[sil] {target} ({report['files']} dosya, {report['bytes']} bayt)")
+    return report
+
+
 @app.local_entrypoint()
 def cleanup(yes: bool = False):
-    """Deney çıktılarını kitaplıktan temizler.
+    """Deney çıktılarını ve Volume'daki ölü MSST kopyasını temizler.
 
         modal run backend/experiment.py::cleanup            # yalnız listeler
         modal run backend/experiment.py::cleanup --yes      # siler
 
-    Orijinal şarkılara dokunmuyor.
+    Orijinal şarkılara ve deney ağırlıklarına dokunmuyor.
     """
     found = list_experiment_songs.remote()
-    if not found:
-        print("Silinecek deney ciktisi yok.")
-        return
+    stale = stale_msst.remote()
 
-    total = sum(item["bytes"] for item in found)
-    sources = {item["source_song"] for item in found}
     print("")
-    print(f"{len(found)} deney ciktisi bulundu ({total / 1024**2:.0f} MB):")
-    print("")
-    for item in found:
-        print(f"  {item['id'][:20]:<22} {item['title'][:46]:<48} "
-              f"{item['bytes'] / 1024**2:>7.1f} MB")
-    print("")
-    print(f"  (kaynak sarkilar: {len(sources)} tane, DOKUNULMAYACAK)")
+    if found:
+        total = sum(item["bytes"] for item in found)
+        sources = {item["source_song"] for item in found}
+        print(f"{len(found)} deney ciktisi bulundu ({total / 1024**2:.0f} MB):")
+        print("")
+        for item in found:
+            print(f"  {item['id'][:20]:<22} {item['title'][:46]:<48} "
+                  f"{item['bytes'] / 1024**2:>7.1f} MB")
+        print("")
+        print(f"  (kaynak sarkilar: {len(sources)} tane, DOKUNULMAYACAK)")
+    else:
+        print("Silinecek deney ciktisi yok.")
+
+    if stale["exists"]:
+        print("")
+        print(f"Olu MSST kopyasi: {stale['path']}")
+        print(f"  {stale['files']} dosya, {stale['bytes'] / 1024:.0f} KB - "
+              "mimari dosyalar artik depodan (vendor/msst) geliyor, "
+              "bu kopya hicbir yerden okunmuyor")
+        print("  (deney agirliklari .ckpt/.yaml DOKUNULMAYACAK)")
+
+    if not found and not stale["exists"]:
+        print("")
+        print("Temizlenecek bir sey yok.")
+        return
 
     if not yes:
         print("")
         print("Silmek icin: modal run backend/experiment.py::cleanup --yes")
         return
 
-    result = delete_experiment_songs.remote([item["id"] for item in found])
     print("")
-    print(f"{result['count']} klasor silindi.")
+    if found:
+        result = delete_experiment_songs.remote([item["id"] for item in found])
+        print(f"{result['count']} deney klasoru silindi.")
+    if stale["exists"]:
+        done = stale_msst.remote(delete=True)
+        print(f"Olu MSST kopyasi silindi: {done['deleted']}")
 
 
 @app.local_entrypoint()

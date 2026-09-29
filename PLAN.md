@@ -18,6 +18,9 @@ Bu metni proje köküne PLAN.md olarak kaydet. Her yeni oturumda önce PLAN.md'y
 ## SIRADAKİ İŞLER (bu sırayla)
 Her oturumun başında buraya bak. Ayrıntılar ilgili aşama bölümlerinde.
 
+**Aşama 9 (Hi-Fi) KAPANDI** - 2026-09-29, telefonda doğrulandı. Hi-Fi tarafına
+dokunan her değişiklikten sonra deploy'dan ÖNCE: `modal run backend/app.py::hifi_smoke`.
+
 0. [x] **MSST dosyaları depoya alındı.** `backend/vendor/msst/` (MIT, pinli
    commit `84b1eac...`), imaja `add_local_dir` ile giriyor. Build'de artık ağ
    erişimi yok; `curl` olmadığı için patlayan `fetch_hifi` build'i bu yüzden
@@ -508,7 +511,7 @@ Signalsmith WASM ile geliyor. İki katman:
 Signalsmith de yetmezse SoundTouch'ta `overlapMs: 12` denemesi duruyor -
 tek satır, `stretchers.js` içindeki `STRETCH_QUALITY`.
 
-## Aşama 9 – Hi-Fi modu — CANLIDA (varsayılan)
+## Aşama 9 – Hi-Fi modu — KAPANDI (varsayılan, telefonda doğrulandı)
 Öncelik 3. Yüklerken seçilir, `status.json`'a yazılır.
 
 ### Seçenekler ve ÖLÇÜLEN maliyete dayalı tahmin
@@ -822,15 +825,40 @@ ensemble'ı kullanıyor (`htdemucs_ft` dahil). Bizde vokal için E denendi;
 aynı fikir enstrümanlara da uygulanabilir. GPU süresi modelle doğrusal
 arttığı için maliyeti ayrıca ölçülmeli.
 
-### Hâlâ ölçülmemiş, deneyin cevaplayacağı
+### Deneyin cevapladığı sorular (artık açık değil)
 - Roformer'ın T4'teki süresi (Demucs'a EK geliyor, yerine geçmiyor).
 - Enstrümantali `htdemucs_6s`'e vermek gitar/piyano kalitesini bozuyor mu?
   Vokal artığı kalmadığı için iyileşmesi de mümkün, kötüleşmesi de.
 - B tek modelle 6 stem'i A'nın iki aşamasından iyi mi?
 - B-max'in (8 örtüşme + TTA) ek maliyeti kaliteyi hak ediyor mu?
 
-Karar **kulak testinden sonra**; entegrasyon (yükleme ekranında
-Standart/Hi-Fi seçeneği vb.) ayrıca planlanacak.
+Cevaplar: Roformer T4'te ~53 GPU saniyesi (110 sn'lik şarkı, toplam 95 sn
+duvar saati) - Demucs'a EK geliyor. Enstrümantali `htdemucs_6s`'e vermek
+gitar/piyanoyu BOZMADI; aynı iskeleti kullanan A'nın kulak testinde gitar
+orijinalden daha net çıktı. B tek modelle A'nın iki aşamasından İYİ DEĞİL
+(bas ve gitar kayboluyor). B-max'in ek maliyeti kaliteyi hak etmiyor: 5 kat
+süre, tutarlı fark yok, bir şarkıda cızırtı.
+
+### KAPANIŞ (2026-09-29, telefonda doğrulandı)
+**Aşama 9 KAPANDI.** Hi-Fi varsayılan olarak canlıda; telefon testi geçti:
+
+| kontrol | sonuç |
+|---|---|
+| Hi-Fi ile yeni yükleme | geçti |
+| Standart ile yükleme | geçti |
+| eski şarkıda "Hi-Fi'a yükselt" (`reprocess`) | geçti |
+| cızırtı (vokal/other kapalı) | yok |
+
+Deploy öncesi kapı olarak `modal run backend/app.py::hifi_smoke` eklendi:
+üretim imajı, T4 ve Volume ile tam vokal yolunu koşturuyor (Volume'a
+YAZMIYOR), deneydeki `[C-fp32]` vokaliyle SNR ve ölçek karşılaştırması yapıyor,
+vendored `attend.py` yamasının gerçekten çalıştığını çağrı sayarak kanıtlıyor
+ve canlı yolun `mel_band_roformer`/`utils.model_utils` import ETMEDİĞİNİ
+doğruluyor. Yerelde torch olmadığı için bu yolu başka hiçbir test
+çalıştırmıyor - Hi-Fi tarafına dokunan her değişiklikten sonra bu koşulmalı.
+
+Açık iş kalmadı. İleride denenecekler yukarıdaki "İLERİDE denenecek"
+başlığında (davulu/piyanoyu da B'den almak, enstrümanlar için ensemble).
 
 ## Aşama 10 – Ek ayrıştırma (araştırma sonucu)
 Öncelik 4. **Gerçekçi kapsam beklenenden dar.**
