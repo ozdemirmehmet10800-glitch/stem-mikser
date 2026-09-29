@@ -353,7 +353,7 @@ input[type="range"]::-moz-range-thumb {
   font-variant-numeric: tabular-nums; font-size: 11px;
   color: var(--text-faint); min-width: 52px;
 }
-.transport-right { display: flex; justify-content: flex-end; }
+.transport-right { display: flex; justify-content: flex-end; gap: 8px; }
 
 .play-btn {
   width: 56px; height: 56px;
@@ -514,6 +514,23 @@ input[type="range"]::-moz-range-thumb {
 }
 .check input { width: 20px; height: 20px; accent-color: var(--accent); }
 .check input:disabled + span { color: var(--text-faint); }
+
+/* ---------- kalite seçimi ve etiketi ---------- */
+
+.quality-pick { display: flex; align-items: center; gap: 8px; }
+.quality-pick > span { font-size: 12px; color: var(--text-dim); }
+.quality-pick select {
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 10px 12px; font: inherit; min-height: 44px;
+}
+.quality-tag {
+  display: inline-block; margin-left: 8px; padding: 1px 7px;
+  border-radius: 999px; font-size: 10px; font-weight: 700;
+  letter-spacing: 0.02em; vertical-align: middle;
+}
+.quality-tag.hifi { background: rgba(34, 211, 238, 0.16); color: var(--accent); }
+.quality-tag.standard { background: rgba(139, 149, 165, 0.16); color: var(--text-dim); }
 
 /* ---------- hiza testi ---------- */
 

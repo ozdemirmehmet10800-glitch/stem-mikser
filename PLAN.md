@@ -485,7 +485,7 @@ Signalsmith WASM ile geliyor. İki katman:
 Signalsmith de yetmezse SoundTouch'ta `overlapMs: 12` denemesi duruyor -
 tek satır, `stretchers.js` içindeki `STRETCH_QUALITY`.
 
-## Aşama 9 – Hi-Fi modu (daha kaliteli ayrıştırma)
+## Aşama 9 – Hi-Fi modu — CANLIDA (varsayılan)
 Öncelik 3. Yüklerken seçilir, `status.json`'a yazılır.
 
 ### Seçenekler ve ÖLÇÜLEN maliyete dayalı tahmin
@@ -579,7 +579,12 @@ hakkı saklı. Aynı mimari MIT olan MSST'de var.
 kendi lisansını yazmış — bu lisans yaratmaz. `enerjazzer` kanonik ayna
 alındı; `fetch` ikisini de indirip aynı olduğunu doğruluyor.
 Deney için indirilip çalıştırılıyor, **yeniden dağıtılmıyor**.
-**Canlıya alma kararı ayrı: lisans netleşmeden B entegre EDİLEMEZ.**
+
+> **Bu kural 2026-09-29'da DEĞİŞTİ.** Yukarıdaki "lisans netleşmeden B
+> entegre edilemez" kuralı, proje sahibinin **kişisel kullanım** kararıyla
+> kaldırıldı. Lisans hâlâ belirsiz; ağırlık depoda dağıtılmıyor, çalışma
+> anında aynadan iniyor. Durum olduğu gibi `NOTICE.md`'de yazılı. Ticari
+> kullanım ya da yeniden dağıtım için lisansın netleşmesi gerekir.
 
 ### Ölçülenler (şarkı × kol)
 soğuk başlangıç, model yükleme (Volume'dan okuma dahil), saf GPU saniyesi,
@@ -736,6 +741,50 @@ sonuç ayrışır.
   üretiyor (SIR/SAR takası); MelBand tersi. İki modelin ilintisi de
   raporlanıyor - 1'e yakınsa ensemble'ın kazancı sınırlı demektir.
   Ağırlıklı ortalama DENENMEDİ: tek şarkıda ağırlık seçmek aşırı uyum.
+
+### DENEY SONUCU ve CANLI BORU HATTI
+
+| aday | vokal | bas/gitar | karar |
+|---|---|---|---|
+| A (MelBand → demucs) | az sızıntı | iyi | elendi (vokal B'den iyi değil) |
+| B (tek model, 6 stem) | **en temiz** | **bas ve gitar kayıp** | elendi |
+| B-max (overlap 8 + TTA) | değişken | — | **elendi**: 5 kat maliyet, tutarlı fark yok, bir şarkıda cızırtı |
+| **C-fp32** | B kadar temiz | A kadar iyi | **KAZANAN** |
+
+**Cızırtının sebebi fp16'ydı.** HAZBIN'de C (fp16) cızırtılı, C-fp32 ve
+C-fp32-ov4 temiz, C-ov4 (fp16) hâlâ hafif cızırtılı. Yani sebep örtüşme
+değil, vokal geçişinin hassasiyeti. Hata vokalin İÇİNDE duyulmuyor;
+"karışım − vokal" çıkarmasından sonra açığa çıkıyor.
+
+**Referans kontrolü:** kendi `_demix`'imiz MSST'nin `demix()`'iyle 6 stem'de
+**maksimum fark 0.000000 (−999 dB)** — birebir aynı. Cızırtı bizim parça
+birleştirmemizden gelmiyordu.
+
+**Canlı boru hattı (varsayılan Hi-Fi):**
+```
+BS-Roformer SW (fp32, overlap 2) → vokal
+enstrümantal = karışım − vokal          (tanım gereği tam)
+htdemucs_6s → drums/bass/guitar/piano/other
+other += demucs'un vokal artığı
+```
+
+**Toplam zorla eşitlenmiyor.** Denendi ve REDDEDİLDİ: demucs'un ~−21 dB
+artığı tek bir kaynaktan değil tüm stem'lerden geliyor; `other`'a yığmak
+davul kapatıldığında `other`'da davul hayaleti bırakırdı. Mute/solo
+uygulamanın ana işi. Tüm kanallar açıkken fark duyulmuyor (standart yolda
+da aynı artık vardı, fark edilmemişti).
+
+**`ref_mean` kusuru düzeltildi:** `stems * std + mean` yayınlama yüzünden
+`ref_mean`'i altı kaynağın hepsine ekliyordu (upstream demucs'ta da aynı
+kusur var). Artık yalnız bir kaynağa ekleniyor.
+
+**Ölçülen (HAZBIN, 110 sn):** duvar saati 95.1 sn, GPU 53.1 sn. 10 dakikalık
+şarkı için ~5-6 dk bekleniyor; `separate` timeout'u 900 → **1800 sn**.
+
+**Yeniden işleme:** mevcut şarkılar için `POST /songs/{id}/reprocess`;
+akor ve vuruş yeniden hesaplanmıyor. `status.json`'a `stems_version`
+eklendi ve telefon önbelleğinin anahtarına girdi - **bu olmadan cihaz
+eski sesi çalmaya devam ederdi, üstelik sessizce.**
 
 ### İLERİDE denenecek (şimdi değil)
 **Davulu ve piyanoyu da B'den al.** Below The Surface'te demucs'un davul

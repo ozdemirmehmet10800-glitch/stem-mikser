@@ -148,8 +148,15 @@ export class Api {
     return (await this.#request(path, { method: "POST" })).json();
   }
 
+  /** Ayrıştırmayı yeniden koşturur; akor ve vuruşa dokunmaz. */
+  async reprocess(id, quality = "hifi") {
+    const path = `/songs/${encodeURIComponent(id)}/reprocess` +
+      `?quality=${encodeURIComponent(quality)}`;
+    return (await this.#request(path, { method: "POST" })).json();
+  }
+
   // Yükleme: fetch yükleme ilerlemesi vermediği için XHR.
-  uploadSong(file, onProgress) {
+  uploadSong(file, onProgress, quality = "hifi") {
     return new Promise((resolve, reject) => {
       if (!this.url || !this.token) {
         reject(new ApiError("API adresi veya token ayarlı değil.", { kind: "config" }));
@@ -157,6 +164,7 @@ export class Api {
       }
       const form = new FormData();
       form.append("file", file, file.name);
+      form.append("quality", quality);
 
       const xhr = new XMLHttpRequest();
       xhr.open("POST", this.url + "/songs");

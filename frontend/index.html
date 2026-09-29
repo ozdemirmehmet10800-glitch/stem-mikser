@@ -40,6 +40,13 @@
         <input type="file" id="upload-input" accept="audio/*" hidden>
       </label>
       <button class="btn" id="refresh-list">Yenile</button>
+      <label class="quality-pick">
+        <span>Kalite</span>
+        <select id="upload-quality">
+          <option value="hifi" selected>Hi-Fi</option>
+          <option value="standard">Standart</option>
+        </select>
+      </label>
     </div>
 
     <div id="upload-status" class="upload-status" hidden></div>
@@ -163,6 +170,10 @@
           <svg viewBox="0 0 24 24" id="play-icon"><path d="M8 5v14l11-7z"/></svg>
         </button>
         <div class="transport-right">
+          <button class="btn btn-small" id="reprocess" hidden
+                  title="Ayrıştırmayı Hi-Fi ile yenile (akor ve vuruş korunur)">
+            Hi-Fi'a yükselt
+          </button>
           <button class="btn btn-small" id="rewind">Başa sar</button>
         </div>
       </div>

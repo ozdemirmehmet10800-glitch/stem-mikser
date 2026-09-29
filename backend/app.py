@@ -38,6 +38,18 @@ MAX_DURATION_SEC = 10 * 60  # 10 dakika
 AAC_BITRATE = "160k"
 FLAC_SUBTYPE = "PCM_24"  # 24-bit kayıpsız master
 
+# --- Aşama 9: Hi-Fi vokal yolu ------------------------------------------
+# MSST (ZFTurbo, MIT) mimari dosyaları imajda; pinli commit.
+MSST_SHA = "84b1eac0887756b4f1a9d7a1ff49105939749ed2"
+MSST_RAW = f"https://raw.githubusercontent.com/ZFTurbo/Music-Source-Separation-Training/{MSST_SHA}"
+MSST_DIR = "/msst"
+# Ağırlık aynası. Orijinal sahip (jarredou) HF hesabini silmis; bu kopya
+# birebir ayni dosya (sha256 asagida). Ayrintili lisans notu NOTICE.md'de.
+HIFI_CKPT_URL = ("https://huggingface.co/enerjazzer/BS-ROFO-SW-Fixed/resolve/"
+                 "a443a2985534b3bc815ef54a5d446c6a0390f974/BS-Rofo-SW-Fixed.ckpt")
+HIFI_YAML_URL = ("https://huggingface.co/enerjazzer/BS-ROFO-SW-Fixed/resolve/"
+                 "a443a2985534b3bc815ef54a5d446c6a0390f974/BS-Rofo-SW-Fixed.yaml")
+
 # --- Aşama 2: analiz parametreleri --------------------------------------
 ANALYSIS_SR = 22050  # librosa'nın chroma_cqt varsayılanı
 HOP_LENGTH = 512
@@ -306,6 +318,56 @@ def _warm_weights():
     print(f"toplam agirlik: {total / 1024**2:.1f} MB")
 
 
+def _patch_msst_for_torch25():
+    """MSST'nin attend.py'sini torch 2.5.1 ile uyumlu hale getirir.
+
+    Pinli MSST commit'i `sdpa_kernel(..., set_priority=True)` çağırıyor;
+    bu kwarg torch 2.6'da eklendi. Torch YÜKSELTİLMİYOR: 2.5.1 demucs
+    yüzünden bilinçli pinli (2.6 torch.load varsayılanını
+    weights_only=True yaptı). Bayrak yalnızca arka uç öncelik ipucu -
+    matematiği değiştirmiyor, düşürülmesi sonucu etkilemiyor.
+
+    Yama tutmazsa HATA veriyor: sessizce yamasız kalıp çıkarımın ortasında
+    patlamasındansa build'de durması iyi.
+    """
+    import pathlib as _pathlib
+
+    path = _pathlib.Path(MSST_DIR) / "models" / "bs_roformer" / "attend.py"
+    source = path.read_text(encoding="utf-8")
+    call_old = (
+        "            with sdpa_kernel(INFERENCE_SDPA_BACKENDS, set_priority=True):"
+    )
+    call_new = "            with _sdpa_kernel_compat():"
+    anchor = "except ImportError:\n    _HAS_SDPA_KERNEL = False\n"
+    helper = '''
+
+def _sdpa_kernel_compat():
+    """sdpa_kernel'i set_priority olmadan da cagirabilen sarmalayici.
+
+    set_priority torch 2.6'da eklendi; burada torch 2.5.1 var. Bayrak
+    yalnizca arka uc oncelik ipucu, matematigi degistirmiyor.
+    (stem-mikser Asama 9 tarafindan build sirasinda eklendi.)
+    """
+    try:
+        return sdpa_kernel(INFERENCE_SDPA_BACKENDS, set_priority=True)
+    except TypeError:
+        return sdpa_kernel(INFERENCE_SDPA_BACKENDS)
+'''
+    if call_new in source:
+        print("[msst] attend.py zaten yamali")
+        return
+    if call_old not in source or anchor not in source:
+        raise ValueError(
+            f"attend.py beklenen bicimde degil - MSST commit {MSST_SHA} "
+            f"degismis olabilir, yama elden gecirilmeli"
+        )
+    source = source.replace(anchor, anchor + helper, 1)
+    source = source.replace(call_old, call_new, 1)
+    compile(source, str(path), "exec")
+    path.write_text(source, encoding="utf-8", newline="\n")
+    print("[msst] attend.py yamalandi (torch 2.5.1 uyumu)")
+
+
 separate_image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("ffmpeg")
@@ -330,6 +392,19 @@ separate_image = (
     )
     # --no-deps: torchaudio çekmesin. Bağımlılıkları yukarıda verdik.
     .pip_install("beat-this==1.1.0", extra_options="--no-deps")
+    # Hi-Fi vokal yolu (Aşama 9). librosa GEREKMİYOR: onu yalnız
+    # mel_band_roformer istiyordu, o model elendi.
+    .pip_install("beartype==0.19.0", "PyYAML==6.0.2")
+    .run_commands(
+        f"mkdir -p {MSST_DIR}/models/bs_roformer",
+        f"touch {MSST_DIR}/models/__init__.py {MSST_DIR}/models/bs_roformer/__init__.py",
+        *[
+            f"curl -sSfL {MSST_RAW}/models/bs_roformer/{name} "
+            f"-o {MSST_DIR}/models/bs_roformer/{name}"
+            for name in ("attend.py", "bs_roformer.py")
+        ],
+    )
+    .run_function(_patch_msst_for_torch25)
     # Ağırlıklar build'de bu iki yola inecek ve imaja gömülecek.
     .env({"HF_HOME": WEIGHTS_DIR, "TORCH_HOME": WEIGHTS_DIR})
     .run_function(_warm_weights)
@@ -603,14 +678,281 @@ def track_beats(song_id: str) -> dict:
 # --------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------
+# Aşama 9 - Hi-Fi vokal yolu (BS-Roformer SW)
+# --------------------------------------------------------------------------
+# Deneyin sonucu: vokal BS-Roformer SW'den, kalan beş stem htdemucs_6s'ten.
+# Ayrıntılı ölçümler ve elenen adaylar PLAN.md'de.
+#
+# İKİ ŞEY DENEYDE ÖĞRENİLDİ, burada sabit:
+#   fp32  - vokal geçişi fp16 olduğunda enstrümantalde duyulur cızırtı
+#           kalıyor. Vokalin İÇİNDE duyulmuyor; "karışım - vokal"
+#           çıkarmasından sonra açığa çıkıyor. fp32 cızırtıyı tamamen
+#           kaldırdı (C-fp32 / C-fp32-ov4 temiz, C-ov4 fp16 hâlâ hafif
+#           cızırtılı) - yani sebep örtüşme değil, hassasiyet.
+#   overlap 2 - konfigin kendi değeri. 4'e çıkarmak cızırtıyı çözmedi,
+#           yalnız süreyi artırdı.
+#
+# Ağırlık Volume'da, imajda DEĞİL: lisansı belirsiz bir checkpoint'i imaja
+# gömmek istemiyoruz (bkz. NOTICE.md). Bedeli soğuk başlangıçta ~700 MB
+# okuma, ölçülen model yükleme ~8.5 sn.
+
+HIFI_CKPT = "bs_roformer_sw.ckpt"
+HIFI_YAML = "bs_roformer_sw.yaml"
+HIFI_CKPT_SHA256 = "24e7d35ee9c64415673d3fd33e06a67cac2c103c5df6267ba1576459c775916e"
+HIFI_CKPT_BYTES = 699412152
+HIFI_OVERLAP = 2
+QUALITIES = ("hifi", "standard")
+DEFAULT_QUALITY = "hifi"
+
+
+def _hifi_weights_dir() -> pathlib.Path:
+    return pathlib.Path(DATA_DIR) / "weights"
+
+
+def _verify_sha256(path: pathlib.Path, expected: str, expected_bytes: int):
+    """Ağırlık doğrulaması. Tutmuyorsa HATA - sessizce yanlış model yok."""
+    size = path.stat().st_size
+    if size != expected_bytes:
+        raise ValueError(
+            f"{path.name} boyutu beklenenden farkli: {size} != {expected_bytes}"
+        )
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+    actual = digest.hexdigest()
+    if actual != expected:
+        raise ValueError(
+            f"{path.name} sha256 UYUSMUYOR!\n  beklenen: {expected}\n  gelen   : {actual}"
+        )
+
+
+def _load_hifi_config(path: pathlib.Path) -> dict:
+    """YAML'i GÜVENLİ yükler.
+
+    Konfig `!!python/tuple` kullanıyor; `yaml.unsafe_load` bunu çözer ama
+    rastgele kod çalıştırmaya da açar. Konfig lisansı belirsiz bir aynadan
+    geldiği için SafeLoader'a YALNIZCA tuple kurucusu ekleniyor.
+    """
+    import yaml
+
+    class Loader(yaml.SafeLoader):
+        pass
+
+    Loader.add_constructor(
+        "tag:yaml.org,2002:python/tuple",
+        lambda loader, node: tuple(loader.construct_sequence(node)),
+    )
+    with path.open("r", encoding="utf-8") as handle:
+        return yaml.load(handle, Loader=Loader)
+
+
+def _hifi_window(window_size: int, fade_size: int, device):
+    """MSST'nin _getWindowingArray'i (MIT): doğrusal fade-in/out, ortası 1."""
+    import torch
+
+    window = torch.ones(window_size, device=device)
+    window[:fade_size] = torch.linspace(0.0, 1.0, fade_size, device=device)
+    window[-fade_size:] = torch.linspace(1.0, 0.0, fade_size, device=device)
+    return window
+
+
+def _hifi_demix(model, mix, config: dict, device: str = "cuda"):
+    """Örtüşmeli parça parça çıkarım, fp32.
+
+    MSST'nin demix()'inin generic dalıyla AYNI algoritma; deneyde MSST'nin
+    kendi kodu çağrılıp çıktılar örnek bazında karşılaştırıldı, 6 stem'de
+    maksimum fark 0.000000 çıktı (bkz. PLAN.md, referans kontrolü).
+    """
+    import numpy as np
+    import torch
+    from torch.nn import functional as F
+
+    chunk_size = int(config["audio"]["chunk_size"])
+    batch_size = int(config.get("inference", {}).get("batch_size", 1))
+    fade_size = chunk_size // 10
+    step = chunk_size // HIFI_OVERLAP
+    border = chunk_size - step
+
+    mix = torch.as_tensor(mix, dtype=torch.float32, device=device)
+    length_init = mix.shape[-1]
+    if length_init > 2 * border and border > 0:
+        mix = F.pad(mix, (border, border), mode="reflect")
+
+    window_template = _hifi_window(chunk_size, fade_size, device)
+    num_stems = int(config["model"].get("num_stems", 1))
+    result = torch.zeros((num_stems,) + tuple(mix.shape), dtype=torch.float32,
+                         device=device)
+    counter = torch.zeros(mix.shape[-1], dtype=torch.float32, device=device)
+
+    batch_data = []
+    batch_locations = []
+    index = 0
+    # autocast YOK: fp32. Deneyde fp16'nın bıraktığı hata "karışım - vokal"
+    # çıkarmasından sonra cızırtı olarak duyuluyordu.
+    with torch.inference_mode():
+        while index < mix.shape[1]:
+            part = mix[:, index:index + chunk_size]
+            chunk_len = part.shape[-1]
+            pad_mode = "reflect" if chunk_len > chunk_size // 2 else "constant"
+            part = F.pad(part, (0, chunk_size - chunk_len), mode=pad_mode)
+            batch_data.append(part)
+            batch_locations.append((index, chunk_len))
+            index += step
+
+            if len(batch_data) >= batch_size or index >= mix.shape[1]:
+                out = model(torch.stack(batch_data, dim=0)).to(torch.float32)
+                if out.dim() == 3:
+                    out = out.unsqueeze(1)
+                window = window_template.clone()
+                if index - step == 0:
+                    window[:fade_size] = 1.0
+                elif index >= mix.shape[1]:
+                    window[-fade_size:] = 1.0
+                for slot, (start, seg_len) in enumerate(batch_locations):
+                    piece = out[slot, ..., :seg_len] * window[:seg_len]
+                    result[..., start:start + seg_len] += piece
+                    counter[start:start + seg_len] += window[:seg_len]
+                batch_data.clear()
+                batch_locations.clear()
+
+        estimated = result / counter.clamp(min=1e-8)
+        if length_init > 2 * border and border > 0:
+            estimated = estimated[..., border:-border]
+
+    array = estimated.cpu().numpy()
+    if bool(np.isnan(array).any() or np.isinf(array).any()):
+        # fp32'de beklenmiyor; olursa sessizce sıfırlamak yerine bilelim.
+        raise ValueError("Hi-Fi vokal cikisinda NaN/Inf var")
+    return array
+
+
+def _hifi_vocals(mix, samplerate: int, channels: int) -> tuple:
+    """BS-Roformer SW ile vokal. Dönen: (vokal, saniye, model_yukleme_sn)."""
+    import sys
+    import time as _time
+
+    import torch
+
+    weights = _hifi_weights_dir()
+    ckpt = weights / HIFI_CKPT
+    config_path = weights / HIFI_YAML
+    if not ckpt.is_file() or not config_path.is_file():
+        raise FileNotFoundError(
+            f"Hi-Fi agirliklari yok: {ckpt}. "
+            f"'modal run backend/app.py::fetch_hifi_weights' calistirilmali."
+        )
+
+    load_started = _time.time()
+    _verify_sha256(ckpt, HIFI_CKPT_SHA256, HIFI_CKPT_BYTES)
+    config = _load_hifi_config(config_path)
+    if int(config["audio"]["sample_rate"]) != samplerate:
+        raise ValueError(
+            f"Hi-Fi modeli {config['audio']['sample_rate']} Hz bekliyor, "
+            f"{samplerate} Hz verildi"
+        )
+
+    if MSST_DIR not in sys.path:
+        sys.path.insert(0, MSST_DIR)
+    from models.bs_roformer.bs_roformer import BSRoformer
+
+    model = BSRoformer(**dict(config["model"]))
+    state = torch.load(str(ckpt), map_location="cpu", weights_only=False)
+    if isinstance(state, dict):
+        for key in ("state_dict", "model", "model_state_dict"):
+            if key in state and isinstance(state[key], dict):
+                state = state[key]
+                break
+    if any(name.startswith("module.") for name in state):
+        state = {name.removeprefix("module."): value for name, value in state.items()}
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing or unexpected:
+        print(f"[hifi] ckpt eksik={len(missing)} fazla={len(unexpected)}")
+    model.to("cuda")
+    model.eval()
+    model_load_seconds = round(_time.time() - load_started, 2)
+    print(f"[hifi] model {model_load_seconds} sn'de hazir (sha256 dogrulandi)")
+
+    started = _time.time()
+    out = _hifi_demix(model, mix, config)
+    names = list(config["training"]["instruments"])
+    vocals = out[names.index("vocals")].copy()
+    seconds = round(_time.time() - started, 2)
+    print(f"[hifi] vokal cikarimi {seconds} sn (fp32, overlap {HIFI_OVERLAP})")
+
+    del model, out
+    torch.cuda.empty_cache()
+    return vocals, seconds, model_load_seconds
+
+
+@app.function(
+    image=separate_image,
+    volumes={DATA_DIR: volume},
+    timeout=3600,
+)
+def fetch_hifi_weights() -> dict:
+    """Hi-Fi ağırlığını Volume'a indirir ve sha256 doğrular.
+
+        modal run backend/app.py::fetch_hifi
+
+    Ağırlık depoda DAĞITILMIYOR, çalışma anında aynadan iniyor. Lisans
+    durumu NOTICE.md'de açıkça yazılı.
+    """
+    import urllib.request
+
+    volume.reload()
+    target_dir = _hifi_weights_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    report = {}
+
+    for name, url, sha, size in (
+        (HIFI_CKPT, HIFI_CKPT_URL, HIFI_CKPT_SHA256, HIFI_CKPT_BYTES),
+        (HIFI_YAML, HIFI_YAML_URL, None, None),
+    ):
+        target = target_dir / name
+        if target.exists() and sha:
+            try:
+                _verify_sha256(target, sha, size)
+                print(f"[atla] {name} zaten var ve dogrulandi")
+                report[name] = {"downloaded": False, "sha256": sha}
+                continue
+            except ValueError:
+                print(f"[yeniden] {name} dogrulanamadi, tekrar iniyor")
+
+        print(f"[indir] {name} <- {url}")
+        with urllib.request.urlopen(url, timeout=600) as response:
+            target.write_bytes(response.read())
+        if sha:
+            _verify_sha256(target, sha, size)
+            print(f"[dogrulandi] {name} sha256={sha}")
+        report[name] = {"downloaded": True, "bytes": target.stat().st_size}
+
+    volume.commit()
+    return _assert_plain(report)
+
+
+@app.local_entrypoint()
+def fetch_hifi():
+    """modal run backend/app.py::fetch_hifi"""
+    print(fetch_hifi_weights.remote())
+
+
 @app.function(
     image=separate_image,
     gpu="T4",
     volumes={DATA_DIR: volume},
-    timeout=900,
+    # Hi-Fi'da Roformer demucs'un ÜSTÜNE geliyor. Ölçülen: 110 sn'lik şarkı
+    # 95 sn duvar saati; 10 dakikalık şarkı ~5-6 dk bekleniyor. 1800 sn pay
+    # bırakıyor, ilk gerçek koşumda ölçülecek.
+    timeout=1800,
     max_containers=1,  # min_containers YOK: boştayken maliyet sıfır
 )
-def separate(song_id: str) -> dict:
+def separate(song_id: str, quality: str = DEFAULT_QUALITY,
+             skip_analyze: bool = False) -> dict:
     import numpy as np
     import soundfile as sf
     import torch
@@ -622,8 +964,11 @@ def separate(song_id: str) -> dict:
     song_dir = _song_dir(song_id)
     input_path = _find_input(song_id)
 
+    quality = quality if quality in QUALITIES else DEFAULT_QUALITY
+
     try:
-        _write_status(song_id, state="separating", progress=5, error=None)
+        _write_status(song_id, state="separating", progress=5, error=None,
+                      quality=quality)
 
         # --- model (ağırlıklar imajda gömülü olmalı) ----------------------
         load_started = time.time()
@@ -671,6 +1016,21 @@ def separate(song_id: str) -> dict:
 
         _write_status(song_id, state="separating", progress=20, duration=duration)
 
+        # --- Hi-Fi: önce vokal, sonra enstrümantal demucs'a ---------------
+        # Deney sonucu (PLAN.md): vokalde BS-Roformer SW, kalan beş stemde
+        # htdemucs_6s iyi. Çıkarma tanım gereği tam: enstrümantal =
+        # karışım - vokal, yani Roformer aşaması toplama hata EKLEMİYOR.
+        hifi_vocals = None
+        hifi_seconds = 0.0
+        hifi_load_seconds = 0.0
+        if quality == "hifi":
+            hifi_vocals, hifi_seconds, hifi_load_seconds = _hifi_vocals(
+                audio, samplerate, channels
+            )
+            wav = torch.from_numpy(audio - hifi_vocals)
+            _write_status(song_id, state="separating", progress=35)
+            print(f"[hifi] enstrumantal hazir, demucs'a veriliyor")
+
         # --- normalizasyon (demucs CLI ile aynı) --------------------------
         ref = wav.mean(0)
         ref_mean = ref.mean()
@@ -690,8 +1050,36 @@ def separate(song_id: str) -> dict:
         gpu_seconds = round(time.time() - apply_started, 2)
         print(f"[apply_model] {gpu_seconds} sn")
 
-        # normalizasyonu geri al
-        stems = stems * ref_std + ref_mean
+        # Normalizasyonu geri al.
+        #
+        # ref_mean YALNIZCA BİR KEZ ekleniyor. Önceki hali (ve upstream
+        # demucs'un separate.py'si) `stems * std + mean` yapıyor, bu da
+        # yayınlama (broadcast) yüzünden ref_mean'i ALTI kaynağın hepsine
+        # ekliyor; stem toplamı girdiden 5*ref_mean kadar sapıyor. Gerçek
+        # müzikte ref_mean ~1e-5 olduğu için kimse fark etmemiş ama doğrusu
+        # bu: mean tek bir kaynağa gidiyor.
+        stems = stems * ref_std
+        stems[0] = stems[0] + ref_mean
+
+        if quality == "hifi":
+            # Demucs enstrümantal üzerinde çalıştı; onun "vocals" çıkışı
+            # enstrümantalde KALAN vokal artığı. Roformer'ın vokaliyle
+            # toplamak çift sayma olurdu, atmak toplamı bozardı - "other"a
+            # ekleniyor. Gerçek vokal Roformer'ınki.
+            vocal_index = sources.index("vocals")
+            other_index = sources.index("other")
+            residue = stems[vocal_index]
+            residue_rms = float(torch.sqrt(torch.mean(residue.double() ** 2)))
+            stems[other_index] = stems[other_index] + residue
+            replacement = torch.from_numpy(hifi_vocals)
+            if replacement.shape != stems[vocal_index].shape:
+                raise ValueError(
+                    f"Hi-Fi vokal bicimi uyusmuyor: {tuple(replacement.shape)} "
+                    f"!= {tuple(stems[vocal_index].shape)}"
+                )
+            stems[vocal_index] = replacement
+            print(f"[hifi] demucs vokal artigi rms={residue_rms:.6f} -> other'a")
+            print(f"[hifi] vokal stem'i Roformer ciktisiyla degistirildi")
 
         _write_status(song_id, state="separating", progress=80)
 
@@ -761,6 +1149,9 @@ def separate(song_id: str) -> dict:
             "duration": duration,
             "gpu_seconds": gpu_seconds,
             "model_load_seconds": model_load_seconds,
+            "quality": quality,
+            "hifi_seconds": round(hifi_seconds, 2),
+            "hifi_load_seconds": round(hifi_load_seconds, 2),
             "total_seconds": round(time.time() - started, 2),
             # Encode optimizasyonu kararı için ölçüm: GPU konteynerinde
             # geçen sürenin nereye gittiği. CPU'ya taşınabilir olan yalnızca
@@ -792,16 +1183,31 @@ def separate(song_id: str) -> dict:
             print(f"[beat_this] BASARISIZ, librosa yedegine dusulecek: {message}")
             result["beat_error"] = message
 
+        # stems_version ÖNBELLEK İÇİN ŞART: telefon stem'leri
+        # stems/<id>/<ad>.m4a anahtarıyla saklıyor. Yeniden işlemede
+        # dosyalar değişiyor ama anahtar aynı kalsaydı cihaz eski sesi
+        # çalmaya devam ederdi - üstelik sessizce.
         _write_status(
-            song_id, state="analyzing", progress=70, error=None, stems=written,
+            song_id,
+            state="done" if skip_analyze else "analyzing",
+            progress=100 if skip_analyze else 70,
+            error=None, stems=written,
             samplerate=samplerate, channels=channels, gpu_seconds=gpu_seconds,
-            timing=result["timing"],
+            timing=result["timing"], quality=quality,
+            stems_version=int(time.time()),
         )
         # Analizi ayrı bir CPU konteynerine devret: T4 burada biter, analiz
         # süresi GPU olarak faturalanmaz.
-        call = analyze.spawn(song_id)
-        result["analyze_call_id"] = str(call.object_id)
-        print(f"[analyze] spawn edildi: {result['analyze_call_id']}")
+        if skip_analyze:
+            # Yeniden işleme: akor ve vuruş ORİJİNALDEN kalıyor, yeniden
+            # hesaplanmıyor. Karşılaştırmak istediğimiz ayrıştırma; ayrıca
+            # ızgaranın değişmesi akor şeridini kaydırırdı.
+            result["analyze_call_id"] = None
+            print("[analyze] atlandi (yeniden isleme)")
+        else:
+            call = analyze.spawn(song_id)
+            result["analyze_call_id"] = str(call.object_id)
+            print(f"[analyze] spawn edildi: {result['analyze_call_id']}")
         return _assert_plain(result)
 
     except Exception as exc:
@@ -1694,7 +2100,8 @@ def _wav_from_flac(flac_path: pathlib.Path) -> bytes:
 def api():
     """Oynatıcının konuştuğu API. Tüm uç noktalar Bearer token ister."""
     import fastapi
-    from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+    from fastapi import (Depends, FastAPI, File, Form, Header, HTTPException,
+                         Request, UploadFile)
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse, Response
 
@@ -1763,6 +2170,7 @@ def api():
     async def create_song(
         request: Request,
         file: UploadFile = File(...),
+        quality: str = Form(DEFAULT_QUALITY),
         _=auth,
     ):
         declared = request.headers.get("content-length")
@@ -1819,8 +2227,10 @@ def api():
         if status.get("state") == "error":
             raise HTTPException(status_code=400, detail=status.get("error"))
 
-        separate.spawn(song_id)
+        chosen = quality if quality in QUALITIES else DEFAULT_QUALITY
+        separate.spawn(song_id, chosen)
         return {"id": song_id, "existing": False, "state": "queued",
+                "quality": chosen,
                 "title": status.get("title"), "duration": status.get("duration")}
 
     # ---------------- liste / durum -----------------------------------------
@@ -1850,6 +2260,8 @@ def api():
                         "duration": data.get("duration"),
                         "progress": data.get("progress"),
                         "created_at": data.get("created_at"),
+                        "quality": data.get("quality"),
+                        "stems_version": data.get("stems_version"),
                     }
                 )
             return found
@@ -1982,6 +2394,22 @@ def api():
         )
 
     # ---------------- yeniden analiz / silme --------------------------------
+
+    @web.post("/songs/{song_id}/reprocess")
+    async def reprocess(song_id: str, quality: str = DEFAULT_QUALITY, _=auth):
+        """Ayrıştırmayı yeniden koşturur; akor ve vuruşa DOKUNMAZ.
+
+        Mevcut şarkıları Hi-Fi'a taşımak için. chords.json / beats.json
+        yerinde kalıyor, yalnız stem'ler yenileniyor ve stems_version
+        artıyor (telefon önbelleği bayat ses çalmasın).
+        """
+        status = await require_status(song_id)
+        if status.get("state") in ("separating", "analyzing"):
+            raise HTTPException(status_code=409, detail="Sarki zaten isleniyor")
+        chosen = quality if quality in QUALITIES else DEFAULT_QUALITY
+        call = separate.spawn(song_id, chosen, True)
+        return {"id": song_id, "call_id": str(call.object_id),
+                "state": "separating", "quality": chosen}
 
     @web.post("/songs/{song_id}/reanalyze")
     async def reanalyze(song_id: str, beats: str = "auto", _=auth):

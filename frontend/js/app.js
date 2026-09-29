@@ -156,6 +156,14 @@ function renderLibrary(songs) {
     const name = document.createElement("div");
     name.className = "song-name";
     name.textContent = song.title || song.id.slice(0, 12);
+    // Hi-Fi mi Standart mı, kitaplıkta görünsün.
+    if (song.quality) {
+      const tag = document.createElement("span");
+      tag.className = `quality-tag ${song.quality === "hifi" ? "hifi" : "standard"}`;
+      tag.textContent = song.quality === "hifi" ? "Hi-Fi" : "Standart";
+      name.append(tag);
+    }
+
     const sub = document.createElement("div");
     sub.className = "song-sub" + (busy ? " busy" : song.state === "error" ? " error" : "");
     const duration = song.duration ? ` · ${formatTime(song.duration)}` : "";
@@ -195,9 +203,10 @@ async function handleUpload(file) {
   status.hidden = false;
   status.textContent = `${file.name} yükleniyor… %0`;
   try {
+    const quality = el("upload-quality") ? el("upload-quality").value : "hifi";
     const result = await api.uploadSong(file, (ratio) => {
       status.textContent = `${file.name} yükleniyor… %${Math.round(ratio * 100)}`;
-    });
+    }, quality);
     status.textContent = result.existing
       ? `${file.name} zaten işlenmiş, listede.`
       : `${file.name} alındı, işleniyor.`;
@@ -245,6 +254,9 @@ async function openSong(song) {
     const detail = await api.getSong(song.id);
     currentSong = { ...song, ...detail };
     const stems = (detail.status && detail.status.stems) || STEM_ORDER;
+    // Yeniden işlemede stem dosyaları değişiyor; sürüm önbellek anahtarına
+    // giriyor, yoksa cihaz eski sesi çalmaya devam eder.
+    const stemsVersion = Number((detail.status && detail.status.stems_version) || 0);
 
     // AudioContext'i ilk kullanıcı hareketinde kurmak gerekiyor; şarkıya
     // tıklamak bir hareket sayıldığı için burada güvenle açabiliriz.
@@ -269,7 +281,7 @@ async function openSong(song) {
     for (const name of stems) {
       const fill = fills.get(name);
       // Önce cihazdaki kopya: ikinci açılışta ağa hiç çıkılmıyor.
-      let arrayBuffer = await stemCache.get(song.id, name);
+      let arrayBuffer = await stemCache.get(song.id, name, stemsVersion);
       if (arrayBuffer) {
         fromCache += 1;
         if (fill) fill.style.width = "100%";
@@ -280,7 +292,7 @@ async function openSong(song) {
         if (fill) fill.style.width = "100%";
         // Kopyası saklanıyor; decodeAudioData ArrayBuffer'ı tükettiği için
         // ÖNCE yazıp sonra çözüyoruz.
-        await stemCache.put(song.id, name, arrayBuffer.slice(0));
+        await stemCache.put(song.id, name, arrayBuffer.slice(0), stemsVersion);
       }
       entries.push({ name, arrayBuffer });
     }
@@ -321,6 +333,13 @@ async function openSong(song) {
       title: song.title || song.id.slice(0, 12),
       artist: chords ? `${chords.key || ""} · ${Math.round(chords.bpm || 0)} BPM` : "",
     });
+    // "Hi-Fi'a yükselt" yalnız Standart ayrıştırılmış şarkılarda anlamlı.
+    if (el("reprocess")) {
+      const isStandard = (detail.status && detail.status.quality) === "standard";
+      el("reprocess").hidden = !isStandard;
+      el("reprocess").disabled = false;
+    }
+
     media.bindHandlers({ onPlay: startPlayback, onPause: stopPlayback });
     lastPositionSync = -1;
     setOverlay(false);
@@ -695,6 +714,21 @@ function stopPlayback() {
 on("play", "click", async () => {
   if (engine.playing) stopPlayback();
   else await startPlayback();
+});
+
+on("reprocess", "click", async () => {
+  if (!currentSong) return;
+  const button = el("reprocess");
+  button.disabled = true;
+  showMessage(el("player-message"),
+    "Hi-Fi ile yeniden ayrıştırılıyor. Akor ve vuruş korunuyor; " +
+    "bitince listeye dönüp şarkıyı yeniden aç.", "warn");
+  try {
+    await api.reprocess(currentSong.id, "hifi");
+  } catch (error) {
+    showMessage(el("player-message"), describeError(error));
+    button.disabled = false;
+  }
 });
 
 on("rewind", "click", async () => {

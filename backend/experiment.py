@@ -732,7 +732,8 @@ def run_b(song_id: str, num_overlap: int = 2, tta: bool = False,
     residual = _residual_report(mix, stems)
     print(f"[artik] {residual}")
 
-    title = f"{source_status.get('title') or song_id[:12]} [{label}]"
+    # Etiket BAŞTA: telefonda uzun isimlerin sonu görünmüyor.
+    title = f"[{label}] {source_status.get('title') or song_id[:12]}"
     target_id = f"{song_id}-{suffix}"
     written = _write_outputs(target_id, title, stems, samplerate, channels,
                              duration, song_id, meta={})
@@ -891,7 +892,8 @@ def run_a(song_id: str, num_overlap: int = 2, suffix: str = "a",
     residual = _residual_report(mix, stems)
     print(f"[artik] {residual}")
 
-    title = f"{source_status.get('title') or song_id[:12]} [{label}]"
+    # Etiket BAŞTA: telefonda uzun isimlerin sonu görünmüyor.
+    title = f"[{label}] {source_status.get('title') or song_id[:12]}"
     target_id = f"{song_id}-{suffix}"
     written = _write_outputs(target_id, title, stems, samplerate, channels,
                              duration, song_id, meta={})
@@ -1140,7 +1142,8 @@ def run_c(song_id: str, num_overlap: int = 2, suffix: str = "c",
     residual = _residual_report(mix, stems)
     print(f"[artik] {residual}")
 
-    title = f"{source_status.get('title') or song_id[:12]} [{label}]"
+    # Etiket BAŞTA: telefonda uzun isimlerin sonu görünmüyor.
+    title = f"[{label}] {source_status.get('title') or song_id[:12]}"
     target_id = f"{song_id}-{suffix}"
     written = _write_outputs(target_id, title, stems, samplerate, channels,
                              duration, song_id, meta={})
@@ -1811,7 +1814,8 @@ def run_e(song_id: str, num_overlap: int = 2, suffix: str = "e",
     residual = _residual_report(mix, stems)
     print(f"[artik] {residual}")
 
-    title = f"{source_status.get('title') or song_id[:12]} [{label}]"
+    # Etiket BAŞTA: telefonda uzun isimlerin sonu görünmüyor.
+    title = f"[{label}] {source_status.get('title') or song_id[:12]}"
     target_id = f"{song_id}-{suffix}"
     written = _write_outputs(target_id, title, stems, samplerate, channels,
                              duration, song_id, meta={})
@@ -1883,6 +1887,93 @@ def reference(song_id: str = "", must_contain: str = "HAZBIN",
     else:
         print("SONUC: FARKLI. Chunk birlestirme suphelisi dogrulandi,")
         print("cizirtinin kaynagi once burada aranmali.")
+
+
+@app.function(image=fetch_image, volumes={DATA_DIR: volume}, timeout=600)
+def list_experiment_songs() -> list:
+    """Deney çıktılarını bulur. Orijinal şarkılara DOKUNMAZ.
+
+    Hedefleri `status.json`'daki `source_song` alanından buluyor, isim son
+    ekinden DEĞİL: orijinal bir şarkının adı yanlışlıkla "-a" ile bitse
+    bile silinmesin.
+    """
+    volume.reload()
+    root = pathlib.Path(DATA_DIR) / "songs"
+    found = []
+    for entry in sorted(root.iterdir()) if root.is_dir() else []:
+        status_path = entry / "status.json"
+        if not status_path.is_file():
+            continue
+        try:
+            data = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        source = data.get("source_song")
+        if not source:
+            continue        # orijinal şarkı, dokunulmuyor
+        total = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
+        found.append({
+            "id": str(data.get("id", entry.name)),
+            "title": str(data.get("title") or entry.name),
+            "source_song": str(source),
+            "bytes": int(total),
+        })
+    return found
+
+
+@app.function(image=fetch_image, volumes={DATA_DIR: volume}, timeout=600)
+def delete_experiment_songs(ids: list) -> dict:
+    """Verilen deney çıktılarını siler. Yalnız source_song'u olanlar."""
+    volume.reload()
+    removed = []
+    for song_id in ids:
+        status_path = _song_dir(song_id) / "status.json"
+        if not status_path.is_file():
+            continue
+        data = json.loads(status_path.read_text(encoding="utf-8"))
+        if not data.get("source_song"):
+            print(f"[atla] {song_id} deney ciktisi degil")
+            continue
+        shutil.rmtree(_song_dir(song_id), ignore_errors=True)
+        removed.append(song_id)
+        print(f"[sil] {song_id}")
+    volume.commit()
+    return {"removed": removed, "count": len(removed)}
+
+
+@app.local_entrypoint()
+def cleanup(yes: bool = False):
+    """Deney çıktılarını kitaplıktan temizler.
+
+        modal run backend/experiment.py::cleanup            # yalnız listeler
+        modal run backend/experiment.py::cleanup --yes      # siler
+
+    Orijinal şarkılara dokunmuyor.
+    """
+    found = list_experiment_songs.remote()
+    if not found:
+        print("Silinecek deney ciktisi yok.")
+        return
+
+    total = sum(item["bytes"] for item in found)
+    sources = {item["source_song"] for item in found}
+    print("")
+    print(f"{len(found)} deney ciktisi bulundu ({total / 1024**2:.0f} MB):")
+    print("")
+    for item in found:
+        print(f"  {item['id'][:20]:<22} {item['title'][:46]:<48} "
+              f"{item['bytes'] / 1024**2:>7.1f} MB")
+    print("")
+    print(f"  (kaynak sarkilar: {len(sources)} tane, DOKUNULMAYACAK)")
+
+    if not yes:
+        print("")
+        print("Silmek icin: modal run backend/experiment.py::cleanup --yes")
+        return
+
+    result = delete_experiment_songs.remote([item["id"] for item in found])
+    print("")
+    print(f"{result['count']} klasor silindi.")
 
 
 @app.local_entrypoint()

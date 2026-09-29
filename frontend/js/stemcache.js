@@ -33,10 +33,16 @@ function saveIndex(index) {
   }
 }
 
-function keyFor(songId, name) {
+function keyFor(songId, name, version = 0) {
   // Sahte ama kararlı bir URL: Cache Storage anahtarları Request olmak
   // zorunda. Bu adrese hiç istek atılmıyor.
-  return `stems/${songId}/${name}.m4a`;
+  //
+  // SÜRÜM ŞART: "Hi-Fi ile yeniden işle" aynı şarkı kimliği altındaki
+  // stem dosyalarını değiştiriyor. Anahtar sürümsüz kalsaydı cihaz eski
+  // sesi çalmaya devam ederdi - üstelik sessizce, hata bile vermeden.
+  // Sürüm 0 = sunucu bildirmiyor (eski şarkılar); davranış eskisi gibi.
+  const suffix = version ? `@${version}` : "";
+  return `stems/${songId}/${name}${suffix}.m4a`;
 }
 
 export class StemCache {
@@ -58,14 +64,15 @@ export class StemCache {
     return this.persisted;
   }
 
-  async get(songId, name) {
+  async get(songId, name, version = 0) {
     if (!this.available) return null;
     try {
       const cache = await caches.open(CACHE_NAME);
-      const hit = await cache.match(keyFor(songId, name));
+      const key = keyFor(songId, name, version);
+      const hit = await cache.match(key);
       if (!hit) return null;
       const index = loadIndex();
-      const entry = index[keyFor(songId, name)];
+      const entry = index[key];
       if (entry) {
         entry.lastUsed = Date.now();
         saveIndex(index);
@@ -76,11 +83,11 @@ export class StemCache {
     }
   }
 
-  async put(songId, name, arrayBuffer) {
+  async put(songId, name, arrayBuffer, version = 0) {
     if (!this.available) return false;
     try {
       const cache = await caches.open(CACHE_NAME);
-      const key = keyFor(songId, name);
+      const key = keyFor(songId, name, version);
       await cache.put(
         key,
         new Response(arrayBuffer, { headers: { "Content-Type": "audio/mp4" } })
