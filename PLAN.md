@@ -19,36 +19,100 @@ Bu metni proje köküne PLAN.md olarak kaydet. Her yeni oturumda önce PLAN.md'y
 Her oturumun başında buraya bak. Ayrıntılar ilgili aşama bölümlerinde.
 
 **Aşama 9 (Hi-Fi) KAPANDI** - 2026-09-29, telefonda doğrulandı. Hi-Fi tarafına
-dokunan her değişiklikten sonra deploy'dan ÖNCE: `modal run backend/app.py::hifi_smoke`.
+dokunan her değişiklikten sonra deploy'dan ÖNCE:
+`modal run backend/app.py::hifi_smoke`.
 
+### Biten
 0. [x] **MSST dosyaları depoya alındı.** `backend/vendor/msst/` (MIT, pinli
-   commit `84b1eac...`), imaja `add_local_dir` ile giriyor. Build'de artık ağ
-   erişimi yok; `curl` olmadığı için patlayan `fetch_hifi` build'i bu yüzden
-   patlamıştı. torch 2.5.1 yaması artık depodaki dosyada görünüyor, build
-   sırasında metin değiştirilerek uygulanmıyor. `experiment.py` de aynı
-   kaynağı kullanıyor (Volume'daki eski `weights-exp/msst` kopyası ölü veri).
-1. [x] **Şarkı silme (tekli + çoklu).** Kütüphanede uzun basınca seçim modu;
-   onay penceresi geri alınamayacağını söylüyor. Sunucuda `DELETE /songs/{id}`
+   commit `84b1eac...`), imaja `add_local_dir` ile giriyor. Build'de ağ erişimi
+   yok; `curl` olmadığı için patlayan `fetch_hifi` build'i bu yüzden
+   patlamıştı. torch 2.5.1 yaması artık depodaki dosyada görünüyor.
+   `experiment.py` de aynı kaynağı kullanıyor.
+1. [x] **Şarkı silme (tekli + çoklu).** Kütüphanede uzun basınca seçim modu,
+   onay penceresi, cihaz önbelleğinden de silme. Sunucuda `DELETE /songs/{id}`
    ve `POST /songs/delete`; kimlik deseni nokta/eğik çizgi kabul etmiyor, yani
    `../` ile model ağırlıklarına ulaşılamıyor (test edildi). İşlenmekte olan
-   şarkı silinmiyor: süren `separate` girdisini bulamayınca `status.json`'a
-   hata yazar ve kitaplıkta boş bir şarkı canlanırdı. Silinen şarkı cihaz
-   önbelleğinden de düşüyor; aynı dosya yeniden yüklenirse sıfırdan işleniyor.
-   Seçim modu geri tuşu maddesine hazır: `handleBack()` ilk iş seçimden
-   çıkıyor, şimdilik Escape'e bağlı.
-2. [ ] **Deney şarkılarını temizle.** `modal run backend/experiment.py::cleanup`
-   (önce listeler, `--yes` ile siler). Orijinal şarkılara dokunmuyor.
-3. [x] **Kalite paketi BİTTİ.** Telefonda ölçüldü, varsayılan **Yüksek**
-   (cihaz hızı 48 kHz, stereo). Sunucu tarafı: oynatma dosyaları **AAC 256k,
-   48 kHz** (FLAC asıllar 44.1 kHz kalıyor - model oradan çıkıyor), yeniden
-   örnekleme mümkünse **soxr** ile, değilse ffmpeg'in swr'si (log'a yazılıyor).
-   Mevcut şarkılar için `modal run backend/app.py::reencode` (önce listeler,
-   `--yes` uygular): GPU yok, yeniden ayırma yok, akor/vuruş yeniden
-   hesaplanmıyor - kaynak `master/*.flac`, yani ses ikinci kez kayıplı
-   kodlamadan GEÇMİYOR. `stems_version` artıyor, yoksa telefon eski dosyaları
-   sessizce çalardı. Çevrimdışı önbellek sınırı 300 MB → **2 GB**.
-   Açılış hızlandırıldı: aynı şarkıya dönüş 0 ms, diğerleri ~2 kat
-   (ölçümler commit `b5ee797`'de).
+   şarkı silinmiyor - süren `separate` girdisini bulamayınca kitaplıkta boş
+   bir şarkı canlanırdı.
+2. [x] **Deney şarkıları temizlendi** (`experiment.py::cleanup`; ölü
+   `weights-exp/msst` kopyasını da siliyor).
+3. [x] **Kalite paketi.** Telefonda doğrulandı (2026-09-29): Yüksek kip,
+   256k/48k, kalite iyi, hiza testi hepsi geçti.
+   - Mobilde varsayılan **Yüksek**: `sampleRate` zorlaması ve mono indirme yok,
+     cihazın doğal hızı (48 kHz) ve stereo. Tasarruf (32 kHz mono) ayarlarda
+     yedek; elle seçilmiş tercih korunuyor.
+   - Oynatma dosyaları **AAC 256k / 48 kHz**, yeniden örnekleme sunucuda
+     (mümkünse soxr, değilse swr - log'a yazılıyor). **FLAC asıllar 44.1 kHz /
+     24-bit kalıyor**, model oradan çıkıyor.
+   - Mevcut şarkılar: `modal run backend/app.py::reencode` (`--yes` uygular).
+     GPU yok, yeniden ayırma yok, akor/vuruş yeniden hesaplanmıyor; kaynak
+     kayıpsız asıl olduğu için ses ikinci kez kayıplı kodlamadan geçmiyor.
+     `stems_version` artıyor, yoksa telefon eski dosyaları sessizce çalardı.
+   - Çevrimdışı önbellek sınırı 300 MB → **2 GB**.
+   - Aşama 5'in "32 kHz mono" bellek önlemi ÖLÇÜMLE ÇÜRÜDÜ (bkz. Aşama 5
+     notu); AAC priming de elendi (bkz. Aşama 8, vuruş ızgarası maddesi).
+4. [x] **Geri tuşu.** Katman yığını (`navstack.js`, saf mantık + 31 node
+   testi) history yığınıyla birebir eşleşiyor: her açık katman = bir history
+   girdisi, URL'e DOKUNULMUYOR (katman yalnız `history.state` içinde).
+   Sıra: menü → panel → seçim modu → ekran → çıkış. Kapatmanın TEK yolu
+   `history.back()`; UI düğmeleri de oradan geçiyor, yoksa iki yığın ayrışıp
+   geri tuşu "zaten kapalı" katmanı kapatmaya çalışırdı.
+   Yükleme örtüsü ve hiza testi sürerken geri YUTULUYOR (girdi geri konuyor).
+   Metronom paneli kapanınca metronom çalmaya devam ediyor. Mikser →
+   kütüphane: duraklat, konum korunur, tamponlar kalır; mini oynatıcı yok.
+   Açılışta ve yenilemede taban girdi `replaceState` ile kuruluyor.
+5. [x] **Hızlı açılış.** ÖNCE ÖLÇÜLDÜ (masaüstü, 110 sn şarkı, Yüksek kip):
+   açılışın %90'ından fazlası `decodeAudioData`'da geçiyordu.
+
+   | | önce | sonra |
+   |---|---|---|
+   | ilk açılış (ağ) | 2880 ms | 1669 ms |
+   | önbellekten | 2953 ms | 1527 ms |
+   | bilgi de cihazdan | — | 1500 ms |
+   | **aynı şarkıya dönüş** | 2953 ms | **0 ms** |
+
+   - Aynı id + aynı `stems_version` + aynı kalite kipi + tamponlar bellekte
+     ise hiçbir şey indirilmiyor/çözülmüyor; duraklatılan konum korunuyor.
+     Sürüm BİLİNMİYORSA hızlı yol yok - bayat sesi sessizce çalmaktansa
+     yeniden yüklemek iyidir.
+   - Durum/akor cihazda (localStorage, şarkı başı ~12 KB, 40 şarkılık LRU);
+     açılış sunucuyu beklemiyor, sunucu ARKADA yoklanıyor ve `stems_version`
+     değişmişse şarkı yeni sesle yeniden yükleniyor.
+   - Getirme ve çözme tek boru hattında, İKİŞERLİ. İkiden fazlası yok:
+     Tasarruf kipinde her çözme kendi stereo ara tamponunu açıyor.
+   - Çözülmüş sesi diske yazmak YOK (9 dk ≈ 1.25 GB PCM).
+
+### Sırada
+6. [ ] **İnternetsizken eksik şarkı.** Telefonda çevrimdışı kopyası olmayan
+   bir şarkı internet yokken açılınca "hazırlanıyor"da bekliyor. Olması
+   gereken: "İnternet yok, bu şarkı telefonda kayıtlı değil" deyip kütüphaneye
+   dönmek.
+
+   **Yerelde tekrar üretildi** (mock API kapatılarak, iki senaryo da):
+   - Ses cihazda yok, bilgi de yok → `getSong` düşüyor.
+   - Ses cihazda yok ama bilgi cihazda var → açılış anında başlıyor, sonra
+     `api.stemBuffer` düşüyor.
+   - İkisinde de: örtü ~6 saniye sonra kapanıyor, ekranda uzun ve ALAKASIZ
+     "Bağlantı kesildi… antivirüs / VPN / ALLOWED_ORIGINS" tanı metni
+     görünüyor, **oynatıcı ekranında boş mikserle kalınıyor** (kütüphaneye
+     dönülmüyor). 6 saniyenin sebebi `api.js`'in GET'leri 1.5 sn bekleyip bir
+     kez yeniden denemesi.
+   - **Hiçbir yerde zaman aşımı yok:** bağlantı reddedilmek yerine ASILI
+     KALIRSA (zayıf şebeke) bekleme sınırsız - "sonsuza kadar" gözlemi bununla
+     uyuşuyor. Yerelde bağlantı hemen reddedildiği için 6 sn'de bitiyor.
+
+   **Ayrıca çıkan, ayrı ve daha büyük kusur:** internet yokken uygulama
+   yeniden açılırsa **kütüphane listesi bomboş** geliyor (liste yalnız ağdan:
+   `GET /songs`). Yani çevrimdışı, önbellekte sesi olan şarkıya bile
+   ulaşılamıyor. "Uçak modunda açılıyor" testi uygulama AÇIKKEN yapıldığı için
+   bunu göstermemişti. Liste de cihazda saklanmalı (durum/akor için yapılanın
+   aynısı).
+
+   Yapılacaklar: (a) `navigator.onLine` ile hızlı karar + istek başına zaman
+   aşımı (`AbortController`), (b) stem'i olmayan + ağ yok durumunda anlaşılır
+   tek cümlelik mesaj ve kütüphaneye dönüş, (c) kütüphane listesinin cihaz
+   kopyası, (d) çevrimdışı açılabilen şarkıları listede işaretlemek.
+7. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
 
 ### Kalite zinciri (2026-09-29 sonrası)
 | adım | format | kHz | kanal | derinlik/bit hızı |
@@ -62,40 +126,7 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE: `modal run backend/app.py::h
 | bus + esnetici | — | 48 | 2 | — |
 
 Yeniden örnekleme zincirde **bir kez** ve sunucuda (44.1 → 48, soxr).
-Telefon artık hiç yeniden örneklemiyor. Ayarlarda "Mobil ses kalitesi": Tasarruf (32 kHz mono,
-   varsayılan) / Yüksek (cihaz hızı, stereo). Kip değişince AudioContext
-   yeniden kuruluyor, açık şarkı kapanıyor (AudioBuffer'lar context hızına
-   bağlı, taşınamıyor). Ayarlar ekranı cihazın doğal hızını ve o an kullanılan
-   hız/kanalı yazıyor; bench ve hiza testi seçili kiple koşuyor.
-   **Ölçülenler:** 8 dk, 6 stem tepe bellek — 32 kHz mono ~469 MB,
-   48 kHz stereo ~1.05 GB, 44.1 stereo ~969 MB, Int16 stereo ~703 MB.
-   Eski şarkının tamponları artık indirmeden ÖNCE bırakılıyor.
-   **AAC priming ölçüldü:** çözülen süre ile sunucunun bildirdiği süre farkı
-   -1 ms, yani Chrome priming/dolguyu kırpıyor; 23-48 ms hipotezi öldü. Kesin
-   ölçüm (aynı stem'in FLAC aslıyla çapraz ilinti, `download-link?format=flac`
-   ile, sunucu değişikliği GEREKMİYOR) yapılmadı.
-   **Kalan:** telefonda Yüksek kipin açılıp açılmadığı, bench'in 48 kHz stereo
-   oranı, hiza testi; sonra format kararı (AAC 160k -> 192-256k önerisi) ve
-   mevcut şarkıların FLAC asıllardan yeniden kodlanması (`stems_version`
-   artmak ZORUNDA).
-   Özgün madde: ÖNCE RAPOR, KOD YOK: yüklemeden telefonda çalmaya
-   kadar her adımda örnekleme hızı / kanal sayısı / bit hızı zinciri
-   yazılacak. Telefon şu an **32 kHz mono** çalıyor; hedef **stereo,
-   44.1/48 kHz, kayıpsız ya da şeffaf**. Karar formatı değiştirirse mevcut
-   şarkılar **FLAC asıllardan yeniden kodlanacak, yeniden AYIRMA yok**
-   (`master/*.flac` zaten Volume'da). Hiza testi (Ayarlar ekranı) yeniden
-   geçmek zorunda - `sampleRate` değişimi esnetici gecikmesini de etkiliyor.
-4. [x] **Geri tuşu.** Katman yığını (`navstack.js`, saf mantık + 31 node
-   testi) history yığınıyla birebir eşleşiyor: her açık katman = bir history
-   girdisi, URL'e DOKUNULMUYOR (katman yalnız `history.state` içinde).
-   Sıra: menü → panel → seçim modu → ekran → çıkış. Kapatmanın TEK yolu
-   `history.back()`; UI düğmeleri de oradan geçiyor, yoksa iki yığın ayrışıp
-   geri tuşu "zaten kapalı" katmanı kapatmaya çalışırdı.
-   Yükleme örtüsü ve hiza testi sürerken geri YUTULUYOR (girdi geri konuyor).
-   Metronom paneli kapanınca metronom çalmaya devam ediyor. Mikser →
-   kütüphane: duraklat, konum korunur, tamponlar kalır; mini oynatıcı yok.
-   Açılışta ve yenilemede taban girdi `replaceState` ile kuruluyor.
-5. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
+Telefon artık hiç yeniden örneklemiyor.
 
 ## Mimari
 Tek kullanıcılı. PC sadece geliştirme ve deploy için; deploy sonrası sistem PC kapalıyken çalışmalı.
