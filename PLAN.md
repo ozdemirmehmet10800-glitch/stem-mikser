@@ -143,18 +143,57 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      başka şarkı açılınca %17'de duruyor ve açılış bitince %67'ye devam ediyor.
 
 ### Sırada
-7. [ ] **Piyano ve davulu Hi-Fi modelden (BS-RoFormer SW) almak.** SW 6
-   stem'li bir model ve Hi-Fi yolunda ZATEN çalışıyor; şu an yalnız vokal
-   çıkışı alınıp piyano/davul çıkışı hesaplanıp ATILIYOR. Yani ek GPU maliyeti
-   yok denecek kadar az - model bir kez koşuyor, yalnız hangi çıkışları
-   kullandığımız değişiyor.
-   **Dikkat:** kulak testi ŞART. Deneyde (Aşama 9) Zeus'ta B, bas ile klavye
-   arasındaki bir sesi tamamen piyanoya atmıştı; ayrıca B'nin bas ve gitarı
-   kayıp çıkmıştı (bkz. Aşama 9 kulak testi tablosu). Bu yüzden vokalde B,
-   bas/gitarda demucs seçilmişti. Davul/piyanoyu da B'den almak o kararın
-   yalnız iki stem'de gözden geçirilmesi demek: C'nin iskeleti buna hazır
-   (vokal gibi davul/piyano da B'den alınıp enstrümantalden çıkarılabilir,
-   kalan stem'ler demucs'ta kalır).
+7. [ ] **Piyano ve davulu Hi-Fi modelden (BS-RoFormer SW) almak.** PLAN ONAYLANDI
+   (2026-09-29), deney KODU henüz yazılmadı (şarkı adları bekleniyor).
+   **Temel:** SW altı stem'i tek geçişte zaten üretiyor; `_hifi_vocals` beşini
+   atıyor (`app.py:972`). Ek GPU maliyeti 0 sn. Stem sırası (`training.instruments`)
+   doğrulanmadı, kod isimle indeksliyor.
+   **Dikkat:** kulak testi ŞART. Aşama 9 deneyinde Zeus'ta B, bas-klavye arası bir
+   sesi tamamen piyanoya atmıştı; B'nin bas/gitarı da kayıptı.
+
+   **Çıkışlar (şarkı başına):** SW bir kez, demucs iki kez.
+   - **V0:** bugünkü canlı zincir (referans, deney şarkıları temizlendiği için yeniden).
+   - **V1:** enstrümantal = karışım − vokal − piyano, sonra demucs.
+   - **V2:** enstrümantal = karışım − vokal − piyano − davul, sonra demucs.
+   Kulak testi V0/V1/V2. Hepsi ORTAK clip_scale ile (yoksa ~1 dB ses farkı
+   "daha iyi" yanılgısı yaratır); etiketler nötr harf, anahtar ayrı dosyada.
+
+   **Yön faktörü (demucs artığı nereye gidecek):** ÖNCE ölç: demucs'un piyano/davul
+   artığının RMS'i, SW stem'ine oranla (dB), vokal artığı referansıyla. Referansın
+   altındaysa yalnız "p" (aynı stem) üretilir. Büyükse o (`other`) ve p ikisi de
+   üretilir.
+
+   **Ölçüm:** hepsi 2 sn'lik pencerelerle; şarkı ortalaması + en kötü 5 pencere
+   ZAMAN DAMGASIYLA. Dinleme bölümü: bir normal bölüm + en kötü pencere.
+   Metrikler: toplam artığı (ε), bas <200 Hz enerjisi (V0'a göre dB), piyano ve
+   davul stem'inin <150-200 Hz payı, V0 bas stem'inin adayın piyanosuna geçen
+   payı (izdüşüm), demucs artık RMS'i, `::crackle` (HAZBIN, tüm adaylar),
+   piyanosuz şarkıda piyano stem'inin karışıma oranı.
+   **Davul, V0/V1/V2'nin üçünde de karşılaştırılır:** V1'de piyano demucs'tan
+   ÖNCE çıktığı için Below The Surface'teki davul sızıntısı değişebilir.
+
+   **Şarkılar:** Zeus (bas/klavye, 808), Below The Surface (davula piyano sızması,
+   gerçek gitar), HAZBIN (cızırtı), piyano ağırlıklı = [BELİRLENECEK], piyanosuz =
+   [BELİRLENECEK].
+
+   **Karar kuralı (piyano ve davul ayrı):** en az 2 şarkıda "iyi", hiçbirinde
+   "kötü" yok; piyanosuz şarkıda uydurma piyano V0'dan fazla değil. Davul için
+   ayrıca: davul kapalıyken `other`'da zil/hi-hat hayaleti yok ve Zeus'ta bas solosu
+   kötüleşmemiş. Tutmayan stem V0'da kalır. (c2) uyum kapısı YOK; yalnız Zeus'ta bas
+   kaybolursa denenir. Maliyet tahmini ~35-60 sent (5 şarkı; en belirsiz kalem
+   yazma süresi, ilk koşuda `timing`'den bakılır).
+
+   **Canlı yola girerse (sonuç iyi çıkarsa):**
+   - `_hifi_vocals`'ın dönüşü genişler, `separate` piyano/davulu çıkarır,
+     artığı yön faktörünün sonucuna göre yönlendirir; `hifi_smoke` güncellenir.
+   - Şarkı kaydına boru hattı sürümü yazılır: `status.json` → `pipeline: "hifi_v2"`
+     (bugünkü zincir `hifi_v1`, alan yoksa v1 sayılır). Telefondaki önbellek anahtarı
+     bu sürümü içerir, reprocess sonrası eski stem çalınmaz.
+     NOT: `stems_version` (zaman damgası) zaten her yeniden işlemede değişiyor ve
+     anahtarda; `pipeline` bunun üstüne anlamsal etiket. Anahtar biçimi değişirse
+     cihazdaki her şey bir kez yeniden iner, `pruneSuperseded` regex'i de buna
+     uyarlanmalı.
+   - Mevcut şarkıları `reprocess` ile yenilemek ~şarkı başı $0.04.
 8. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
 
 ### Sonra (şimdilik gerek yok)
