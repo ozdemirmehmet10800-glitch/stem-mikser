@@ -28,6 +28,9 @@ export class Mixer {
     this.onDownload = onDownload;
     this.rows = new Map();
     this.openMenu = null;
+    // Menü açılıp kapandığında haber veriliyor: geri tuşu katman yığınını
+    // buradan öğreniyor (app.js). Mikser history'yi BİLMİYOR.
+    this.onMenuChange = null;
     // Menü dışına dokununca kapansın.
     document.addEventListener("pointerdown", (event) => {
       if (this.openMenu && !this.openMenu.contains(event.target)) this.closeMenu();
@@ -38,6 +41,7 @@ export class Mixer {
     if (this.openMenu) {
       this.openMenu.hidden = true;
       this.openMenu = null;
+      if (this.onMenuChange) this.onMenuChange(false);
     }
   }
 
@@ -74,6 +78,7 @@ export class Mixer {
       if (!acik) {
         menu.hidden = false;
         this.openMenu = menu;
+        if (this.onMenuChange) this.onMenuChange(true);
       }
     });
 

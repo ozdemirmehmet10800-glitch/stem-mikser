@@ -38,16 +38,40 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE: `modal run backend/app.py::h
    çıkıyor, şimdilik Escape'e bağlı.
 2. [ ] **Deney şarkılarını temizle.** `modal run backend/experiment.py::cleanup`
    (önce listeler, `--yes` ile siler). Orijinal şarkılara dokunmuyor.
-3. [ ] **Kalite paketi.** ÖNCE RAPOR, KOD YOK: yüklemeden telefonda çalmaya
+3. [~] **Kalite paketi.** Rapor çıkarıldı, ANAHTAR kondu, karar telefon
+   ölçümünü bekliyor. Ayarlarda "Mobil ses kalitesi": Tasarruf (32 kHz mono,
+   varsayılan) / Yüksek (cihaz hızı, stereo). Kip değişince AudioContext
+   yeniden kuruluyor, açık şarkı kapanıyor (AudioBuffer'lar context hızına
+   bağlı, taşınamıyor). Ayarlar ekranı cihazın doğal hızını ve o an kullanılan
+   hız/kanalı yazıyor; bench ve hiza testi seçili kiple koşuyor.
+   **Ölçülenler:** 8 dk, 6 stem tepe bellek — 32 kHz mono ~469 MB,
+   48 kHz stereo ~1.05 GB, 44.1 stereo ~969 MB, Int16 stereo ~703 MB.
+   Eski şarkının tamponları artık indirmeden ÖNCE bırakılıyor.
+   **AAC priming ölçüldü:** çözülen süre ile sunucunun bildirdiği süre farkı
+   -1 ms, yani Chrome priming/dolguyu kırpıyor; 23-48 ms hipotezi öldü. Kesin
+   ölçüm (aynı stem'in FLAC aslıyla çapraz ilinti, `download-link?format=flac`
+   ile, sunucu değişikliği GEREKMİYOR) yapılmadı.
+   **Kalan:** telefonda Yüksek kipin açılıp açılmadığı, bench'in 48 kHz stereo
+   oranı, hiza testi; sonra format kararı (AAC 160k -> 192-256k önerisi) ve
+   mevcut şarkıların FLAC asıllardan yeniden kodlanması (`stems_version`
+   artmak ZORUNDA).
+   Özgün madde: ÖNCE RAPOR, KOD YOK: yüklemeden telefonda çalmaya
    kadar her adımda örnekleme hızı / kanal sayısı / bit hızı zinciri
    yazılacak. Telefon şu an **32 kHz mono** çalıyor; hedef **stereo,
    44.1/48 kHz, kayıpsız ya da şeffaf**. Karar formatı değiştirirse mevcut
    şarkılar **FLAC asıllardan yeniden kodlanacak, yeniden AYIRMA yok**
    (`master/*.flac` zaten Volume'da). Hiza testi (Ayarlar ekranı) yeniden
    geçmek zorunda - `sampleRate` değişimi esnetici gecikmesini de etkiliyor.
-4. [ ] **Geri tuşu.** Android'de geri şu an uygulamayı kapatıyor. Olması
-   gereken: mikser → kütüphane; açık panel varsa önce o kapanır; kütüphanede
-   geri = normal çıkış. History API ile (`pushState` + `popstate`).
+4. [x] **Geri tuşu.** Katman yığını (`navstack.js`, saf mantık + 31 node
+   testi) history yığınıyla birebir eşleşiyor: her açık katman = bir history
+   girdisi, URL'e DOKUNULMUYOR (katman yalnız `history.state` içinde).
+   Sıra: menü → panel → seçim modu → ekran → çıkış. Kapatmanın TEK yolu
+   `history.back()`; UI düğmeleri de oradan geçiyor, yoksa iki yığın ayrışıp
+   geri tuşu "zaten kapalı" katmanı kapatmaya çalışırdı.
+   Yükleme örtüsü ve hiza testi sürerken geri YUTULUYOR (girdi geri konuyor).
+   Metronom paneli kapanınca metronom çalmaya devam ediyor. Mikser →
+   kütüphane: duraklat, konum korunur, tamponlar kalır; mini oynatıcı yok.
+   Açılışta ve yenilemede taban girdi `replaceState` ile kuruluyor.
 5. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
 
 ## Mimari

@@ -132,6 +132,15 @@ ETMEMELİ) ve deneydeki `[C-fp32]` vokaliyle karşılaştırma: kestirilen
 olmalı (SNR ~120 dB; eşik 90 dB). O çıktı Volume'da yoksa (temizlenmişse)
 şekil/RMS/NaN kontrolleriyle yetinip uyarı basıyor.
 
+**Geri tuşu katman yığınının testi:**
+
+```powershell
+node tests\navstack_test.mjs
+```
+
+Saf mantık: sıra (menü → panel → seçim → ekran → çıkış), aynı katmanın iki
+kez yığılmaması, yükleme örtüsü/hiza testi sürerken geri'nin yutulması.
+
 **Önbellek temizliğinin testi (şarkı silinince cihazdaki sesler de gitsin):**
 
 ```powershell

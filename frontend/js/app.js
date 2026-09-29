@@ -18,6 +18,7 @@ import {
   STRETCHERS, stretcherInfo, supportsFormants, normalizeStretcher,
 } from "./stretch.js";
 import { transposeKey } from "./tonality.js";
+import { NavStack, CLOSE, BLOCKED } from "./navstack.js";
 
 const POLL_MS = 3000;
 
@@ -112,6 +113,10 @@ function describeError(error) {
 }
 
 function setOverlay(visible, text = "") {
+  // Yükleme sürerken geri hiçbir şey yapmıyor: yarıda kesmek indirilmiş
+  // tamponları çöpe atar, üstelik iptal edilecek bir şey de yok.
+  if (visible) nav.block("overlay");
+  else nav.unblock("overlay");
   el("overlay").hidden = !visible;
   if (text) el("overlay-text").textContent = text;
   if (!visible) el("overlay-bars").innerHTML = "";
@@ -195,13 +200,22 @@ function enterSelectMode(songId) {
   selectMode = true;
   if (songId) selectedIds.add(songId);
   renderLibrary(librarySongs);
+  pushLayer("select");
 }
 
-function exitSelectMode() {
+// SAF DOM kapatıcı: history'ye dokunmuyor, geri tuşu bunu çağırıyor.
+function closeSelectModeDom() {
   if (!selectMode) return false;
   selectMode = false;
   selectedIds.clear();
   renderLibrary(librarySongs);
+  return true;
+}
+
+// UI'dan çıkış (X düğmesi, silme sonrası): yol history'den geçiyor.
+function exitSelectMode() {
+  if (!selectMode) return false;
+  requestBack("select");
   return true;
 }
 
@@ -231,12 +245,99 @@ function syncSelectBar() {
   }
 }
 
-// Geri tuşu işi (PLAN'daki "geri tuşu" maddesi) BUNU ilk sırada çağıracak:
-// geri = önce seçimden çık. Şimdilik yalnız Escape'e bağlı; History API
-// tarafı o madde gelince buraya eklenecek.
+// ---------------------------------------------------------------- geri tuşu
+//
+// Katman yığını (navstack.js) history yığınıyla BİREBİR eşleşiyor: her açık
+// katman = bir history girdisi. Geri tuşu (ve Android'in kenar jesti) girdiyi
+// düşürüyor, popstate en üstteki katmanı kapatıyor. Taban girdide katman
+// kalmadığında geri = uygulamadan çıkış, ki kütüphanede istediğimiz tam bu.
+//
+// URL'e DOKUNULMUYOR: katman yalnızca history.state içinde. URL'e "#player"
+// gibi bir şey yazsaydık paylaşılan/yer imine eklenen adres uygulamayı yarı
+// açık bir duruma sokardı, ayrıca service worker yönlendirmesiyle uğraşmak
+// gerekirdi.
+//
+// KAPATMANIN TEK YOLU history.back(). UI düğmeleri de oradan geçiyor, yoksa
+// iki yığın ayrışır ve geri tuşu "zaten kapalı" bir katmanı kapatmaya
+// çalışıp uygulamayı kapatırdı.
+
+const nav = new NavStack();
+
+// Katman adı -> o katmanı kapatan SAF DOM işlevi. Bunlar history'ye
+// DOKUNMUYOR; yoksa popstate -> kapat -> history.back() -> popstate döngüsü
+// olurdu.
+const layerClosers = {
+  menu: () => {
+    if (mixer) mixer.closeMenu();
+  },
+  panel: closePanelsDom,
+  select: closeSelectModeDom,
+  view: () => {
+    // Ayarlar mı oynatıcı mı açık, DOM söylüyor.
+    if (!views.settings.hidden) {
+      showView("library");
+      if (isConfigured(settings)) refreshLibrary();
+      return;
+    }
+    stopPlayback();
+    stopLoop();
+    showView("library");
+    refreshLibrary();
+  },
+};
+
+function pushLayer(name) {
+  if (!nav.push(name)) return;
+  try {
+    // Üçüncü parametre YOK: URL değişmiyor.
+    history.pushState({ layer: name, depth: nav.depth }, "");
+  } catch {
+    /* history yoksa katman yine kapanabilir, sadece geri tuşu çalışmaz */
+  }
+}
+
+/** UI'dan kapatma. Katman yığındaysa yol history'den geçiyor. */
+function requestBack(name) {
+  if (nav.peek() === name) {
+    history.back();
+    return;
+  }
+  const close = layerClosers[name];
+  if (close) close();
+}
+
+window.addEventListener("popstate", () => {
+  const result = nav.back();
+  if (result.action === BLOCKED) {
+    // Geri İPTAL EDİLEMİYOR; tarayıcı girdiyi zaten düşürdü, yerine yenisini
+    // koyuyoruz ki derinlik eşleşmesi bozulmasın.
+    try {
+      history.pushState({ layer: nav.peek(), depth: nav.depth }, "");
+    } catch {
+      /* yok say */
+    }
+    return;
+  }
+  if (result.action === CLOSE) {
+    const close = layerClosers[result.layer];
+    if (close) close();
+  }
+  // EXIT: hiçbir şey yapmıyoruz; taban girdideyiz, tarayıcı uygulamayı kapatır.
+});
+
+// Taban girdi. Sayfa yenilendiğinde de buradan geçiliyor: eski history
+// girdileri kalmış olabilir ama katman yığını sıfırdan kuruluyor, ikisini
+// yeniden hizalayan şey bu satır.
+try {
+  history.replaceState({ layer: null, depth: 0, root: true }, "");
+} catch {
+  /* yok say */
+}
+
 function handleBack() {
-  if (exitSelectMode()) return true;
-  return false;
+  if (nav.depth === 0) return false;
+  history.back();
+  return true;
 }
 
 function renderLibrary(songs) {
@@ -247,7 +348,12 @@ function renderLibrary(songs) {
   for (const id of [...selectedIds]) {
     if (!present.has(id)) selectedIds.delete(id);
   }
-  if (selectMode && !songs.length) selectMode = false;
+  if (selectMode && !songs.length) {
+    // Liste boşaldıysa seçim modunun anlamı kalmadı. Katmanı da düşür,
+    // yoksa geri tuşuna bir kez boşuna basılırdı.
+    selectMode = false;
+    if (nav.peek() === "select") history.back();
+  }
   list.classList.toggle("select-mode", selectMode);
   syncSelectBar();
 
@@ -335,9 +441,16 @@ function renderLibrary(songs) {
 
 // Açık şarkı silindiyse: çalmayı durdur, kütüphaneye dön.
 function closeCurrentSong() {
+  currentSong = null;
+  // Oynatıcı hâlâ açıksa katmanı düzgün kapat, yoksa (kütüphanedeyiz)
+  // yalnızca çalmayı durdur: yığında olmayan bir katmanı geri almaya
+  // çalışmak uygulamadan çıkarırdı.
+  if (nav.peek() === "view" && !views.player.hidden) {
+    requestBack("view");
+    return;
+  }
   stopPlayback();
   stopLoop();
-  currentSong = null;
   showView("library");
 }
 
@@ -379,8 +492,7 @@ async function deleteSelected() {
 
     if (currentSong && gone.includes(currentSong.id)) closeCurrentSong();
 
-    selectMode = false;
-    selectedIds.clear();
+    exitSelectMode();
     await refreshLibrary();
 
     const notes = [];
@@ -454,6 +566,7 @@ Yine de açmayı deneyebilirsin.`
 
 async function openSong(song) {
   showView("player");
+  pushLayer("view");
   el("player-title").textContent = song.title || song.id.slice(0, 12);
 
   // Uyarı gösteriliyor ama AÇMAYA İZİN VERİLİYOR.
@@ -744,6 +857,23 @@ function closeTunePanel() {
   el("tempo-toggle").setAttribute("aria-pressed", "false");
 }
 
+// Geri tuşunun "panel" katmanı: AÇIK OLAN paneli kapatıyor, metronomun
+// kendisine DOKUNMUYOR - panel kapanınca metronom çalmaya devam ediyor.
+function closePanelsDom() {
+  closeTunePanel();
+  if (el("metro-panel")) el("metro-panel").hidden = true;
+}
+
+// Katman yığınını panellerin GERÇEK durumundan türetiyoruz. İki panel
+// birbirini kapattığı için ayrı ayrı saymak gereksiz: açık panel varsa tek
+// bir "panel" katmanı var, yoksa yok.
+function syncPanelLayer() {
+  const tempoOpen = el("tempo-panel") && !el("tempo-panel").hidden;
+  const metroOpen = el("metro-panel") && !el("metro-panel").hidden;
+  if (tempoOpen || metroOpen) pushLayer("panel");
+  else if (nav.peek() === "panel") history.back();
+}
+
 on("tempo-toggle", "click", async (event) => {
   event.stopPropagation();
   // AudioContext hazır olmalı; bu bir kullanıcı hareketi.
@@ -752,6 +882,7 @@ on("tempo-toggle", "click", async (event) => {
   el("tempo-panel").hidden = !open;
   el("tempo-toggle").setAttribute("aria-pressed", String(open));
   if (open && el("metro-panel")) el("metro-panel").hidden = true;
+  syncPanelLayer();
 });
 
 // input = sürükleme (ölçüm yok), change = bırakma (ölçüm var).
@@ -776,6 +907,7 @@ on("metro-toggle", "click", async (event) => {
   el("metro-toggle").setAttribute("aria-pressed", String(açık));
   el("metro-panel").hidden = !açık;
   if (açık) closeTunePanel();
+  syncPanelLayer();
 });
 
 on("metro-volume", "input", () => {
@@ -860,12 +992,10 @@ on("open-settings", "click", () => {
   refreshAudioUi();
   hideMessage(el("settings-message"));
   showView("settings");
+  pushLayer("view");
 });
 
-on("close-settings", "click", () => {
-  showView("library");
-  if (isConfigured(settings)) refreshLibrary();
-});
+on("close-settings", "click", () => requestBack("view"));
 
 on("settings-form", "submit", (event) => {
   event.preventDefault();
@@ -920,12 +1050,9 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && handleBack()) event.preventDefault();
 });
 
-on("back-to-library", "click", () => {
-  stopPlayback();
-  stopLoop();
-  showView("library");
-  refreshLibrary();
-});
+// Mikserden kütüphaneye: çalma DURUYOR, konum korunuyor, tamponlar kalıyor
+// (aynı şarkıya hızlı dönüş). Mini oynatıcı yok - bilinçli.
+on("back-to-library", "click", () => requestBack("view"));
 
 async function startPlayback() {
   // Autoplay politikası: bu bir kullanıcı hareketi, context burada açılır.
@@ -1196,6 +1323,9 @@ on("align-run", "click", async () => {
   results.innerHTML = "";
   state.hidden = false;
   state.textContent = "Hazırlanıyor…";
+  // Ölçüm sürerken geri yutuluyor: yarıda kesilen bir ölçüm yanlış sayı
+  // verir, yanlış sayı da yanlış karar.
+  nav.block("align");
   try {
     // Oynatıcı çalıyorsa durdur: iki AudioContext aynı anda ses vermesin.
     if (engine.playing) stopPlayback();
@@ -1219,6 +1349,7 @@ on("align-run", "click", async () => {
   } catch (error) {
     state.textContent = `Test çalıştırılamadı: ${error && error.message ? error.message : error}`;
   } finally {
+    nav.unblock("align");
     button.disabled = false;
   }
 });
@@ -1293,6 +1424,13 @@ on("clear-cache", "click", async () => {
 // ---------------------------------------------------------------- başlangıç
 
 mixer = new Mixer(el("channels"), engine, null, downloadStem);
+// İndirme menüsü de bir katman: geri tuşu önce onu kapatıyor. Menü kendi
+// içinde de kapanabiliyor (dışarı dokunma, bir biçim seçme) - o zaman
+// katmanı history üzerinden düşürüyoruz ki iki yığın ayrışmasın.
+mixer.onMenuChange = (open) => {
+  if (open) pushLayer("menu");
+  else if (nav.peek() === "menu") history.back();
+};
 strip = new ChordStrip(
   el("chordstrip"),
   el("chordstrip-track"),
