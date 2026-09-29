@@ -200,9 +200,93 @@ def test_constants(app):
     check("api fonksiyonu kayitli", "api" in app.app.registered_functions)
 
 
+
+def test_vendored_msst(app):
+    """Depoya alinmis MSST dosyalari ve torch 2.5.1 yamasi.
+
+    Bu testler GPU yolunu KOSTURMUYOR (yerelde torch yok) - onu
+    `modal run backend/app.py::hifi_smoke` yapiyor. Buradaki is, yeniden
+    vendor edilirken yamanin sessizce kaybolmasini yakalamak.
+    """
+    import ast
+
+    vendor = pathlib.Path(app.MSST_LOCAL)
+    check("vendor dizini var", vendor.is_dir(), str(vendor))
+    wanted = [
+        "LICENSE",
+        "README.md",
+        "models/__init__.py",
+        "models/bs_roformer/__init__.py",
+        "models/bs_roformer/attend.py",
+        "models/bs_roformer/bs_roformer.py",
+        "models/bs_roformer/mel_band_roformer.py",
+        "utils/__init__.py",
+        "utils/model_utils.py",
+    ]
+    missing = [name for name in wanted if not (vendor / name).is_file()]
+    check("vendor dosyalarinin hepsi yerinde", not missing, str(missing))
+
+    bad = []
+    for path in sorted(vendor.rglob("*.py")):
+        try:
+            compile(path.read_text(encoding="utf-8"), str(path), "exec")
+        except SyntaxError as error:
+            bad.append(f"{path.name}: {error}")
+    check("vendor .py dosyalari derleniyor", not bad, str(bad))
+
+    license_text = (vendor / "LICENSE").read_text(encoding="utf-8")
+    check("LICENSE MIT ve telif sahibi yaziyor",
+          "MIT License" in license_text and "ZFTurbo" in license_text)
+
+    attend = (vendor / "models/bs_roformer/attend.py").read_text(encoding="utf-8")
+    check("attend.py'de commit hash'i yazili", app.MSST_SHA in attend)
+    check("yamali cagri yerinde", "with _sdpa_kernel_compat():" in attend)
+    check("yamasiz cagri kalmadi",
+          "with sdpa_kernel(INFERENCE_SDPA_BACKENDS, set_priority=True):"
+          not in attend)
+
+    # Yamanin DAVRANISI: sadece metin degil, gercekten dusuyor mu?
+    # Dosyanin tamami import edilemiyor (torch yok), o yuzden yalnizca
+    # _sdpa_kernel_compat dugumu derlenip sahte bir sdpa_kernel'e baglaniyor.
+    tree = ast.parse(attend)
+    nodes = [node for node in tree.body
+             if isinstance(node, ast.FunctionDef) and node.name == "_sdpa_kernel_compat"]
+    check("_sdpa_kernel_compat tanimi var", len(nodes) == 1)
+    if nodes:
+        module = ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[]))
+        code = compile(module, "attend.py", "exec")
+
+        def old_torch(backends, **kwargs):
+            if kwargs:                      # torch 2.5.1: set_priority yok
+                raise TypeError("unexpected keyword argument 'set_priority'")
+            return "kwargsiz"
+
+        def new_torch(backends, set_priority=False):
+            return "set_priority=%s" % set_priority
+
+        space = {"sdpa_kernel": old_torch, "INFERENCE_SDPA_BACKENDS": ["math"]}
+        exec(code, space)
+        check("torch 2.5.1'de kwarg'siz cagriya dusuyor",
+              space["_sdpa_kernel_compat"]() == "kwargsiz")
+
+        space = {"sdpa_kernel": new_torch, "INFERENCE_SDPA_BACKENDS": ["math"]}
+        exec(code, space)
+        check("yeni torch'ta ipucu geri kazaniliyor",
+              space["_sdpa_kernel_compat"]() == "set_priority=True")
+
+    source = (ROOT / "backend" / "app.py").read_text(encoding="utf-8")
+    check("build'de MSST icin curl kalmadi", "curl -sSfL" not in source)
+    check("separate uretim decode'unu cagiriyor",
+          "_decode_pcm(input_path, samplerate, channels)" in source)
+    check("hifi_smoke entrypoint'i kayitli",
+          "hifi_smoke" in app.app.registered_entrypoints)
+    check("hifi_smoke_run fonksiyonu kayitli",
+          "hifi_smoke_run" in app.app.registered_functions)
+
 def main():
     app = load_app()
-    for test in (test_parse_range, test_signature, test_gate, test_constants):
+    for test in (test_parse_range, test_signature, test_gate, test_constants,
+                 test_vendored_msst):
         print(f"\n--- {test.__name__} ---")
         test(app)
     print(f"\n{'=' * 60}")
