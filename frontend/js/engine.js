@@ -524,10 +524,17 @@ export class Engine {
    * masaüstü: 2593 ms çözme / 253 ms indirme). İkişerli gitmek indirmeyi de
    * çözmenin altına saklıyor.
    *
-   * BELLEK: "Yüksek" kipte çözülen tampon zaten saklanan tamponun kendisi,
-   * yani ikişerli çözmek PCM'i artırmıyor. "Tasarruf" kipinde mono'ya
-   * indirme var, orada aynı anda iki stereo ara tampon açık olabiliyor:
-   * 9 dk / 32 kHz stereo için +138 MB. Bu yüzden sınır 2, daha fazlası değil.
+   * BELLEK - ÖNCEKİ NOT YANLIŞTI, düzeltildi: "Yüksek kipte ara tampon yok"
+   * demiştim. Chrome decodeAudioData'yı worker havuzunda koşturuyor
+   * (base_audio_context.cc) ve çözme arka planda bir AudioBus üretip ana iş
+   * parçacığında AudioBuffer'a KOPYALIYOR - kopya bitene kadar ikisi de
+   * bellekte. Yani her eşzamanlı çözme, o stem'in PCM'i kadar GEÇİCİ bellek
+   * demek (9 dk / 48 kHz stereo: stem başına ~207 MB). Sınır bu yüzden var;
+   * ayarlardan 2/3/6 seçilebiliyor ve hesap orada yazılı.
+   *
+   * `onStats` verilirse indirme ve çözme süreleri AYRI AYRI toplanıp
+   * bildiriliyor: boru hattı ikisini üst üste bindirdiği için duvar saati
+   * hangisinin uzadığını söylemiyor, telefonda da tek ölçüm aracımız bu.
    */
   async loadStems(names, provide, options = {}) {
     await this.ensureContext();
@@ -541,12 +548,21 @@ export class Engine {
     const loaded = new Map();
     const limit = Math.max(1, Math.min(Number(options.concurrency) || 1, queue.length));
 
+    // İndirme ve çözme AYRI toplanıyor (bkz. docstring). Toplamlar duvar
+    // saatinden büyük olabilir: işler üst üste biniyor.
+    const stats = { fetchMs: 0, decodeMs: 0, bytes: 0 };
+
     const worker = async () => {
       while (queue.length) {
         const name = queue.shift();
+        const fetchStarted = performance.now();
         const arrayBuffer = await provide(name);
+        stats.fetchMs += performance.now() - fetchStarted;
         if (!arrayBuffer) continue;
+        stats.bytes += arrayBuffer.byteLength || 0;
+        const decodeStarted = performance.now();
         let buffer = await this.ctx.decodeAudioData(arrayBuffer);
+        stats.decodeMs += performance.now() - decodeStarted;
         if (this.monoDownmix) {
           const stereo = buffer;
           buffer = this.#toMono(stereo);
@@ -573,6 +589,14 @@ export class Engine {
         solo: false,
         mute: false,
         source: null,
+      });
+    }
+
+    if (options.onStats) {
+      options.onStats({
+        fetchMs: Math.round(stats.fetchMs),
+        decodeMs: Math.round(stats.decodeMs),
+        bytes: stats.bytes,
       });
     }
 

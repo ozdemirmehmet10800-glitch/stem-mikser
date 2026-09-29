@@ -1,7 +1,9 @@
 // Yapıştırıcı: görünüm geçişleri, kitaplık, yükleme, durum yoklama ve
 // oynatıcının bağlanması.
 
-import { loadSettings, saveSettings, isConfigured } from "./settings.js";
+import {
+  loadSettings, saveSettings, isConfigured, DECODE_PARALLEL,
+} from "./settings.js";
 import { Api, ApiError, isDefinitelyOffline } from "./api.js";
 import {
   Engine, STEM_ORDER, STEM_LABELS, gainToDb, isMobile, longSongThresholdSec,
@@ -402,6 +404,12 @@ function renderLibrary(songs) {
   list.classList.toggle("select-mode", selectMode);
   syncSelectBar();
 
+  // Çevrimdışı işareti ÇEVRİMİÇİYKEN HİÇ HESAPLANMIYOR: online'ken her şarkı
+  // açılabilir, satır başına indeks okumaya gerek yok. Çevrimdışıyken de
+  // indeks tek seferde alınıp bütün satırlarda kullanılıyor.
+  const offlineNow = isOffline();
+  const cacheIndex = offlineNow ? stemCache.indexSnapshot() : null;
+
   list.innerHTML = "";
   if (!songs.length) {
     showMessage(el("library-message"), "Henüz şarkı yok. Yukarıdan bir tane ekle.", "warn");
@@ -460,8 +468,9 @@ function renderLibrary(songs) {
     item.append(thumb, info);
 
     // Çevrimdışıyken: cihazda sesi olan şarkı normal, olmayan SOLUK.
-    const offline = isOffline();
-    const ready = song.state === "done" && isOfflineReady(song);
+    const offline = offlineNow;
+    const ready = !offline
+      || (song.state === "done" && isOfflineReady(song, cacheIndex));
     item.classList.toggle("offline-missing", offline && !ready);
     if (offline && !ready) {
       item.title = "İnternet yok, bu şarkı telefonda kayıtlı değil";
@@ -750,12 +759,12 @@ function isOffline() {
 }
 
 /** Bu şarkı ağ olmadan açılabilir mi? (bilgi + bütün stem'ler cihazda) */
-function isOfflineReady(song) {
+function isOfflineReady(song, index = null) {
   const meta = readMeta(song.id);
   const stems = meta && meta.status && meta.status.stems;
   if (!stems || !stems.length) return false;
   const version = Number(song.stems_version || (meta.status.stems_version || 0));
-  return stemCache.indexHas(song.id, stems, version);
+  return stemCache.indexHas(song.id, stems, version, index);
 }
 
 /** Ağ gerektiren bir işlemden önce: çevrimdışıysak tek cümleyle söyle. */
@@ -833,19 +842,47 @@ async function refreshSongDetail(song, usedVersion) {
 // Açılışın nereye gittiğini ÖLÇÜYORUZ: bilgi isteği, önbellekten okuma, ağ,
 // çözme, arayüz. Telefonda konsol zor okunuyor ama tek satır özet yeterli ve
 // tahminle iyileştirme yapmanın önünü kesiyor.
+// Son açılışın dökümü Ayarlar ekranında görünüyor: telefonda konsol okumak zor
+// ve bu sayılar olmadan "hızlandı mı" sorusu tahmine kalıyor.
+const LAST_OPEN_KEY = "stem-mikser.lastopen";
+let lastOpen = readLastOpen();
+
+function readLastOpen() {
+  try {
+    const raw = localStorage.getItem(LAST_OPEN_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveLastOpen(stats) {
+  lastOpen = stats;
+  try {
+    localStorage.setItem(LAST_OPEN_KEY, JSON.stringify(stats));
+  } catch {
+    /* kota: ölçüm yine ekranda, sadece yeniden açılışta kaybolur */
+  }
+  refreshOpenStats();
+}
+
 function openTimer() {
   const t0 = performance.now();
   let last = t0;
   const marks = [];
+  const steps = {};
   return {
     mark(name) {
       const now = performance.now();
-      marks.push(`${name} ${Math.round(now - last)}`);
+      const ms = Math.round(now - last);
+      marks.push(`${name} ${ms}`);
+      steps[name] = ms;
       last = now;
     },
-    done(prefix) {
+    done(prefix, extra = {}) {
       const total = Math.round(performance.now() - t0);
       console.info(`[acilis] ${prefix} toplam ${total} ms | ${marks.join(" | ")}`);
+      saveLastOpen({ kind: prefix, total, steps, at: Date.now(), ...extra });
       return total;
     },
   };
@@ -862,7 +899,10 @@ async function openSong(song) {
     pushLayer("view");
     lastPositionSync = -1;
     startLoop();
-    timer.done("hizli acilis (bellekte)");
+    timer.done("hizli acilis (bellekte)", {
+      source: "bellek", concurrency: 0,
+      duration: Number(song.duration) || 0,
+    });
     return;
   }
 
@@ -939,6 +979,8 @@ async function openSong(song) {
     // İkiden fazlası yok: "Tasarruf" kipinde her çözme kendi stereo ara
     // tamponunu açıyor (9 dk / 32 kHz için ~69 MB), ikisi aynı anda +138 MB.
     let fromCache = 0;
+    let loadStats = null;
+    const parallelCount = settings.decodeParallel;
     setOverlay(true, "Kanallar hazırlanıyor…");
     const duration = await engine.loadStems(stems, async (name) => {
       const fill = fills.get(name);
@@ -957,7 +999,10 @@ async function openSong(song) {
         await stemCache.put(song.id, name, arrayBuffer.slice(0), stemsVersion);
       }
       return arrayBuffer;
-    }, { concurrency: 2 });
+    }, {
+      concurrency: parallelCount,
+      onStats: (info) => { loadStats = info; },
+    });
     console.info(`[stem] ${fromCache}/${stems.length} kanal cihazdan geldi`);
     timer.mark(fromCache === stems.length ? "onbellek+cozme" : "indirme+cozme");
     measureAacDelta(detail.status, duration);
@@ -1010,7 +1055,19 @@ async function openSong(song) {
       id: song.id, stemsVersion, audioMode: engine.audioMode,
     };
     timer.mark("arayuz");
-    timer.done(cachedOk ? "tam yukleme (bilgi cihazdan)" : "tam yukleme");
+    timer.done(cachedOk ? "tam yukleme (bilgi cihazdan)" : "tam yukleme", {
+      source: fromCache === stems.length ? "cihaz"
+        : (fromCache === 0 ? "ağ" : `karışık ${fromCache}/${stems.length}`),
+      infoSource: cachedOk ? "cihaz" : "ağ",
+      concurrency: parallelCount,
+      duration: Number(duration) || 0,
+      stems: stems.length,
+      // Boru hattı ikisini üst üste bindiriyor; bu toplamlar duvar saatinden
+      // büyük olabilir ama HANGİSİNİN uzadığını ancak bunlar söylüyor.
+      fetchMs: loadStats ? loadStats.fetchMs : null,
+      decodeMs: loadStats ? loadStats.decodeMs : null,
+      bytes: loadStats ? loadStats.bytes : null,
+    });
   } catch (error) {
     // AÇILIŞ HERHANGİ BİR ADIMDA DÜŞERSE boş mikserde kalınmıyor: oynatıcı
     // katmanı kapanıyor ve sebep kitaplıkta yazıyor. Mesaj pendingLibraryNote
@@ -1340,6 +1397,8 @@ on("open-settings", "click", () => {
   el("setting-stretcher").value = settings.stretcher;
   refreshStretcherUi();
   refreshAudioUi();
+  refreshParallelUi();
+  refreshOpenStats();
   hideMessage(el("settings-message"));
   showView("settings");
   pushLayer("view");
@@ -1545,6 +1604,72 @@ async function refreshAudioUi() {
   if (lastAacDelta) parts.push(lastAacDelta);
   state.textContent = parts.join(" · ");
 }
+
+// Paralel çözme seçeneği GEÇİCİ bir deney ayarı: kaç stem'in aynı anda
+// getirilip çözüleceğini seçtiriyor. Kalıcı bir kullanıcı ayarı değil,
+// telefonda ölçüm yapabilmek için duruyor.
+function buildParallelOptions() {
+  const select = el("setting-parallel");
+  if (!select) return;
+  select.innerHTML = "";
+  for (const value of DECODE_PARALLEL) {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.textContent = value === 2 ? `${value} (varsayılan)` : String(value);
+    select.append(option);
+  }
+}
+
+function refreshParallelUi() {
+  const select = el("setting-parallel");
+  if (select) select.value = String(settings.decodeParallel);
+  const note = el("parallel-note");
+  if (!note) return;
+  // 9 dakikalık şarkı, 48 kHz stereo float32: stem başına 207 MB.
+  const perStem = 540 * 48000 * 2 * 4 / 1024 ** 2;
+  const total = perStem * 6;
+  const extra = perStem * (settings.decodeParallel - 1);
+  note.textContent =
+    `Aynı anda kaç stem getirilip çözülecek. Her çözme arka planda bir AudioBus `
+    + `üretip ana iş parçacığında AudioBuffer'a kopyalıyor; kopya bitene kadar `
+    + `ikisi de bellekte. 9 dk / 48 kHz stereo şarkıda stem başına `
+    + `${Math.round(perStem)} MB: son hâl ${Math.round(total)} MB, `
+    + `${settings.decodeParallel}'li çözmede tepe ~${Math.round(total + extra)} MB `
+    + `(+${Math.round(extra)} MB geçici). Takılma ya da çökme görürsen düşür.`;
+}
+
+function refreshOpenStats() {
+  const node = el("open-stats");
+  if (!node) return;
+  if (!lastOpen) {
+    node.textContent = "Son açılış: henüz ölçülmedi.";
+    return;
+  }
+  const steps = lastOpen.steps || {};
+  const parts = Object.entries(steps).map(([name, ms]) => `${name} ${ms}`);
+  const bits = [`Son açılış: ${lastOpen.total} ms`];
+  if (parts.length) bits.push(parts.join(" · "));
+  // İndirme ve çözme toplamları: boru hattında üst üste bindikleri için
+  // toplamları duvar saatini aşabilir, ama hangisinin uzadığı ancak böyle
+  // görülüyor.
+  if (lastOpen.fetchMs != null || lastOpen.decodeMs != null) {
+    bits.push(`indirme ${lastOpen.fetchMs} + çözme ${lastOpen.decodeMs} (toplam iş)`);
+  }
+  if (lastOpen.bytes) {
+    bits.push(`${(lastOpen.bytes / 1024 ** 2).toFixed(1)} MB`);
+  }
+  if (lastOpen.source) bits.push(`kaynak: ${lastOpen.source}`);
+  if (lastOpen.infoSource) bits.push(`bilgi: ${lastOpen.infoSource}`);
+  if (lastOpen.concurrency) bits.push(`paralellik ${lastOpen.concurrency}`);
+  if (lastOpen.duration) bits.push(`şarkı ${Math.round(lastOpen.duration)} sn`);
+  if (lastOpen.kind) bits.push(lastOpen.kind);
+  node.textContent = bits.join(" · ");
+}
+
+on("setting-parallel", "change", () => {
+  settings = saveSettings({ decodeParallel: el("setting-parallel").value });
+  refreshParallelUi();
+});
 
 on("setting-audio", "change", async () => {
   settings = saveSettings({ mobileAudio: el("setting-audio").value });
@@ -1795,6 +1920,8 @@ buildSubdivisionButtons();
 buildStretcherOptions();
 el("setting-stretcher").value = settings.stretcher;
 refreshStretcherUi();
+buildParallelOptions();
+refreshParallelUi();
 applyStretcherSettings();
 applyAudioSettings();
 registerServiceWorker();

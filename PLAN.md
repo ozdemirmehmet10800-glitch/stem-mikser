@@ -106,6 +106,18 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      çevrilerek): çevrimdışı yeniden açılışta liste cihazdan geliyor, cihazda
      sesi olan şarkı ağsız açılıyor (6 kanal), olmayan soluk ve tek cümle
      veriyor, bağlantı geri gelince görünüm kendiliğinden düzeliyor.
+   - **DÜZELTME (aynı gün): zaman aşımı 8 sn ÇOK KISAYDI.** API'nin
+     `min_containers`'ı yok, yani boştayken konteyner kapalı ve ilk istek
+     soğuk başlangıcı bekliyor - meşru bir bekleme. 8 sn'de kesilip yeniden
+     denenince her açılışa saniyeler biniyordu; gerçek Modal'da yeniden deneme
+     hâlâ uyanmakta olan konteynere denk gelirse ikinci kez kesilip HATA
+     veriyor. Sahte sunucuya soğuk başlangıç taklidi eklendi
+     (`mock_server.py --cold 12`) ve ölçüldü: 12 sn'lik soğuk başlangıçta ham
+     `fetch` 12.0 sn, uygulama yolu 9.7 sn sürüyordu (ilk istek 8 sn'de
+     kesilmişti). **Zaman aşımı 30 sn** oldu ve **zaman aşımında yeniden
+     deneme kaldırıldı** (30 sn'de cevap vermeyen sunucuya aynı isteği
+     tekrarlamak beklemeyi ikiye katlamaktan başka bir şey yapmıyor).
+     Yeniden deneme yalnız ANINDA düşen bağlantı için duruyor.
 
 ### Sırada
 7. [ ] **Piyano ve davulu Hi-Fi modelden (BS-RoFormer SW) almak.** SW 6
@@ -120,7 +132,39 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
    yalnız iki stem'de gözden geçirilmesi demek: C'nin iskeleti buna hazır
    (vokal gibi davul/piyano da B'den alınıp enstrümantalden çıkarılabilir,
    kalan stem'ler demucs'ta kalır).
-8. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
+8. [ ] **Anında başlatma (önizleme dosyaları).** KOD YOK, plan.
+
+   **Sunucu:** her stem için ilk 30 saniyeyi ayrı bir dosya olarak da üret
+   (`stems/preview/<ad>.m4a`). Kesme `ffmpeg -c copy` ile, YENİDEN KODLAMA
+   YOK - AAC çerçeveleri birebir aynı kopyalandığı için çözülen örnekler de
+   aynı olmalı (yalnız son çerçeve kırpma sınırında farklı olabilir). Maliyet
+   ihmal edilebilir: kod çözme/kodlama yok, sadece kopyalama. `reencode`
+   komutu bunları da üretmeli, `stems_version` ortak.
+
+   **Uygulama:** önce önizlemeler çözülüp ÇALMAYA BAŞLANIYOR (6 × 30 sn =
+   çözme süresinin ~1/4'ü), tam dosyalar arkada iniyor ve çözülüyor. Hazır
+   olunca kaynaklar **zamanlanmış bir anda** değiştiriliyor: seek'te
+   kullanılan konum hesabının aynısıyla, örnek hassasiyetinde. Önizleme
+   biterken tam dosya hâlâ hazır değilse kısa bir bekleme (sessizlik) olsun -
+   yanlış konumdan devam etmektense duraksamak iyi.
+
+   **Neden bu iş:** ölçüm (madde 5) açılışın %90'ından fazlasının
+   `decodeAudioData`'da geçtiğini gösterdi; önizleme o sürenin dörtte birini
+   ödeyip çalmaya başlıyor, kalanını arkaya atıyor.
+
+   **Kabul testleri:**
+   - Önizleme ile tam dosyanın ilk 29 saniyesi ÖRNEK ÖRNEK aynı mı? (İkisini
+     de çözüp fark al; eşik: tam sıfır ya da yalnız son çerçevede fark.)
+   - Hiza testine **"değişim anı"** satırı: kaynak değiştirme sırasında
+     kayma var mı - 1.0x (bypass), 0.8x ve canlı hız değişimi sırasında.
+     Eşik yine ±10 ms; saçılma raporlanır.
+   - Önizleme bitmeden tam dosya hazır olmazsa davranış: duraksama var ama
+     konum DOĞRU.
+
+   **Bilinen risk:** esnetici açıkken düğümün içinde ~120 ms duyulmamış ses
+   var; kaynak değişimi o boru hattının hesabını bozmamalı (Aşama 8'deki
+   "yeniden çıpalama" kuralı burada da geçerli).
+9. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
 
 ### Kalite zinciri (2026-09-29 sonrası)
 | adım | format | kHz | kanal | derinlik/bit hızı |

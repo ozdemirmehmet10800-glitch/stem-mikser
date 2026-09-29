@@ -43,6 +43,21 @@ DELETED = set()
 # app.py'deki SONG_ID_RE ile ayni: 64 kucuk hex + istege bagli kisa deney eki.
 SONG_ID_RE = re.compile(r"^[0-9a-f]{64}(-[a-z0-9]{1,12})?$")
 
+# Modal'in SOGUK BASLANGICI taklidi: ilk istek bu kadar saniye gec cevaplanir,
+# sonrakiler normal. On yuzun zaman asimi soguk baslangicta yanlis alarm
+# veriyor mu, baska turlu olculemiyordu.
+COLD_DELAY = 0.0
+_warm = {"done": False}
+
+
+def cold_start_delay():
+    if COLD_DELAY <= 0 or _warm["done"]:
+        return 0.0
+    _warm["done"] = True
+    print(f"[soguk] ilk istek {COLD_DELAY} sn bekletiliyor")
+    time.sleep(COLD_DELAY)
+    return COLD_DELAY
+
 
 def find_songs():
     """out/<sha>/ altindaki isi bitmis sarkilari bulur."""
@@ -113,6 +128,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, body, "application/json; charset=utf-8", extra)
 
     def _authorized(self):
+        cold_start_delay()
         header = self.headers.get("Authorization", "")
         if not header.startswith("Bearer ") or not hmac.compare_digest(header[7:], TOKEN):
             self._json(401, {"detail": "Bearer token gerekli"})
@@ -353,7 +369,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--cold", type=float, default=0.0,
+                        help="ilk istegi bu kadar saniye beklet (soguk baslangic taklidi)")
     args = parser.parse_args()
+
+    global COLD_DELAY
+    COLD_DELAY = args.cold
+    if COLD_DELAY:
+        print(f"Soguk baslangic taklidi: ilk istek {COLD_DELAY} sn gec")
 
     songs = find_songs()
     print(f"Sahte API: http://{args.host}:{args.port}")

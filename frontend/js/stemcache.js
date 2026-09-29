@@ -132,10 +132,19 @@ export class StemCache {
    * ama localStorage kalmış" durumunda - o zaman şarkı açılışta ağa düşer,
    * zaten olması gereken de bu.
    */
-  indexHas(songId, names, version = 0) {
+  indexHas(songId, names, version = 0, index = null) {
     if (!songId || !names || !names.length) return false;
-    const index = loadIndex();
-    return names.every((name) => Boolean(index[keyFor(songId, name, version)]));
+    const table = index || loadIndex();
+    return names.every((name) => Boolean(table[keyFor(songId, name, version)]));
+  }
+
+  /**
+   * İndeksin tek seferlik kopyası. Kitaplık her çizimde ONLARCA şarkı için
+   * `indexHas` soruyor; her çağrıda indeksi yeniden ayrıştırmak (2 GB'lık bir
+   * önbellekte 240+ girdi) boşuna iş. Çizim başında bir kez alınıp geçiliyor.
+   */
+  indexSnapshot() {
+    return loadIndex();
   }
 
   async usage() {

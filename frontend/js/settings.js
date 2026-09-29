@@ -30,10 +30,23 @@ const KEY = "stem-mikser.settings";
 export const AUDIO_SAVE = "save";
 export const AUDIO_HIGH = "high";
 
+// Kaç stem aynı anda getirilip çözülsün? GEÇİCİ DENEY AYARI.
+// Chrome decodeAudioData'yı worker havuzunda koşturuyor (base_audio_context.cc
+// -> worker_pool::PostTask), yani çağrılar gerçekten paralel. Bedeli bellek:
+// her çözme arka planda bir AudioBus üretiyor, sonra ana iş parçacığında
+// AudioBuffer'a KOPYALANIYOR; kopya bitene kadar ikisi birden bellekte.
+// Ayrıntılı hesap PLAN.md'de.
+export const DECODE_PARALLEL = [2, 3, 6];
+
 const DEFAULTS = {
   url: "", token: "", stretcher: "signalsmith", formants: false,
-  mobileAudio: AUDIO_HIGH,
+  mobileAudio: AUDIO_HIGH, decodeParallel: 2,
 };
+
+export function normalizeParallel(value) {
+  const number = Number(value);
+  return DECODE_PARALLEL.includes(number) ? number : DEFAULTS.decodeParallel;
+}
 
 // ELLE SEÇİLMİŞ TERCİH KORUNUYOR: kayıtta açıkça "save" yazıyorsa varsayılan
 // devreye girmiyor. Yalnızca tanınmayan/boş değer varsayılana düşüyor - yoksa
@@ -56,6 +69,7 @@ export function loadSettings() {
       stretcher: parsed.stretcher || DEFAULTS.stretcher,
       formants: Boolean(parsed.formants),
       mobileAudio: normalizeAudioMode(parsed.mobileAudio),
+      decodeParallel: normalizeParallel(parsed.decodeParallel),
     };
   } catch {
     return { ...DEFAULTS };
@@ -71,6 +85,7 @@ export function saveSettings(next) {
     stretcher: merged.stretcher || DEFAULTS.stretcher,
     formants: Boolean(merged.formants),
     mobileAudio: normalizeAudioMode(merged.mobileAudio),
+    decodeParallel: normalizeParallel(merged.decodeParallel),
   };
   localStorage.setItem(KEY, JSON.stringify(clean));
   return clean;

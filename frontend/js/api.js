@@ -18,7 +18,14 @@ const RETRY_DELAY_MS = 1500;
 // şey "sunucu hiç cevap vermiyor mu". Zaman aşımı olmadan, bağlantı
 // reddedilmek yerine ASILI KALIRSA (zayıf şebeke) bekleme sınırsız oluyordu -
 // çevrimdışı "sonsuza kadar hazırlanıyor" kusurunun sebebi buydu.
-const RESPONSE_TIMEOUT_MS = 8000;
+//
+// 8 SANİYEYDİ, 30'A ÇIKARILDI (ölçümle): API'nin min_containers'ı yok, yani
+// boştayken konteyner kapalı ve ilk istek SOĞUK BAŞLANGICI bekliyor. Sahte
+// sunucuyla 12 sn'lik soğuk başlangıç kurulup ölçüldü: 8 sn'de kesilen istek
+// yeniden deneniyor ve her açılışa boşuna saniyeler biniyordu; gerçek Modal'da
+// yeniden deneme hâlâ uyanmakta olan konteynere denk gelirse ikinci kez
+// kesilip HATA veriyor. Soğuk başlangıç meşru bir bekleme, kesilmemeli.
+const RESPONSE_TIMEOUT_MS = 30000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -106,6 +113,13 @@ export class Api {
     } catch (firstCause) {
       // Çevrimdışıyken yeniden denemenin anlamı yok, bekleme boşuna uzar.
       if (firstCause instanceof ApiError) throw firstCause;
+      // ZAMAN AŞIMINDA DA YENİDEN DENENMİYOR: sunucu 30 saniyede cevap
+      // vermediyse aynı isteği tekrarlamak beklemeyi ikiye katlamaktan başka
+      // bir şey yapmıyor. Yeniden deneme, ANINDA düşen bağlantı için (soğuk
+      // başlangıçta kapı hiç açılmamış olabiliyor).
+      if (firstCause && firstCause.name === "AbortError") {
+        throw networkError(firstCause, this.url);
+      }
       if (retriable) {
         await sleep(RETRY_DELAY_MS);
         try {
