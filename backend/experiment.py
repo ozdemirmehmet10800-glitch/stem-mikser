@@ -505,10 +505,13 @@ def _residual_report(mix, stems: dict) -> dict:
 
 def _write_outputs(song_id: str, title: str, stems: dict, samplerate: int,
                    channels: int, duration: float, source_song: str,
-                   meta: dict) -> list:
+                   meta: dict, clip_scale: float = None) -> list:
     """FLAC master + m4a, canlı `separate` ile AYNI kurallarla.
 
     Ortak clip_scale: stem başına ayrı ölçek mikserde dengeyi bozardı.
+    `clip_scale` verilirse (madde 7 deneyi) ONUNLA yazılır: aynı şarkının
+    varyantları aynı ölçeği kullansın, yoksa ~1 dB ses farkı kulak testinde
+    "daha iyi" yanılgısı yaratır.
     """
     import soundfile as sf
 
@@ -519,7 +522,8 @@ def _write_outputs(song_id: str, title: str, stems: dict, samplerate: int,
     stems_dir.mkdir(parents=True, exist_ok=True)
 
     peaks = {name: float(abs(value).max()) for name, value in stems.items()}
-    clip_scale = max(1.01 * max(peaks.values()), 1.0)
+    if clip_scale is None:
+        clip_scale = max(1.01 * max(peaks.values()), 1.0)
     print(f"[clip] tepeler={ {k: round(v, 4) for k, v in peaks.items()} }")
     print(f"[clip] ortak scale={clip_scale:.4f}")
 
@@ -913,10 +917,12 @@ def pick_songs(count: int = 3, must_contain: str = "") -> list:
 # C: vokal B'nin modelinden, kalan 5 stem demucs'tan
 # --------------------------------------------------------------------------
 
-def _demucs_stage(demucs, instrumental, sources: list):
+def _demucs_stage(demucs, instrumental, sources: list, fix_mean: bool = False):
     """Enstrümantali htdemucs_6s ile böler. A ve C bunu paylaşıyor.
 
     Normalizasyon canlı `separate` ile aynı (demucs CLI davranışı).
+    `fix_mean`: canlı yoldaki düzeltme (ref_mean YALNIZ bir kaynağa eklenir);
+    eski A/C koşumları yayınlama kusuruyla kalsın diye varsayılan kapalı.
     Dönen: {isim: (2, N)}, saniye, tepe VRAM.
     """
     import numpy as np
@@ -937,7 +943,11 @@ def _demucs_stage(demucs, instrumental, sources: list):
             demucs, torch.from_numpy(normalized)[None], device="cuda",
             shifts=1, split=True, overlap=0.25, progress=False,
         )
-    out = (split[0].cpu().numpy() * ref_std) + ref_mean
+    if fix_mean:
+        out = split[0].cpu().numpy() * ref_std
+        out[0] += ref_mean
+    else:
+        out = (split[0].cpu().numpy() * ref_std) + ref_mean
     seconds = round(time.time() - started, 2)
     return {name: out[index] for index, name in enumerate(sources)}, seconds, _peak_vram()
 
@@ -2075,3 +2085,535 @@ def _print_table(reports: list):
     print("Ne kadar NEGATIF ise toplam orijinale o kadar yakin.")
     print("Sonuclar kitaplikta '[A]', '[B]', '[B-max]' olarak gorunuyor;")
     print("akor ve vurus orijinalden kopyalandi, yeniden hesaplanmadi.")
+
+
+# ==========================================================================
+# MADDE 7 DENEYİ: piyano ve davul BS-Roformer SW'den (PLAN.md madde 7)
+# ==========================================================================
+# SW tek geçişte altı stem üretiyor; canlı yol yalnız vokali alıp kalanı
+# atıyor. Burada piyano ve davul da SW'den alınıp enstrümantalden ÇIKARILIYOR:
+#
+#   V0  bugünkü canlı zincir:   demucs(karışım - vokal)
+#   V1  piyano SW'den:          demucs(karışım - vokal - piyano)
+#   V2  piyano + davul SW'den:  demucs(karışım - vokal - piyano - davul)
+#
+# Demucs'un SW'nin aldığı stem'lerle aynı isimli çıkışı ("artık" = SW'nin
+# kaçırdığı) iki yere gidebilir: "p" aynı stem'e eklenir, "o" other'a eklenir.
+# ÖNCE artığın RMS'i SW stem'ine göre ölçülür; vokal artığı (V0'daki, zaten
+# kabul edilen yol) REFERANS. Artık referansın ALTINDAYSA yalnız "p" üretilir,
+# büyükse o/p ikisi de. Demucs'un vokal artığı her zaman other'a (canlı gibi).
+#
+# Tüm metrikler 2 sn'lik pencerelerle; şarkı ortalaması + en kötü 5 pencere
+# zaman damgasıyla. Kulak testi için etiketler NÖTR HARF; anahtar yalnız
+# yerel pd_out/key.json'a yazılıyor (kulak testinden ÖNCE bakma).
+
+PD_WINDOW_SEC = 2.0
+PD_LOW_DIV = 4               # ilişki ölçümü 11025 Hz'de
+PD_FLOOR = 1e-3              # bant enerjisi karışımın -30 dB altındaysa pencere geçersiz
+PD_LETTERS = "KMPQTWXZ"
+PD_OUT = pathlib.Path(__file__).resolve().parent / "pd_out"
+PD_DEFAULT_SONGS = "Zeus,Below The Surface,HAZBIN,Final Duet,Nothing Else Matters"
+
+
+def _pd_win(x, win: int):
+    import numpy as np
+
+    count = len(x) // win
+    return np.asarray(x[:count * win], dtype=np.float64).reshape(count, win)
+
+
+def _pd_energy(x, win: int):
+    return (_pd_win(x, win) ** 2).sum(axis=1)
+
+
+def _pd_dot(x, y, win: int):
+    size = min(len(x), len(y))
+    return (_pd_win(x[:size], win) * _pd_win(y[:size], win)).sum(axis=1)
+
+
+def _pd_fmt(seconds: float) -> str:
+    return f"{int(seconds // 60)}:{seconds % 60:04.1f}"
+
+
+def _pd_sos(sr: int) -> dict:
+    from scipy.signal import butter
+
+    fs_lo = sr / PD_LOW_DIV
+    return {
+        "lp": butter(4, 200, btype="low", fs=fs_lo, output="sos"),
+        "bp": butter(4, [200, 4000], btype="band", fs=fs_lo, output="sos"),
+        "hp": butter(4, 6000, btype="high", fs=sr, output="sos"),
+    }
+
+
+def _pd_features(stems: dict, mix, sr: int, sos: dict) -> dict:
+    """Bir varyantın pencere bazlı özellikleri (ölçeklenmemiş stem'ler)."""
+    import numpy as np
+    from scipy.signal import sosfiltfilt
+
+    win = int(PD_WINDOW_SEC * sr)
+    win_lo = win // PD_LOW_DIV
+    feats = {"energy": {}, "lo": {}, "mid": {}, "loE": {}, "hf": {}}
+    clicks = None
+    total = None
+    for name, value in stems.items():
+        total = value.copy() if total is None else total + value
+        mono = value.mean(axis=0)
+        feats["energy"][name] = _pd_energy(mono, win)
+        flags = np.zeros(len(mono), dtype=np.float32)
+        flags[1:] = np.abs(np.diff(mono)) > CLICK_THRESHOLD
+        per_window = _pd_win(flags, win).sum(axis=1)
+        clicks = per_window if clicks is None else clicks + per_window
+        if name in ("bass", "piano", "drums"):
+            small = _downmix(value, PD_LOW_DIV)
+            feats["lo"][name] = sosfiltfilt(sos["lp"], small)
+            feats["mid"][name] = sosfiltfilt(sos["bp"], small)
+            feats["loE"][name] = _pd_energy(feats["lo"][name], win_lo)
+        if name in ("drums", "other"):
+            feats["hf"][name] = _pd_energy(sosfiltfilt(sos["hp"], mono), win)
+    feats["clicks"] = clicks
+    size = min(total.shape[1], mix.shape[1])
+    feats["sumres"] = _pd_energy((mix[:, :size] - total[:, :size]).mean(axis=0), win)
+    return feats
+
+
+def _pd_mix_features(mix, sr: int, sos: dict) -> dict:
+    from scipy.signal import sosfiltfilt
+
+    win = int(PD_WINDOW_SEC * sr)
+    win_lo = win // PD_LOW_DIV
+    mono = mix.mean(axis=0)
+    small = _downmix(mix, PD_LOW_DIV)
+    return {
+        "E": _pd_energy(mono, win),
+        "loE": _pd_energy(sosfiltfilt(sos["lp"], small), win_lo),
+        "midE": _pd_energy(sosfiltfilt(sos["bp"], small), win_lo),
+        "hfE": _pd_energy(sosfiltfilt(sos["hp"], mono), win),
+    }
+
+
+def _pd_contain(x, y, mix_energy, win_lo: int):
+    """<x,y>/<y,y>: y'nin ne kadarı x'in içinde. y sessizse pencere GEÇERSİZ (nan)."""
+    import numpy as np
+
+    xy = _pd_dot(x, y, win_lo)
+    yy = _pd_energy(y, win_lo)
+    size = min(len(xy), len(yy), len(mix_energy))
+    out = np.full(size, np.nan)
+    valid = yy[:size] > PD_FLOOR * mix_energy[:size]
+    out[valid] = xy[:size][valid] / yy[:size][valid]
+    return out
+
+
+def _pd_metrics(base: dict, cand: dict, mixf: dict, sr: int) -> dict:
+    """metrik -> (pencere dizisi, yüksek=kötü mü). Referans V0 (base)."""
+    import numpy as np
+
+    win_lo = int(PD_WINDOW_SEC * sr) // PD_LOW_DIV
+    eps = 1e-20
+
+    def db(num, den):
+        return 10.0 * np.log10((num + eps) / (den + eps))
+
+    table = {}
+    size = min(len(cand["sumres"]), len(mixf["E"]))
+    table["sum_residual_db"] = (db(cand["sumres"][:size], mixf["E"][:size]), True)
+
+    bass_b, bass_c = base["loE"]["bass"], cand["loE"]["bass"]
+    size = min(len(bass_b), len(bass_c), len(mixf["loE"]))
+    delta = db(bass_c[:size], bass_b[:size])
+    delta[~(bass_b[:size] > PD_FLOOR * mixf["loE"][:size])] = np.nan
+    table["bass_low_delta_db"] = (delta, False)      # bas <200 Hz'i kaybederse KÖTÜ
+
+    def stolen(stem: str):
+        after = _pd_contain(cand["lo"][stem], base["lo"]["bass"], mixf["loE"], win_lo)
+        before = _pd_contain(base["lo"][stem], base["lo"]["bass"], mixf["loE"], win_lo)
+        count = min(len(after), len(before))
+        return after[:count] - before[:count]
+
+    table["bass_stolen_by_piano"] = (stolen("piano"), True)
+    table["bass_stolen_by_drums"] = (stolen("drums"), True)
+
+    after = _pd_contain(cand["mid"]["drums"], base["mid"]["piano"], mixf["midE"], win_lo)
+    before = _pd_contain(base["mid"]["drums"], base["mid"]["piano"], mixf["midE"], win_lo)
+    count = min(len(after), len(before))
+    table["piano_in_drums"] = (after[:count] - before[:count], True)
+
+    def ghost(feats):
+        return db(feats["hf"]["other"], feats["hf"]["drums"])
+
+    ghost_c, ghost_b = ghost(cand), ghost(base)
+    size = min(len(ghost_c), len(ghost_b), len(mixf["hfE"]))
+    hf_delta = ghost_c[:size] - ghost_b[:size]
+    hf_delta[~(base["hf"]["drums"][:size] > PD_FLOOR * mixf["hfE"][:size])] = np.nan
+    table["hf_ghost_delta_db"] = (hf_delta, True)     # other'da zil/hi-hat arttıysa KÖTÜ
+
+    floor = 1e-4 * mixf["E"]
+    size = min(len(cand["energy"]["piano"]), len(base["energy"]["piano"]), len(floor))
+    table["piano_level_delta_db"] = (
+        10.0 * np.log10((cand["energy"]["piano"][:size] + floor[:size])
+                        / (base["energy"]["piano"][:size] + floor[:size])),
+        True,                                          # şişen piyano = uydurma riski
+    )
+    size = min(len(cand["clicks"]), len(base["clicks"]))
+    table["click_delta"] = (cand["clicks"][:size] - base["clicks"][:size], True)
+    return table
+
+
+def _pd_summarize(values, worse_higher: bool, k: int = 5) -> dict:
+    import numpy as np
+
+    arr = np.asarray(values, dtype=np.float64)
+    ok = np.isfinite(arr)
+    if not ok.any():
+        return {"mean": None, "worst": [], "valid_windows": 0}
+    key = np.where(ok, arr if worse_higher else -arr, -np.inf)
+    order = [int(i) for i in np.argsort(-key)[:k] if ok[i]]
+    return {
+        "mean": round(float(np.mean(arr[ok])), 3),
+        "valid_windows": int(ok.sum()),
+        "worst": [{"t": _pd_fmt(i * PD_WINDOW_SEC), "value": round(float(arr[i]), 3)}
+                  for i in order],
+    }
+
+
+def _pd_listen(tables: dict, mix_energy) -> dict:
+    """Dinleme bölümleri: en kötü pencere + bir NORMAL pencere (medyana yakın)."""
+    import numpy as np
+
+    size = min(len(mix_energy), *(len(arr) for table in tables.values()
+                                   for arr, _ in table.values()))
+    composite = np.zeros(size)
+    for table in tables.values():
+        for arr, worse_higher in table.values():
+            a = np.asarray(arr[:size], dtype=np.float64)
+            ok = np.isfinite(a)
+            if ok.sum() < 10:
+                continue
+            median = np.median(a[ok])
+            spread = np.median(np.abs(a[ok] - median)) * 1.4826 + 1e-6
+            z = (a - median) / spread
+            z = z if worse_higher else -z
+            composite = composite + np.where(ok, np.clip(z, 0, 30), 0)
+    music = mix_energy[:size] > 0.05 * float(np.mean(mix_energy[:size]))
+    if not music.any():
+        return {}
+    worst = int(np.argmax(np.where(music, composite, -1.0)))
+    median_score = float(np.median(composite[music]))
+    far = music & (np.abs(np.arange(size) - worst) * PD_WINDOW_SEC > 10.0)
+    if far.any():
+        normal = int(np.argmin(np.where(far, np.abs(composite - median_score), np.inf)))
+    else:
+        normal = worst
+    return {
+        "worst": {"t": _pd_fmt(worst * PD_WINDOW_SEC),
+                  "score": round(float(composite[worst]), 2)},
+        "normal": {"t": _pd_fmt(normal * PD_WINDOW_SEC),
+                   "score": round(float(composite[normal]), 2)},
+    }
+
+
+def _pd_res_windows(residue, reference, mix_energy, sr: int):
+    """Artık/SW-stem oranı (dB), pencere bazlı; SW stem'i sessizse nan."""
+    import numpy as np
+
+    win = int(PD_WINDOW_SEC * sr)
+    res_e = _pd_energy(residue.mean(axis=0), win)
+    ref_e = _pd_energy(reference.mean(axis=0), win)
+    size = min(len(res_e), len(ref_e), len(mix_energy))
+    out = 10.0 * np.log10((res_e[:size] + 1e-20) / (ref_e[:size] + 1e-20))
+    out[~(ref_e[:size] > 1e-4 * mix_energy[:size])] = np.nan
+    return out
+
+
+def _pd_rms_db(residue, reference) -> float:
+    import numpy as np
+
+    res = float(np.sqrt(np.mean(residue.astype(np.float64) ** 2)))
+    ref = float(np.sqrt(np.mean(reference.astype(np.float64) ** 2)))
+    if ref <= 0 or res <= 0:
+        return -999.0
+    return round(20.0 * float(np.log10(res / ref)), 2)
+
+
+@app.function(
+    image=gpu_image,
+    gpu="T4",
+    volumes={DATA_DIR: volume},
+    timeout=3600,
+    max_containers=1,      # min_containers YOK
+)
+def run_pd(song_id: str, letters: str = PD_LETTERS) -> dict:
+    """Bir şarkı için V0/V1/V2 çıkışları + ölçümler. SW BİR kez koşar."""
+    import random
+
+    import numpy as np
+    import torch
+    from demucs.pretrained import get_model
+
+    wall_started = time.time()
+    volume.reload()
+    root = pathlib.Path(EXP_WEIGHTS)
+    config = _load_config(root / "bs_roformer_sw.yaml")
+    samplerate = int(config["audio"]["sample_rate"])
+    channels = int(config["audio"]["num_channels"])
+
+    load_started = time.time()
+    roformer = _build_model("bs", config)
+    _load_checkpoint(roformer, root / "bs_roformer_sw.ckpt", "cuda")
+    demucs = get_model(MODEL_NAME)
+    demucs.eval()
+    demucs_sources = [str(name) for name in demucs.sources]
+    if int(demucs.samplerate) != samplerate or int(demucs.audio_channels) != channels:
+        raise ValueError("Ornekleme/kanal uyusmuyor (roformer/demucs)")
+    load_seconds = round(time.time() - load_started, 2)
+
+    source_status = json.loads((_song_dir(song_id) / "status.json").read_text("utf-8"))
+    title = str(source_status.get("title") or song_id[:12])
+    mix = _decode(_find_input(song_id), samplerate, channels)
+    duration = round(mix.shape[1] / samplerate, 3)
+    print(f"[pd] {title}: {mix.shape} -> {duration} sn, model yukleme {load_seconds} sn")
+
+    # --- SW: BİR geçiş, fp32 (canlı yol gibi). Yalnız 3 stem tutuluyor. ----
+    started = time.time()
+    out, _ = _demix(roformer, mix, config, 2, False)
+    instruments = list(config["training"]["instruments"])
+    sw = {name: out[instruments.index(name)].copy()
+          for name in ("vocals", "piano", "drums")}
+    sw_seconds = round(time.time() - started, 2)
+    print(f"[pd] SW {sw_seconds} sn, stem sirasi={instruments}")
+    del out, roformer
+    torch.cuda.empty_cache()
+
+    vocals, piano, drums = sw["vocals"], sw["piano"], sw["drums"]
+
+    # --- demucs: üç enstrümantal --------------------------------------------
+    stage_seconds = {}
+    d0, stage_seconds["v0"], _ = _demucs_stage(
+        demucs, mix - vocals, demucs_sources, True)
+    d1, stage_seconds["v1"], _ = _demucs_stage(
+        demucs, mix - vocals - piano, demucs_sources, True)
+    d2, stage_seconds["v2"], _ = _demucs_stage(
+        demucs, mix - vocals - piano - drums, demucs_sources, True)
+    print(f"[pd] demucs sn: {stage_seconds}")
+
+    sos = _pd_sos(samplerate)
+    mixf = _pd_mix_features(mix, samplerate, sos)
+
+    # --- ÖNCE artık ölçümü: yön kararı --------------------------------------
+    residue = {
+        "vocal_ref_db": _pd_rms_db(d0["vocals"], vocals),   # V0'daki (kabul edilmiş) referans
+        "v1_piano_db": _pd_rms_db(d1["piano"], piano),
+        "v2_piano_db": _pd_rms_db(d2["piano"], piano),
+        "v2_drums_db": _pd_rms_db(d2["drums"], drums),
+    }
+    windows = {
+        "vocal_ref": _pd_res_windows(d0["vocals"], vocals, mixf["E"], samplerate),
+        "v1_piano": _pd_res_windows(d1["piano"], piano, mixf["E"], samplerate),
+        "v2_piano": _pd_res_windows(d2["piano"], piano, mixf["E"], samplerate),
+        "v2_drums": _pd_res_windows(d2["drums"], drums, mixf["E"], samplerate),
+    }
+    reference = residue["vocal_ref_db"]
+    # Referans yalnız SW vokali gerçekten doluysa anlamlı. Vokalsiz şarkıda
+    # (Final Duet: vokal tepesi 0.0001) oran +54 dB çıkıyor, bu artık değil
+    # bölme gürültüsü. O durumda karar KOYMUYORUZ: iki yön de üretilir.
+    voc_rms = float(np.sqrt(np.mean(vocals.astype(np.float64) ** 2)))
+    mix_rms = float(np.sqrt(np.mean(mix.astype(np.float64) ** 2)))
+    reference_valid = voc_rms > 10 ** (-40 / 20) * mix_rms
+    residue["vocal_ref_valid"] = bool(reference_valid)
+    if reference_valid:
+        v1_both = residue["v1_piano_db"] > reference
+        v2_both = max(residue["v2_piano_db"], residue["v2_drums_db"]) > reference
+    else:
+        v1_both = v2_both = True
+    print(f"[pd] artik dB (SW stem'ine gore): {residue}  -> "
+          f"V1 {'o+p' if v1_both else 'p'}, V2 {'o+p' if v2_both else 'p'}")
+
+    def assemble(kind: str, route: str) -> dict:
+        if kind == "V0":
+            d = d0
+            return {"vocals": vocals, "drums": d["drums"], "bass": d["bass"],
+                    "guitar": d["guitar"], "piano": d["piano"],
+                    "other": d["other"] + d["vocals"]}
+        same = route == "p"
+        if kind == "V1":
+            d = d1
+            return {"vocals": vocals, "drums": d["drums"], "bass": d["bass"],
+                    "guitar": d["guitar"],
+                    "piano": piano + d["piano"] if same else piano,
+                    "other": d["other"] + d["vocals"] + (0.0 if same else d["piano"])}
+        d = d2
+        return {"vocals": vocals, "bass": d["bass"], "guitar": d["guitar"],
+                "piano": piano + d["piano"] if same else piano,
+                "drums": drums + d["drums"] if same else drums,
+                "other": d["other"] + d["vocals"]
+                + (0.0 if same else d["piano"] + d["drums"])}
+
+    plan = [("V0", "-"), ("V1", "p")]
+    if v1_both:
+        plan.append(("V1", "o"))
+    plan.append(("V2", "p"))
+    if v2_both:
+        plan.append(("V2", "o"))
+    names = [kind if route == "-" else f"{kind}{route}" for kind, route in plan]
+
+    # --- 1. geçiş: ortak ölçek + özellikler (bellek: tek varyant canlı) -----
+    peaks, feats, sum_res = {}, {}, {}
+    for (kind, route), name in zip(plan, names):
+        stems = assemble(kind, route)
+        peaks[name] = max(float(np.abs(value).max()) for value in stems.values())
+        feats[name] = _pd_features(stems, mix, samplerate, sos)
+        sum_res[name] = _residual_report(mix, stems)
+        del stems
+    clip_scale = max(1.01 * max(peaks.values()), 1.0)
+    print(f"[pd] ortak clip_scale={clip_scale:.4f}, "
+          f"tepeler={ {k: round(v, 3) for k, v in peaks.items()} }")
+
+    # --- ölçümler (V0 referans) ---------------------------------------------
+    tables = {name: _pd_metrics(feats["V0"], feats[name], mixf, samplerate)
+              for name in names if name != "V0"}
+    metrics = {
+        name: {metric: _pd_summarize(arr, worse_higher)
+               for metric, (arr, worse_higher) in table.items()}
+        for name, table in tables.items()
+    }
+    listen = _pd_listen(tables, mixf["E"])
+    residue_windows = {key: _pd_summarize(arr, True) for key, arr in windows.items()}
+    piano_level_db = {
+        name: round(float(10 * np.log10((feats[name]["energy"]["piano"].sum() + 1e-20)
+                                        / (mixf["E"].sum() + 1e-20))), 2)
+        for name in names
+    }
+
+    # --- 2. geçiş: yaz (nötr harf etiketiyle) -------------------------------
+    pool = list(letters)
+    random.SystemRandom().shuffle(pool)
+    key = {}
+    written_ids = {}
+    for (kind, route), name in zip(plan, names):
+        letter = pool.pop()
+        target_id = f"{song_id}-pd{letter.lower()}"
+        key[letter] = name
+        written_ids[letter] = target_id
+        _write_outputs(target_id, f"[{letter}] {title}", assemble(kind, route),
+                       samplerate, channels, duration, song_id, meta={"pd": True},
+                       clip_scale=clip_scale)
+        print(f"[pd] yazildi: [{letter}] -> {target_id}")
+
+    wall_seconds = round(time.time() - wall_started, 2)
+    report = {
+        "song": song_id, "title": title, "duration": duration,
+        "instruments": instruments,
+        "sw_seconds": sw_seconds, "stage_seconds": stage_seconds,
+        "wall_seconds": wall_seconds,
+        "usd": round(wall_seconds * T4_USD_PER_SECOND, 4),
+        "clip_scale": round(clip_scale, 4),
+        "residue_db": residue,
+        "residue_windows": residue_windows,
+        "routing": {"V1": "o+p" if v1_both else "p", "V2": "o+p" if v2_both else "p"},
+        "variants": names,
+        "sum_residual": {name: sum_res[name] for name in names},
+        "piano_level_db_vs_mix": piano_level_db,
+        "metrics": metrics,
+        "listen": listen,
+        "key": key,
+        "ids": written_ids,
+    }
+    return json.loads(json.dumps(report, default=float))
+
+
+@app.function(image=fetch_image, volumes={DATA_DIR: volume}, timeout=120)
+def find_songs(needles: list) -> dict:
+    """Başlıkta geçen ada göre KAYNAK şarkıları bulur (deney çıktıları elenir)."""
+    volume.reload()
+    root = pathlib.Path(DATA_DIR) / "songs"
+    library = []
+    for entry in sorted(root.iterdir()) if root.is_dir() else []:
+        status_path = entry / "status.json"
+        if not status_path.is_file():
+            continue
+        try:
+            data = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if data.get("state") != "done" or data.get("source_song"):
+            continue
+        if not sorted(entry.glob("input.*")):
+            continue
+        library.append({"id": str(data.get("id", entry.name)),
+                        "title": str(data.get("title") or entry.name[:12]),
+                        "duration": float(data.get("duration") or 0.0)})
+    found = {}
+    for needle in needles:
+        low = needle.lower()
+        found[needle] = [item for item in library if low in item["title"].lower()]
+    return {"library": library, "found": found}
+
+
+@app.local_entrypoint()
+def pd_run(songs: str = PD_DEFAULT_SONGS, dry: bool = False):
+    """Madde 7 deneyi.
+
+        modal run backend/experiment.py::pd_run --dry     # yalniz sarki eslemesi
+        modal run backend/experiment.py::pd_run           # kosturur
+
+    Sonuclar pd_out/<sarki>.json, anahtar pd_out/key.json (KULAK TESTINDEN
+    ONCE ACMA). Kitapliktaki etiketler notr harf: [K], [M], ...
+    """
+    needles = [item.strip() for item in songs.split(",") if item.strip()]
+    lookup = find_songs.remote(needles)
+    chosen, problems = [], []
+    for needle in needles:
+        matches = lookup["found"][needle]
+        if len(matches) == 1:
+            chosen.append(matches[0])
+        else:
+            problems.append((needle, matches))
+
+    print("\nKitapliktaki kaynak sarkilar:")
+    for item in lookup["library"]:
+        print(f"  {item['id'][:12]}  {item['duration']:>6.0f} sn  {item['title']}")
+    print("\nEsleme:")
+    for needle in needles:
+        matches = lookup["found"][needle]
+        label = ", ".join(f"{m['title']} ({m['duration']:.0f} sn)" for m in matches) or "YOK"
+        print(f"  {needle:<24} -> {label}")
+    if problems:
+        raise SystemExit("\nBelirsiz ya da eksik eslesme var; --songs ile daha ozel ad ver "
+                         "ya da eksik sarkiyi yukle.")
+    if dry:
+        return
+
+    PD_OUT.mkdir(exist_ok=True)
+    key_path = PD_OUT / "key.json"
+    keys = json.loads(key_path.read_text("utf-8")) if key_path.is_file() else {}
+    total_usd = 0.0
+    for item in chosen:
+        print(f"\n--- {item['title']} ---")
+        report = run_pd.remote(item["id"])
+        total_usd += report["usd"]
+        slug = "".join(ch if ch.isalnum() else "_" for ch in item["title"])[:40]
+        keys[item["id"]] = {"title": item["title"], "key": report.pop("key"),
+                            "ids": report.pop("ids")}
+        (PD_OUT / f"{slug}.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        key_path.write_text(json.dumps(keys, ensure_ascii=False, indent=2), encoding="utf-8")
+        _print_pd(report)
+    print(f"\nToplam ~${total_usd:.3f}. Anahtar {key_path} (kulak testinden once acma).")
+
+
+def _print_pd(report: dict):
+    print(f"\n{report['title']}  ({report['duration']:.0f} sn)  ${report['usd']:.4f}  "
+          f"SW {report['sw_seconds']} sn, demucs {report['stage_seconds']}")
+    print(f"  stem sirasi: {report['instruments']}")
+    print(f"  artik dB (SW stem'ine gore): {report['residue_db']}")
+    print(f"  yon: {report['routing']}   ortak clip_scale {report['clip_scale']}")
+    print("  toplam artigi dB: "
+          + ", ".join(f"{k}={v['residual_db']}" for k, v in report["sum_residual"].items()))
+    print(f"  piyano/karisim dB: {report['piano_level_db_vs_mix']}")
+    for name, table in report["metrics"].items():
+        print(f"  [{name}] (V0'a gore)")
+        for metric, summary in table.items():
+            worst = ", ".join(f"{w['t']}={w['value']}" for w in summary["worst"])
+            print(f"      {metric:<24} ort={summary['mean']}  en kotu: {worst}")
+    print(f"  dinleme: {report['listen']}")
