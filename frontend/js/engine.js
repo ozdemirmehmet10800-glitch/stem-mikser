@@ -27,6 +27,7 @@ import {
   isBypass, registerModule, createNode, updateNode, startNode,
   supportsFormants, normalizeStretcher,
 } from "./stretch.js";
+import { AUDIO_SAVE, normalizeAudioMode } from "./settings.js";
 
 export const STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"];
 
@@ -44,7 +45,40 @@ const GAIN_GLIDE = 0.012; // setTargetAtTime zaman sabiti; tık sesi olmasın
 
 // Mobilde bellek: 6 stem x 4 dk x 44,1 kHz x 2 kanal x 4 bayt = 508 MB.
 // 32 kHz mono'da aynı şarkı 184 MB. Masaüstünde tam kalite kalıyor.
+//
+// Bu artık AYARA bağlı ("Mobil ses kalitesi", settings.js):
+//   AUDIO_SAVE -> aşağıdaki hız + mono indirme (varsayılan, bugünkü davranış)
+//   AUDIO_HIGH -> hiç zorlama yok, cihazın doğal hızı ve stereo
+// 508 MB "fazla" hükmü hesapla verildi, ölçümle DEĞİL; hangi kipin gerçekte
+// açıldığını telefonda ölçmek için anahtar gerekiyordu.
 export const MOBILE_SAMPLE_RATE = 32000;
+
+// Cihazın DOĞAL çıkış hızı. Zorlamasız bir context açıp okuyoruz; başka
+// yoldan öğrenilemiyor. Context hemen kapatılıyor (tarayıcılar aynı anda
+// açılabilecek context sayısını sınırlıyor) ve sonuç önbelleğe alınıyor.
+let nativeRateCache = 0;
+
+export async function nativeSampleRate() {
+  if (nativeRateCache) return nativeRateCache;
+  const Ctor = window.AudioContext || window.webkitAudioContext;
+  if (!Ctor) return 0;
+  let probe = null;
+  try {
+    probe = new Ctor();
+    nativeRateCache = Math.round(probe.sampleRate) || 0;
+  } catch {
+    nativeRateCache = 0;
+  } finally {
+    if (probe) {
+      try {
+        await probe.close();
+      } catch {
+        /* yok say */
+      }
+    }
+  }
+  return nativeRateCache;
+}
 
 export function isMobile() {
   if (navigator.userAgentData && typeof navigator.userAgentData.mobile === "boolean") {
@@ -82,6 +116,8 @@ export class Engine {
     this.duration = 0;
     this.onEnded = null;
     this.mobile = isMobile();
+    // Ayar motora app.js'ten geliyor; varsayılan bugünkü davranış.
+    this.audioMode = AUDIO_SAVE;
     this.monoDownmix = this.mobile;
 
     // --- esnetme durumu ---
@@ -95,6 +131,79 @@ export class Engine {
     this.activeStretcher = DEFAULT_STRETCHER;  // gerçekten kurulan
     this.onStretcherFallback = null;           // yedeğe düşünce haber ver
     this.formants = false;  // yalnız destekleyen arka uçta anlamlı
+  }
+
+  #forceMobileRate() {
+    return this.mobile && this.audioMode === AUDIO_SAVE;
+  }
+
+  /** Ayar değişimi. Değiştiyse true döner: context YENİDEN KURULMALI. */
+  setAudioMode(mode) {
+    const next = normalizeAudioMode(mode);
+    if (next === this.audioMode) return false;
+    this.audioMode = next;
+    this.monoDownmix = this.mobile && next === AUDIO_SAVE;
+    return true;
+  }
+
+  /**
+   * Context'i kapatıp düşürür; bir sonraki ensureContext yenisini kurar.
+   *
+   * AudioBuffer'lar ait oldukları context'in ÖRNEKLEME HIZINA bağlı, başka
+   * bir context'e taşınamıyorlar - bu yüzden kanallar da gidiyor ve şarkı
+   * yeniden açılmak zorunda. Sayfa yenilemeye gerek yok.
+   */
+  async rebuildContext() {
+    this.stop();
+    this.channels.clear();
+    this.duration = 0;
+    this.offset = 0;
+    this.bus = null;
+    this.stretchNode = null;
+    this.channelLayout = 1;
+    const old = this.ctx;
+    this.ctx = null;
+    this.master = null;
+    if (old) {
+      try {
+        await old.close();
+      } catch {
+        /* zaten kapalı olabilir */
+      }
+    }
+  }
+
+  /**
+   * Çözülmüş tamponları bırakır, context'e dokunmaz.
+   *
+   * Yeni şarkı açılırken ÖNCE bu çağrılıyor: eskinin PCM'i indirme boyunca
+   * bellekte durmasın. setStems zaten kanalları temizliyor ama o ancak altı
+   * dosya indikten SONRA çalışıyordu; tepe bellek orada iki şarkıyı birden
+   * görüyordu.
+   */
+  releaseStems() {
+    this.stop();
+    this.channels.clear();
+    this.duration = 0;
+    this.offset = 0;
+    this.channelLayout = 1;
+  }
+
+  /** Ayarlar ekranı için: şu an gerçekten ne kullanılıyor? */
+  audioInfo() {
+    let channels = 0;
+    for (const channel of this.channels.values()) {
+      channels = Math.max(channels, channel.buffer ? channel.buffer.numberOfChannels : 0);
+    }
+    return {
+      mode: this.audioMode,
+      mobile: this.mobile,
+      forcedRate: this.#forceMobileRate() ? MOBILE_SAMPLE_RATE : 0,
+      monoDownmix: this.monoDownmix,
+      sampleRate: this.ctx ? this.ctx.sampleRate : 0,
+      channels,
+      stems: this.channels.size,
+    };
   }
 
   // decodeAudioData mono'ya kendiliğinden indirmiyor, stereo tamponu yine de
@@ -119,7 +228,12 @@ export class Engine {
       const Ctor = window.AudioContext || window.webkitAudioContext;
       // sampleRate desteklenmezse (eski Safari) varsayılanla devam et.
       try {
-        this.ctx = this.mobile ? new Ctor({ sampleRate: MOBILE_SAMPLE_RATE }) : new Ctor();
+        // Yalnız mobilde ve yalnız tasarruf kipinde hız ZORLANIYOR. "Yüksek"
+        // kipte ve masaüstünde parametresiz açılıyor, yani cihazın doğal hızı
+        // geliyor ve zincirde fazladan bir yeniden örnekleme olmuyor.
+        this.ctx = this.#forceMobileRate()
+          ? new Ctor({ sampleRate: MOBILE_SAMPLE_RATE })
+          : new Ctor();
       } catch {
         this.ctx = new Ctor();
       }

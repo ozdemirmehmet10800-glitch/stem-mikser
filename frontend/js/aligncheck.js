@@ -184,6 +184,10 @@ export async function runAlignmentCheck(report = () => {}, options = {}) {
   const engine = new Engine();
   engine.stretcher = stretcher;
   engine.formants = formants;
+  // Ses kalitesi ayarı: sentetik stem'ler ctx.sampleRate'te üretildiği için
+  // geri kalan her şey kendiliğinden uyum sağlıyor. Stem'ler MONO kalıyor -
+  // burada ölçülen şey zamanlama, yük değil; yük ölçümü bench.html'in işi.
+  engine.setAudioMode(options.audioMode);
   const metronome = new Metronome(engine);
   let tap = null;
   let sink = null;

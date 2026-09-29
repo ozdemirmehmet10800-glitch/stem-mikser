@@ -11,10 +11,22 @@
 
 import SignalsmithStretch from "../vendor/signalsmith-stretch/SignalsmithStretch.mjs";
 import { SoundTouchNode } from "../vendor/soundtouch-worklet/index.js";
+import { loadSettings, AUDIO_SAVE } from "./settings.js";
+import { MOBILE_SAMPLE_RATE, isMobile, nativeSampleRate } from "./engine.js";
 
 const el = (id) => document.getElementById(id);
 const CHANNEL_COUNTS = [1, 2, 3, 4, 6];
-const SAMPLE_RATE = 32000; // mobil yolumuzla aynı
+// Ölçüm hızı ARTIK SABİT DEĞİL: uygulamanın gerçekte kullandığı hız neyse o.
+// 32 kHz'e çakılıyken "Yüksek" kipin CPU payı hiç ölçülemiyordu - bench'in
+// tek işi buysa yanlış kipte ölçmek işe yaramaz.
+let SAMPLE_RATE = MOBILE_SAMPLE_RATE;
+
+async function resolveSampleRate() {
+  const settings = loadSettings();
+  const saving = isMobile() && settings.mobileAudio === AUDIO_SAVE;
+  SAMPLE_RATE = saving ? MOBILE_SAMPLE_RATE : (await nativeSampleRate()) || MOBILE_SAMPLE_RATE;
+  return { rate: SAMPLE_RATE, mode: settings.mobileAudio, saving };
+}
 const RATE = 0.8;
 const SEMITONES = 2;
 const PROCESSOR_URL = "vendor/soundtouch-worklet/soundtouch-processor.js";
@@ -144,6 +156,7 @@ function peakOf(buffer) {
 // ---------------------------------------------------------------- nesnel
 
 async function runOffline() {
+  const picked = await resolveSampleRate();
   const layout = Number(el("layout").value);
   const seconds = Number(el("seconds").value);
   const body = el("results").querySelector("tbody");
@@ -151,6 +164,7 @@ async function runOffline() {
   logLines.length = 0;
   el("run-offline").disabled = true;
   log(`kütüphane: ${el("library").value}, düzen: ${layout} kanal, ${seconds} sn`);
+  log(`ölçüm hızı: ${picked.rate} Hz (mobil ses kalitesi: ${picked.mode})`);
   say("Ölçülüyor… telefon bu sırada başka iş yapmasın.", "warn");
 
   try {
@@ -261,6 +275,8 @@ let liveTimer = null;
 let liveMaster = null;
 
 // AudioContext kullanıcı hareketinin İÇİNDE, await'ten ÖNCE kuruluyor.
+// (SAMPLE_RATE açılışta resolveSampleRate ile ayarlanıyor; burada await
+// edilemez, kullanıcı hareketi kaybolur.)
 function openContext() {
   const Ctor = window.AudioContext || window.webkitAudioContext;
   let ctx;
@@ -597,7 +613,7 @@ function showEnvironment() {
     `userAgent      : ${navigator.userAgent}`,
     `deviceMemory   : ${navigator.deviceMemory ?? "bilinmiyor"} GB`,
     `hardwareConcurrency: ${navigator.hardwareConcurrency ?? "bilinmiyor"}`,
-    `ölçüm oranı    : ${SAMPLE_RATE} Hz`,
+    `ölçüm oranı    : ${SAMPLE_RATE} Hz (ses kalitesi ayarından)`,
     `AudioWorklet   : ${typeof AudioWorklet !== "undefined" ? "var" : "YOK"}`,
     `WebAssembly    : ${typeof WebAssembly !== "undefined" ? "var" : "YOK"}`,
   ].join("\n");
@@ -611,4 +627,4 @@ el("run-single").addEventListener("click", runSingleNode);
 el("stop-single").addEventListener("click", stopSingleNode);
 el("run-realtime").addEventListener("click", runRealtime);
 el("stop-realtime").addEventListener("click", stopRealtime);
-showEnvironment();
+resolveSampleRate().then(showEnvironment).catch(() => showEnvironment());

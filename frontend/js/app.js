@@ -3,7 +3,10 @@
 
 import { loadSettings, saveSettings, isConfigured } from "./settings.js";
 import { Api, ApiError } from "./api.js";
-import { Engine, STEM_ORDER, STEM_LABELS, gainToDb, isMobile, longSongThresholdSec } from "./engine.js";
+import {
+  Engine, STEM_ORDER, STEM_LABELS, gainToDb, isMobile, longSongThresholdSec,
+  nativeSampleRate,
+} from "./engine.js";
 import { Mixer } from "./mixer.js";
 import { ChordStrip, formatTime } from "./chords.js";
 import { MediaBridge } from "./media.js";
@@ -54,6 +57,8 @@ const wakeLock = new WakeLock();
 const stemCache = new StemCache();
 const metronome = new Metronome(engine);
 let lastPositionSync = -1;
+// AAC priming ölçümü (aşağıda, openSong içinde) - Ayarlar ekranında gösteriliyor.
+let lastAacDelta = "";
 
 // --- hız / ton durumu ---
 // tempoOffset'in birimi BPM (şarkının tempo'su biliniyorsa), bilinmiyorsa
@@ -461,6 +466,13 @@ async function openSong(song) {
   strip.clear();
   el("channels").innerHTML = "";
 
+  // Eski şarkının PCM'i İNDİRMEDEN ÖNCE bırakılıyor. setStems zaten
+  // kanalları temizliyor ama o ancak altı dosya indikten SONRA çalışıyor;
+  // arada iki şarkının tamponları birden bellekte duruyordu (8 dk, tasarruf
+  // kipi: 350 + 350 MB). Kütüphaneye dönüşte BIRAKILMIYOR - aynı şarkıya
+  // hızlı dönebilmek bilinçli olarak korunuyor.
+  engine.releaseStems();
+
   setOverlay(true, "Şarkı bilgileri alınıyor…");
   try {
     const detail = await api.getSong(song.id);
@@ -512,6 +524,7 @@ async function openSong(song) {
 
     setOverlay(true, "Ses çözülüyor…");
     const duration = await engine.setStems(entries);
+    measureAacDelta(detail.status, duration);
 
     mixer.render(entries.map((entry) => entry.name));
     strip.build(detail.chords, duration);
@@ -844,6 +857,7 @@ on("open-settings", "click", () => {
   el("setting-token").value = settings.token;
   el("setting-stretcher").value = settings.stretcher;
   refreshStretcherUi();
+  refreshAudioUi();
   hideMessage(el("settings-message"));
   showView("settings");
 });
@@ -984,6 +998,99 @@ on("master", "input", () => {
 
 // --------------------------------------------------------- esnetici seçimi
 
+// --------------------------------------------- AAC decode gecikmesi (ucuz kısım)
+//
+// Hipotez: m4a'nın encoder priming'i (tipik 1024-2112 örnek = 23-48 ms)
+// tarayıcıda kırpılmıyorsa ses ızgaraya göre kayar. Sunucuya dokunmadan
+// ölçülebilen BİR şey var: çözülen tamponun UZUNLUĞU. Sunucu süreyi ham
+// PCM'den hesaplayıp status.json'a yazıyor; AAC ise hem başa priming hem
+// sona çerçeve dolgusu ekliyor. Tarayıcı bunları kırpıyorsa iki süre
+// birbirini tutar, kırpmıyorsa tampon ~23-48 ms UZUN çıkar.
+//
+// Ne KANITLAMAZ: uzunluk farkı 0 ise başın doğru kırpıldığı kesinleşmez
+// (teorik olarak baş kırpılmayıp son fazladan kırpılmış olabilir) ve fark
+// varsa kaymanın tam miktarı bilinmez. Kesin ölçüm çapraz ilinti ister:
+// aynı stem'in FLAC aslını `POST /songs/{id}/download-link?format=flac` ile
+// imzalı URL'den indirip iki tamponu karşılaştırmak. Sunucu değişikliği
+// gerekmiyor ama ~20 MB indirme + ilinti kodu gerekiyor; yerelde FLAC aslı
+// olmadığı için bu turda DOĞRULANAMAZDI, o yüzden sonraki tura bırakıldı.
+function measureAacDelta(status, decodedDuration) {
+  const reported = Number(status && status.duration) || 0;
+  if (!reported || !decodedDuration) {
+    lastAacDelta = "";
+    return;
+  }
+  const deltaMs = (decodedDuration - reported) * 1000;
+  const rounded = Math.round(deltaMs * 10) / 10;
+  lastAacDelta = `AAC uzunluk farkı ${rounded >= 0 ? "+" : ""}${rounded} ms`;
+  console.info(
+    `[aac] çözülen ${decodedDuration.toFixed(3)} sn, sunucu ${reported.toFixed(3)} sn, `
+    + `fark ${rounded} ms (0'a yakınsa tarayıcı priming/dolguyu kırpıyor)`
+  );
+}
+
+// ------------------------------------------------------- mobil ses kalitesi
+
+// Ayarlar ekranındaki iki satır: cihazın DOĞAL hızı (zorlamasız bir context
+// açıp okunuyor) ve ŞU AN kullanılan context'in hızı + kanal sayısı. İkisi
+// ayrı ayrı gerekiyor: zorlama yüzünden doğal hız bugüne kadar hiç görünmedi.
+async function refreshAudioUi() {
+  const select = el("setting-audio");
+  if (select) select.value = settings.mobileAudio;
+
+  const note = el("audio-note");
+  if (note) {
+    note.textContent = engine.mobile
+      ? "Tasarruf: AudioContext 32 kHz'e zorlanır ve stem'ler mono'ya "
+        + "indirilir (8 dk şarkıda ~350 MB). Yüksek: zorlama yok, stereo "
+        + "(~1 GB) - telefonda açılıp açılmadığı ÖLÇÜLMEDİ, takılma ya da "
+        + "sekme çökmesi görürsen Tasarruf'a dön."
+      : "Bu ayar yalnız mobilde etkili; masaüstünde zaten tam kalite "
+        + "(cihaz hızı, stereo) çalışıyor.";
+  }
+
+  const state = el("audio-state");
+  if (!state) return;
+  const info = engine.audioInfo();
+  const native = await nativeSampleRate();
+  const parts = [];
+  parts.push(native ? `cihazın doğal hızı ${native} Hz` : "cihaz hızı okunamadı");
+  if (info.sampleRate) {
+    const channelText = info.stems
+      ? `${info.channels === 1 ? "mono" : `${info.channels} kanal`}, ${info.stems} stem`
+      : "kanal yok (şarkı açılmadı)";
+    parts.push(`şu an ${Math.round(info.sampleRate)} Hz, ${channelText}`);
+  } else {
+    parts.push("ses motoru henüz açılmadı (bir şarkı aç)");
+  }
+  if (info.forcedRate) parts.push(`hız ${info.forcedRate} Hz'e zorlanıyor`);
+  if (lastAacDelta) parts.push(lastAacDelta);
+  state.textContent = parts.join(" · ");
+}
+
+on("setting-audio", "change", async () => {
+  settings = saveSettings({ mobileAudio: el("setting-audio").value });
+  const changed = engine.setAudioMode(settings.mobileAudio);
+  if (changed) {
+    // AudioBuffer'lar context'in örnekleme hızına bağlı, taşınamıyorlar:
+    // context yeniden kurulunca açık şarkı da düşüyor. Sayfa yenilemek
+    // GEREKMİYOR, ama şarkının yeniden açılması gerekiyor - kullanıcı bunu
+    // ekranda okusun, sessizce "ses gelmiyor" yaşamasın.
+    stopPlayback();
+    stopLoop();
+    metronome.dispose();
+    await engine.rebuildContext();
+    currentSong = null;
+    showMessage(
+      el("settings-message"),
+      "Ses motoru yeniden kuruldu. Açık şarkı kapatıldı; kütüphaneden "
+      + "yeniden aç. Sayfayı yenilemene gerek yok.",
+      "ok"
+    );
+  }
+  await refreshAudioUi();
+});
+
 function refreshStretcherUi() {
   const select = el("setting-stretcher");
   const check = el("setting-formants");
@@ -1013,6 +1120,10 @@ function refreshStretcherUi() {
 function applyStretcherSettings() {
   engine.setStretcher(settings.stretcher);
   engine.setFormants(settings.formants);
+}
+
+function applyAudioSettings() {
+  engine.setAudioMode(settings.mobileAudio);
 }
 
 on("setting-stretcher", "change", () => {
@@ -1091,7 +1202,14 @@ on("align-run", "click", async () => {
     const { runAlignmentCheck, PASS_MS } = await import("./aligncheck.js");
     const { rows, legend } = await runAlignmentCheck(
       (text) => { state.textContent = text; },
-      { stretcher: settings.stretcher, formants: settings.formants }
+      {
+        stretcher: settings.stretcher,
+        formants: settings.formants,
+        // Hiza testi SEÇİLİ kalitede koşuyor: kendi Engine'ini kurduğu için
+        // kipi ona ayrıca söylemek gerekiyor, yoksa "Yüksek" seçiliyken
+        // 32 kHz mono ölçer ve sonuç uygulamayı anlatmaz.
+        audioMode: settings.mobileAudio,
+      }
     );
     renderAlignment(rows, legend);
     const failed = rows.filter((item) => item.passed === false).length;
@@ -1189,6 +1307,7 @@ buildStretcherOptions();
 el("setting-stretcher").value = settings.stretcher;
 refreshStretcherUi();
 applyStretcherSettings();
+applyAudioSettings();
 registerServiceWorker();
 stemCache.requestPersistence();
 
