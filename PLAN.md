@@ -15,6 +15,29 @@ Bu metni proje köküne PLAN.md olarak kaydet. Her yeni oturumda önce PLAN.md'y
 - Bir paketin bağımlılığını değerlendirirken tek dosyaya bakma, IMPORT ZİNCİRİNİ takip et. `beat_this/inference.py` torchaudio import etmiyor ama import ettiği `beat_this/preprocessing.py` ediyor; buna dayanarak `--no-deps` kurulumu yapıldı ve build hata verdi.
 - Uzak (Modal) fonksiyonlar yerel entrypoint'e ASLA torch/numpy nesnesi döndürmez. Sadece düz Python tipleri (str, int, float, bool, list, dict, None) ya da dosya yolları/bayt dizileri döner. `torch.__version__` gibi değerler bile (TorchVersion) yerel ortamda torch kurulu olmadığı için DeserializationError'a yol açar; dönüş öncesi str()/int()/float()/bool() ile açıkça çevir.
 
+## SIRADAKİ İŞLER (bu sırayla)
+Her oturumun başında buraya bak. Ayrıntılar ilgili aşama bölümlerinde.
+
+0. [x] **MSST dosyaları depoya alındı.** `backend/vendor/msst/` (MIT, pinli
+   commit `84b1eac...`), imaja `add_local_dir` ile giriyor. Build'de artık ağ
+   erişimi yok; `curl` olmadığı için patlayan `fetch_hifi` build'i bu yüzden
+   patlamıştı. torch 2.5.1 yaması artık depodaki dosyada görünüyor, build
+   sırasında metin değiştirilerek uygulanmıyor. `experiment.py` de aynı
+   kaynağı kullanıyor (Volume'daki eski `weights-exp/msst` kopyası ölü veri).
+1. [ ] **Deney şarkılarını temizle.** `modal run backend/experiment.py::cleanup`
+   (önce listeler, `--yes` ile siler). Orijinal şarkılara dokunmuyor.
+2. [ ] **Kalite paketi.** ÖNCE RAPOR, KOD YOK: yüklemeden telefonda çalmaya
+   kadar her adımda örnekleme hızı / kanal sayısı / bit hızı zinciri
+   yazılacak. Telefon şu an **32 kHz mono** çalıyor; hedef **stereo,
+   44.1/48 kHz, kayıpsız ya da şeffaf**. Karar formatı değiştirirse mevcut
+   şarkılar **FLAC asıllardan yeniden kodlanacak, yeniden AYIRMA yok**
+   (`master/*.flac` zaten Volume'da). Hiza testi (Ayarlar ekranı) yeniden
+   geçmek zorunda - `sampleRate` değişimi esnetici gecikmesini de etkiliyor.
+3. [ ] **Geri tuşu.** Android'de geri şu an uygulamayı kapatıyor. Olması
+   gereken: mikser → kütüphane; açık panel varsa önce o kapanır; kütüphanede
+   geri = normal çıkış. History API ile (`pushState` + `popstate`).
+4. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
+
 ## Mimari
 Tek kullanıcılı. PC sadece geliştirme ve deploy için; deploy sonrası sistem PC kapalıyken çalışmalı.
 

@@ -60,14 +60,26 @@ kontrol edilen güncel metadata `mit`, commit
 ### Music-Source-Separation-Training (ZFTurbo) — MIT
 
 BS-Roformer mimarisi buradan. Commit
-`84b1eac0887756b4f1a9d7a1ff49105939749ed2`'ye **pinli**; iki dosya
-(`models/bs_roformer/attend.py` ve `bs_roformer.py`) Modal imajının build
-aşamasında iniyor. Gerçek `LICENSE` dosyası var, MIT.
+`84b1eac0887756b4f1a9d7a1ff49105939749ed2`'ye **pinli**. Gerçek `LICENSE`
+dosyası var, MIT.
 
-`attend.py`'ye build sırasında 13 satırlık bir uyumluluk yaması uygulanıyor:
+Dört dosya **bu depoda dağıtılıyor** (kod MIT olduğu için buna izin var;
+lisans metni ve telif bildirimi yanında duruyor):
+`backend/vendor/msst/` altında `models/bs_roformer/attend.py`,
+`bs_roformer.py`, `mel_band_roformer.py` ve `utils/model_utils.py`; upstream
+`LICENSE`'ın birebir kopyası da orada. Ayrıntı, dosya başına orijinal
+sha256'lar ve güncelleme tarifi: `backend/vendor/msst/README.md`.
+Modal imajına `add_local_dir` ile giriyorlar; **build sırasında ağ erişimi
+yok**. (Önceden build'de `curl` ile iniyorlardı — temel imajda curl olmadığı
+için build hata veriyordu, ayrıca pinli bir commit'te indirmenin faydası
+yoktu.)
+
+`attend.py`'de tek bir uyumluluk değişikliği var ve **depodaki dosyada
+görünüyor** (eskiden build/çalışma anında metin değiştirilerek uygulanıyordu):
 pinli commit `sdpa_kernel(..., set_priority=True)` çağırıyor, bu kwarg torch
 2.6'da eklendi, imajda torch 2.5.1 var (demucs yüzünden bilinçli pinli).
-Yama yalnızca arka uç öncelik ipucunu düşürüyor, matematiği değiştirmiyor.
+Çağrı `_sdpa_kernel_compat()` sarmalayıcısına alındı; yama yalnızca arka uç
+öncelik ipucunu düşürüyor, matematiği değiştirmiyor.
 
 **`KimberleyJensen/Mel-Band-Roformer-Vocal-Model` KULLANILMIYOR:** o depoda
 hiçbir LICENSE dosyası yok, yani varsayılan olarak her hakkı saklı.
