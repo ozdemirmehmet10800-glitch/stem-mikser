@@ -422,6 +422,26 @@ def _run(cmd: list) -> subprocess.CompletedProcess:
     return proc
 
 
+def _decode_pcm(path: pathlib.Path, samplerate: int, channels: int):
+    """ffmpeg ile (kanal, N) float32 numpy dizisi. torchaudio I/O yok.
+
+    `separate` ve `hifi_smoke_run` AYNI işlevi çağırıyor, bilinçli: duman
+    testinin parça (chunk) ızgarası üretimdekiyle birebir aynı olmak zorunda.
+    Tek örneklik bir kayma bile örtüşme sınırlarını kaydırır ve deneydeki
+    çıktıyla karşılaştırmayı anlamsız kılar.
+    """
+    import numpy as np
+
+    proc = _run(
+        [
+            "ffmpeg", "-nostdin", "-v", "error", "-i", str(path),
+            "-f", "f32le", "-acodec", "pcm_f32le",
+            "-ar", str(samplerate), "-ac", str(channels), "-",
+        ]
+    )
+    return np.frombuffer(proc.stdout, dtype="<f4").reshape(-1, channels).T.copy()
+
+
 def _decode_mono(path: pathlib.Path, samplerate: int):
     """ffmpeg ile mono float32 numpy dizisi. torchaudio I/O yok."""
     import numpy as np
@@ -889,6 +909,320 @@ def fetch_hifi():
     print(fetch_hifi_weights.remote())
 
 
+# --------------------------------------------------------------------------
+# Hi-Fi GPU duman testi
+# --------------------------------------------------------------------------
+# Neden gerekiyor: yerel 122 test torch'suz bir ortamda koşuyor, yani
+# /msst'ten import'u, BSRoformer'ın kurulmasını ve vendored attend.py'deki
+# yamalı satırı (yalnız CUDA dalında çalışıyor) HİÇ çalıştırmıyor. Bu
+# entrypoint üretimin kendi imajı, GPU'su ve Volume'uyla tam yolu koşturuyor.
+#
+# Volume'a HİÇBİR ŞEY YAZMIYOR: hiçbir status.json'a, stem'e, kitaplık
+# girdisine dokunmuyor. Salt okuma + GPU.
+#
+# Karşılaştırma: aynı şarkının deneydeki C-fp32 vokali (`{id}-cfp32`) aynı
+# modelden, aynı fp32 / overlap 2 ayarıyla çıktı. Aradaki tek meşru fark
+# FLAC'in 24-bit nicelemesi (ve kaydederken uygulanan ortak clip_scale).
+
+
+def _pick_source_song(must_contain: str) -> tuple:
+    """En son yüklenen, başlığında `must_contain` geçen KAYNAK şarkı.
+
+    Deney çıktıları (`source_song` alanı olanlar) eleniyor - onların
+    `input.*` dosyası da yok.
+    """
+    root = pathlib.Path(DATA_DIR) / "songs"
+    found = []
+    for entry in sorted(root.iterdir()) if root.is_dir() else []:
+        status_path = entry / "status.json"
+        if not status_path.is_file():
+            continue
+        try:
+            data = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if data.get("state") != "done" or data.get("source_song"):
+            continue
+        if not sorted(entry.glob("input.*")):
+            continue
+        title = str(data.get("title") or entry.name)
+        if must_contain and must_contain.lower() not in title.lower():
+            continue
+        found.append((str(data.get("created_at") or ""),
+                      str(data.get("id", entry.name)), title))
+    if not found:
+        raise FileNotFoundError(
+            f"'{must_contain}' iceren, durumu done olan kaynak sarki bulunamadi"
+        )
+    found.sort(reverse=True)
+    return found[0][1], found[0][2]
+
+
+@app.function(
+    image=separate_image,
+    gpu="T4",                     # üretimdeki `separate` ile aynı
+    volumes={DATA_DIR: volume},
+    timeout=1800,
+    max_containers=1,             # min_containers YOK: boştayken maliyet sıfır
+)
+def hifi_smoke_run(song_id: str = "", must_contain: str = "HAZBIN",
+                   compare_suffix: str = "cfp32") -> dict:
+    """Üretim Hi-Fi vokal yolunu baştan sona koşturur, ölçüp döner."""
+    import sys
+
+    import numpy as np
+    import soundfile as sf
+    import torch
+
+    wall_started = time.time()
+    volume.reload()
+
+    report = {
+        "torch": str(torch.__version__),
+        "torch_cuda": str(torch.version.cuda),
+        "cuda_available": bool(torch.cuda.is_available()),
+        "gpu": (str(torch.cuda.get_device_name(0))
+                if torch.cuda.is_available() else ""),
+        "msst_commit": MSST_SHA,
+        "msst_dir": MSST_DIR,
+    }
+
+    if not song_id:
+        song_id, title = _pick_source_song(must_contain)
+    else:
+        status = _read_status(song_id) or {}
+        title = str(status.get("title") or song_id[:12])
+    report["song_id"] = song_id
+    report["title"] = title
+
+    # Örnekleme hızı/kanal sayısı Hi-Fi konfiginden. Üretimde bu ikisi demucs
+    # modelinden okunuyor ve `_hifi_vocals` konfigle uyuşmazsa hata veriyor;
+    # burada demucs YÜKLENMİYOR (duman testinin konusu değil, ~10 sn ve ~1 GB
+    # VRAM tasarrufu), o yüzden değerler konfigden alınıp üretimde beklenen
+    # çiftle (44100/2) karşılaştırılıyor.
+    config = _load_hifi_config(_hifi_weights_dir() / HIFI_YAML)
+    samplerate = int(config["audio"]["sample_rate"])
+    channels = int(config["audio"]["num_channels"])
+    report["samplerate"] = samplerate
+    report["channels"] = channels
+    report["samplerate_channels_match_demucs"] = bool(
+        (samplerate, channels) == (44100, 2)
+    )
+
+    # --- decode: üretimin KENDİ işlevi (parça ızgarası aynı olsun) --------
+    decode_started = time.time()
+    audio = _decode_pcm(_find_input(song_id), samplerate, channels)
+    report["decode_seconds"] = round(time.time() - decode_started, 2)
+    duration = round(audio.shape[1] / samplerate, 3)
+    report["duration"] = duration
+    report["samples"] = int(audio.shape[1])
+    print(f"[smoke] {title} -> {tuple(audio.shape)} = {duration} sn")
+
+    # --- yamalı satırı sayaçla izle --------------------------------------
+    # Yama olmasa torch 2.5.1'de TypeError atıp ilk parçada düşerdi. Sayaç 0
+    # kalırsa flash dalına hiç girilmemiş demektir: koşum yine geçerli ama
+    # duman testi yamayı SINAMAMIŞ olur, bu yüzden raporda görünüyor.
+    if MSST_DIR not in sys.path:
+        sys.path.insert(0, MSST_DIR)
+    from models.bs_roformer import attend as _attend
+
+    report["patch_present"] = bool(hasattr(_attend, "_sdpa_kernel_compat"))
+    set_priority_supported = None
+    if hasattr(_attend, "sdpa_kernel") and hasattr(_attend, "INFERENCE_SDPA_BACKENDS"):
+        try:
+            with _attend.sdpa_kernel(_attend.INFERENCE_SDPA_BACKENDS,
+                                     set_priority=True):
+                pass
+            set_priority_supported = True
+        except TypeError:
+            set_priority_supported = False
+        except Exception as error:          # probe koşumu düşürmesin
+            print(f"[smoke] set_priority sondasi basarisiz: {error!r}")
+            set_priority_supported = None
+    report["set_priority_supported"] = set_priority_supported
+
+    calls = {"n": 0}
+    original_compat = getattr(_attend, "_sdpa_kernel_compat", None)
+
+    def _counted_compat():
+        calls["n"] += 1
+        return original_compat()
+
+    if original_compat is not None:
+        _attend._sdpa_kernel_compat = _counted_compat
+
+    # --- üretim yolu: model + TAM şarkı, fp32, overlap 2 ------------------
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+        vocals, demix_seconds, model_load_seconds = _hifi_vocals(
+            audio, samplerate, channels
+        )
+    finally:
+        if original_compat is not None:
+            _attend._sdpa_kernel_compat = original_compat
+
+    report["sdpa_compat_calls"] = int(calls["n"])
+    report["model_load_seconds"] = float(model_load_seconds)
+    report["demix_seconds"] = float(demix_seconds)
+    report["hifi_overlap"] = HIFI_OVERLAP
+    if torch.cuda.is_available():
+        report["vram_allocated_mb"] = round(
+            torch.cuda.max_memory_allocated() / 1024**2, 1)
+        report["vram_reserved_mb"] = round(
+            torch.cuda.max_memory_reserved() / 1024**2, 1)
+
+    ours = vocals.astype(np.float64)
+    report["vocals_shape"] = [int(v) for v in vocals.shape]
+    report["vocals_rms"] = round(float(np.sqrt(np.mean(ours ** 2))), 8)
+    report["vocals_peak"] = round(float(np.abs(vocals).max()), 6)
+    # _hifi_demix zaten NaN/Inf'te hata veriyor; alan raporda dursun ki
+    # "kontrol edildi" görünür olsun.
+    report["nan_or_inf"] = bool(np.isnan(vocals).any() or np.isinf(vocals).any())
+
+    # --- deneydeki C-fp32 vokaliyle karşılaştırma -------------------------
+    reference_id = f"{song_id}-{compare_suffix}"
+    reference_path = _song_dir(reference_id) / "master" / "vocals.flac"
+    if reference_path.is_file():
+        data, reference_sr = sf.read(str(reference_path), dtype="float64",
+                                     always_2d=True)
+        theirs = data.T
+        length = min(ours.shape[1], theirs.shape[1])
+        first = ours[:, :length]
+        second = theirs[:, :length]
+        # Deney stem'leri ortak bir clip_scale'e BÖLÜNMÜŞ kaydedilmiş ve o
+        # ölçek hiçbir yere yazılmamış; en küçük karelerle geri kestiriliyor.
+        denominator = float(np.sum(second * second))
+        scale = float(np.sum(first * second) / denominator) if denominator > 0 else 0.0
+        diff = first - scale * second
+        rms_ours = float(np.sqrt(np.mean(first ** 2)))
+        rms_diff = float(np.sqrt(np.mean(diff ** 2)))
+        max_diff = float(np.abs(diff).max())
+        # FLAC PCM_24: ±1 tam ölçekte adım 2^-23. Ölçek geri uygulandığı için
+        # bizim birimlerimizde adım `scale` katı.
+        quant_step = scale * 2.0 ** -23
+        snr_db = (round(20.0 * float(np.log10(rms_ours / rms_diff)), 1)
+                  if rms_diff > 0 else 999.0)
+        compare = {
+            "found": True,
+            "reference": reference_id,
+            "reference_samplerate": int(reference_sr),
+            "reference_samples": int(theirs.shape[1]),
+            "length_match": bool(ours.shape[1] == theirs.shape[1]),
+            "clip_scale_estimated": round(scale, 6),
+            "max_abs_diff": float(f"{max_diff:.3e}"),
+            "rms_diff": float(f"{rms_diff:.3e}"),
+            "snr_db": snr_db,
+            "flac_quant_step": float(f"{quant_step:.3e}"),
+            "max_diff_in_quant_steps": (round(max_diff / quant_step, 2)
+                                        if quant_step > 0 else -1.0),
+            # 24-bit niceleme gürültüsü bu sinyalde ~120 dB SNR veriyor. 90 dB
+            # eşiği GPU'nun koşumlar arası belirlenimsizliğine de yer bırakıyor;
+            # altına düşerse gerçek bir fark var.
+            "verdict": ("ayni (FLAC niceleme duzeyinde)" if snr_db >= 90.0
+                        else "FARK VAR"),
+        }
+    else:
+        compare = {
+            "found": False,
+            "reference": reference_id,
+            "note": ("deneydeki C-fp32 cikisi Volume'da yok; sekil, RMS ve "
+                     "NaN/Inf kontrolleri yapildi"),
+        }
+    report["compare"] = compare
+
+    # --- import yalıtımı: üretim yolu ne yükledi? ------------------------
+    # Üretim YALNIZCA bs_roformer'ı kullanıyor. mel_band_roformer (deneyin A
+    # ve E kolları) ve utils.model_utils (referans kontrolü) canlı yolda
+    # İMPORT EDİLMEMELİ - edilirse imajda olmayan bir bağımlılığa (librosa,
+    # ml_collections) sessizce bağlanmış oluruz.
+    loaded = sorted(
+        name for name in sys.modules
+        if name == "models" or name.startswith("models.")
+        or name == "utils" or name.startswith("utils.")
+    )
+    forbidden = sorted(
+        name for name in loaded
+        if "mel_band_roformer" in name or name == "utils"
+        or name.startswith("utils.")
+    )
+    report["loaded_modules"] = [str(name) for name in loaded]
+    report["forbidden_modules"] = [str(name) for name in forbidden]
+    report["import_isolation_ok"] = bool(not forbidden)
+
+    report["wall_seconds"] = round(time.time() - wall_started, 2)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return _assert_plain(report)
+
+
+@app.local_entrypoint()
+def hifi_smoke(song_id: str = "", must_contain: str = "HAZBIN",
+               compare_suffix: str = "cfp32"):
+    """Hi-Fi vokal yolunun GPU duman testi (Volume'a yazmıyor).
+
+        modal run backend/app.py::hifi_smoke
+        modal run backend/app.py::hifi_smoke --song-id <id>
+    """
+    report = hifi_smoke_run.remote(song_id=song_id, must_contain=must_contain,
+                                   compare_suffix=compare_suffix)
+
+    problems = []
+    warnings = []
+    if report.get("nan_or_inf"):
+        problems.append("vokal cikisinda NaN/Inf var")
+    if not report.get("import_isolation_ok"):
+        problems.append("canli yol fazla modul import etti: "
+                        f"{report.get('forbidden_modules')}")
+    if not report.get("patch_present"):
+        problems.append("attend.py'de _sdpa_kernel_compat yok (yama kayip)")
+    compare = report.get("compare") or {}
+    if compare.get("found"):
+        if not compare.get("length_match"):
+            problems.append("uzunluklar tutmuyor: parca izgarasi kaymis olabilir")
+        if str(compare.get("verdict", "")).startswith("FARK"):
+            problems.append(f"C-fp32 ile fark var: SNR {compare.get('snr_db')} dB, "
+                            f"max {compare.get('max_abs_diff')}")
+    else:
+        warnings.append(f"karsilastirma yapilamadi: {compare.get('note')}")
+    if report.get("sdpa_compat_calls") == 0:
+        warnings.append("yamali satir hic calismadi (flash dalina girilmemis): "
+                        "kosum gecerli ama yama SINANMADI")
+    if not report.get("samplerate_channels_match_demucs"):
+        warnings.append("konfig 44100/2 demiyor; uretimde uyusmazlik kontrolu "
+                        "_hifi_vocals icinde yapiliyor")
+
+    print("")
+    print("=" * 72)
+    print(f"{report.get('title')}  ({report.get('duration')} sn, "
+          f"{report.get('samples')} ornek)")
+    print(f"torch {report.get('torch')} / cuda {report.get('torch_cuda')} / "
+          f"{report.get('gpu')}")
+    print(f"model yukleme {report.get('model_load_seconds')} sn, cikarim "
+          f"{report.get('demix_seconds')} sn, toplam {report.get('wall_seconds')} sn, "
+          f"vram {report.get('vram_allocated_mb')} MB")
+    print(f"vokal sekli {report.get('vocals_shape')}, rms "
+          f"{report.get('vocals_rms')}, tepe {report.get('vocals_peak')}, "
+          f"NaN/Inf: {report.get('nan_or_inf')}")
+    print(f"yamali satir cagri sayisi: {report.get('sdpa_compat_calls')} "
+          f"(set_priority destegi: {report.get('set_priority_supported')})")
+    print(f"yuklenen models/utils modulleri: {report.get('loaded_modules')}")
+    if compare.get("found"):
+        print(f"C-fp32 karsilastirmasi ({compare.get('reference')}): "
+              f"SNR {compare.get('snr_db')} dB, max fark "
+              f"{compare.get('max_abs_diff')} = "
+              f"{compare.get('max_diff_in_quant_steps')} FLAC niceleme adimi, "
+              f"kestirilen olcek {compare.get('clip_scale_estimated')}")
+        print(f"karar: {compare.get('verdict')}")
+    for line in warnings:
+        print(f"UYARI: {line}")
+    print("=" * 72)
+    if problems:
+        for line in problems:
+            print(f"HATA: {line}")
+        raise SystemExit(1)
+    print("DUMAN TESTI GECTI")
+
+
 @app.function(
     image=separate_image,
     gpu="T4",
@@ -942,15 +1276,8 @@ def separate(song_id: str, quality: str = DEFAULT_QUALITY,
 
         # --- decode: ffmpeg -> float32 PCM (torchaudio I/O YOK) -----------
         decode_started = time.time()
-        proc = _run(
-            [
-                "ffmpeg", "-nostdin", "-v", "error", "-i", str(input_path),
-                "-f", "f32le", "-acodec", "pcm_f32le",
-                "-ar", str(samplerate), "-ac", str(channels), "-",
-            ]
-        )
+        audio = _decode_pcm(input_path, samplerate, channels)
         decode_seconds = round(time.time() - decode_started, 2)
-        audio = np.frombuffer(proc.stdout, dtype="<f4").reshape(-1, channels).T.copy()
         wav = torch.from_numpy(audio)
         duration = round(wav.shape[1] / samplerate, 3)
         print(f"[decode] {tuple(wav.shape)} -> {duration} sn")

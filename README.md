@@ -107,6 +107,31 @@ altına iner.
 Ölçü hizalaması **yalnızca tam ölçü** cinsinden aranır; vuruş düzeyindeki
 kayma ayrıca ölçülüp raporlanır (`downbeat'lerin beat indeksi mod 4`).
 
+**Hi-Fi vokal yolunun GPU duman testi (Aşama 9):**
+
+```powershell
+.\.venv\Scripts\python.exe -m modal run backend\app.py::hifi_smoke
+```
+
+Deploy'dan ÖNCE koşulacak. Yerel testler torch'suz bir ortamda çalıştığı için
+`/msst`'ten import'u, `BSRoformer`'ın kurulmasını ve vendored `attend.py`'deki
+yamalı satırı (yalnız CUDA dalında) hiç çalıştırmıyor; bu entrypoint üretimin
+kendi imajı, T4'ü ve Volume'uyla tam yolu koşturuyor. **Volume'a hiçbir şey
+yazmıyor**, kitaplığa şarkı eklemiyor.
+
+Şarkı, başlığında `--must-contain` geçen en son yüklenen kaynak şarkı
+(varsayılan `HAZBIN`); `--song-id <id>` ile açıkça da verilebilir. Şarkı BAŞTAN
+SONA geçiriliyor - parça kesmek chunk ızgarasını kaydırıp karşılaştırmayı
+anlamsız kılardı.
+
+Raporda: torch/CUDA/GPU, süreler, tepe VRAM, vokalin şekli/RMS/tepesi, NaN-Inf
+kontrolü, yamalı satırın kaç kez çağrıldığı, yüklenen `models.*`/`utils.*`
+modülleri (üretim yolu `mel_band_roformer` ve `utils.model_utils`'i import
+ETMEMELİ) ve deneydeki `[C-fp32]` vokaliyle karşılaştırma: kestirilen
+`clip_scale`, max mutlak fark, SNR. Fark FLAC'in 24-bit niceleme düzeyinde
+olmalı (SNR ~120 dB; eşik 90 dB). O çıktı Volume'da yoksa (temizlenmişse)
+şekil/RMS/NaN kontrolleriyle yetinip uyarı basıyor.
+
 **Akor mantığının yerel testi (Modal'a bağlanmaz, ücretsiz, saniyeler):**
 
 ```powershell
