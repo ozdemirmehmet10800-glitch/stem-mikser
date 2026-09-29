@@ -101,12 +101,58 @@ export class StemCache {
       const index = loadIndex();
       index[key] = { size: arrayBuffer.byteLength, lastUsed: Date.now(), songId };
       saveIndex(index);
+      // Yeni sürüm yazıldı: eski sürümler artık gereksiz.
+      await this.pruneSuperseded();
       await this.#evict();
       return true;
     } catch {
       // Kota dolduysa sessizce vazgeç; uygulama ağdan çalışmaya devam eder.
       return false;
     }
+  }
+
+  // Aynı şarkı+kanal için birden çok sürüm varsa yalnız EN YENİSİ kalır.
+  // Sürüm değişince (yeniden işleme, reencode) eski dosyalar artık hiçbir
+  // açılışta istenmiyor ama yer tutuyordu ve "kanal" sayısını şişiriyordu.
+  // stems_version sunucuda `int(time.time())`, yani her zaman artıyor:
+  // en büyük sürüm = en yeni. Sürümsüz anahtar (0) en eskisi sayılır.
+  async pruneSuperseded() {
+    const index = loadIndex();
+    const newest = new Map();
+    const parsed = Object.keys(index).map((key) => {
+      const match = /^(stems\/.+?\/[^/@]+?)(?:@(\d+))?\.m4a$/.exec(key);
+      if (!match) return null;
+      const version = Number(match[2] || 0);
+      const base = match[1];
+      if (!newest.has(base) || version > newest.get(base)) newest.set(base, version);
+      return { key, base, version };
+    }).filter(Boolean);
+
+    const stale = parsed.filter((item) => item.version < newest.get(item.base));
+    if (!stale.length) return { removed: 0, bytes: 0 };
+
+    let cache = null;
+    if (this.available) {
+      try {
+        cache = await caches.open(CACHE_NAME);
+      } catch {
+        cache = null;
+      }
+    }
+    let bytes = 0;
+    for (const item of stale) {
+      bytes += (index[item.key] && index[item.key].size) || 0;
+      delete index[item.key];
+      if (cache) {
+        try {
+          await cache.delete(item.key);
+        } catch {
+          /* yok say */
+        }
+      }
+    }
+    saveIndex(index);
+    return { removed: stale.length, bytes };
   }
 
   async #evict() {

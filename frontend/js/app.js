@@ -2116,6 +2116,8 @@ applyStretcherSettings();
 applyAudioSettings();
 registerServiceWorker();
 stemCache.requestPersistence();
+// Sürüm değişimlerinden kalan eski dosyaları bir kez süpür.
+stemCache.pruneSuperseded().catch(() => {});
 
 if (isConfigured(settings)) {
   showView("library");
