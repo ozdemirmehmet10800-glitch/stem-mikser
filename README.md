@@ -132,6 +132,17 @@ ETMEMELİ) ve deneydeki `[C-fp32]` vokaliyle karşılaştırma: kestirilen
 olmalı (SNR ~120 dB; eşik 90 dB). O çıktı Volume'da yoksa (temizlenmişse)
 şekil/RMS/NaN kontrolleriyle yetinip uyarı basıyor.
 
+**Önbellek temizliğinin testi (şarkı silinince cihazdaki sesler de gitsin):**
+
+```powershell
+node tests\stemcache_test.mjs
+```
+
+Cache Storage ve localStorage taklit edilip `StemCache.removeSongs` ölçülüyor.
+Asıl incelik: Cache Storage anahtarları mutlak URL'e dönüşüyor, indeks
+anahtarları göreli kalıyor; iki tarafı aynı kefeye koymayan bir temizlik ya
+dosyayı bırakır ya iki kez sayar.
+
 **Akor mantığının yerel testi (Modal'a bağlanmaz, ücretsiz, saniyeler):**
 
 ```powershell

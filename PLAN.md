@@ -27,19 +27,28 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE: `modal run backend/app.py::h
    patlamıştı. torch 2.5.1 yaması artık depodaki dosyada görünüyor, build
    sırasında metin değiştirilerek uygulanmıyor. `experiment.py` de aynı
    kaynağı kullanıyor (Volume'daki eski `weights-exp/msst` kopyası ölü veri).
-1. [ ] **Deney şarkılarını temizle.** `modal run backend/experiment.py::cleanup`
+1. [x] **Şarkı silme (tekli + çoklu).** Kütüphanede uzun basınca seçim modu;
+   onay penceresi geri alınamayacağını söylüyor. Sunucuda `DELETE /songs/{id}`
+   ve `POST /songs/delete`; kimlik deseni nokta/eğik çizgi kabul etmiyor, yani
+   `../` ile model ağırlıklarına ulaşılamıyor (test edildi). İşlenmekte olan
+   şarkı silinmiyor: süren `separate` girdisini bulamayınca `status.json`'a
+   hata yazar ve kitaplıkta boş bir şarkı canlanırdı. Silinen şarkı cihaz
+   önbelleğinden de düşüyor; aynı dosya yeniden yüklenirse sıfırdan işleniyor.
+   Seçim modu geri tuşu maddesine hazır: `handleBack()` ilk iş seçimden
+   çıkıyor, şimdilik Escape'e bağlı.
+2. [ ] **Deney şarkılarını temizle.** `modal run backend/experiment.py::cleanup`
    (önce listeler, `--yes` ile siler). Orijinal şarkılara dokunmuyor.
-2. [ ] **Kalite paketi.** ÖNCE RAPOR, KOD YOK: yüklemeden telefonda çalmaya
+3. [ ] **Kalite paketi.** ÖNCE RAPOR, KOD YOK: yüklemeden telefonda çalmaya
    kadar her adımda örnekleme hızı / kanal sayısı / bit hızı zinciri
    yazılacak. Telefon şu an **32 kHz mono** çalıyor; hedef **stereo,
    44.1/48 kHz, kayıpsız ya da şeffaf**. Karar formatı değiştirirse mevcut
    şarkılar **FLAC asıllardan yeniden kodlanacak, yeniden AYIRMA yok**
    (`master/*.flac` zaten Volume'da). Hiza testi (Ayarlar ekranı) yeniden
    geçmek zorunda - `sampleRate` değişimi esnetici gecikmesini de etkiliyor.
-3. [ ] **Geri tuşu.** Android'de geri şu an uygulamayı kapatıyor. Olması
+4. [ ] **Geri tuşu.** Android'de geri şu an uygulamayı kapatıyor. Olması
    gereken: mikser → kütüphane; açık panel varsa önce o kapanır; kütüphanede
    geri = normal çıkış. History API ile (`pushState` + `popstate`).
-4. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
+5. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
 
 ## Mimari
 Tek kullanıcılı. PC sadece geliştirme ve deploy için; deploy sonrası sistem PC kapalıyken çalışmalı.
@@ -960,7 +969,11 @@ Tüm uç noktalar Bearer token ister. Token ve imzalama anahtarı Modal Secret't
 - POST /songs/{id}/download-link: 10 dakika geçerli, HMAC imzalı URL üretir (<a> etiketi header gönderemediği için).
 - GET /songs/{id}/download/{name}?format=wav|flac|m4a&exp=...&sig=...: WAV, FLAC master'dan anında üretilir.
 - POST /songs/{id}/reanalyze: yalnızca analyze'ı yeniden çalıştırır.
-- DELETE /songs/{id}.
+- DELETE /songs/{id} ve POST /songs/delete (govde {"ids": [...]}) -
+  tekli ve coklu silme. Kimlik deseni siki (64 hex + istege bagli kisa
+  deney eki); nokta ve egik cizgi kabul edilmiyor, boylece silme sarki
+  klasoru disina - ozellikle model agirliklarina - cikamiyor.
+  Islenmekte olan sarki 409 doner, olmayan kimlik hata degil.
 - CORS: yalnızca GitHub Pages origin'im ve localhost.
 
 ## Aşama 4 – Oynatıcı (önce masaüstü)
