@@ -14,23 +14,35 @@ const KEY = "stem-mikser.settings";
 // KAYITLI TERCİH KORUNUYOR: parsed.stretcher varsa ona dokunulmuyor, yani
 // daha önce elle SoundTouch seçmiş bir cihaz öyle kalıyor.
 // Mobil ses kalitesi:
-//   "save" = bugünkü davranış, AudioContext 32 kHz + stem'ler mono'ya
-//            indiriliyor (bellek için, bkz. engine.js).
 //   "high" = hız zorlaması yok (cihazın doğal hızı), mono indirme yok.
-// Varsayılan "save": 32 kHz mono kararı ölçüme değil hesaba dayanıyordu ama
-// "high"ın telefonda AÇILDIĞI da ölçülmedi. Ölçüm yapılana kadar varsayılanı
-// değiştirmek, kanıtsız kararı ters yöne çevirmek olurdu.
+//   "save" = eski davranış: AudioContext 32 kHz + stem'ler mono'ya indiriliyor.
+//
+// VARSAYILAN "high" (2026-09-29 telefon ölçümünden sonra). Ölçülenler
+// (S24 FE, 8 GB, Chrome):
+//   - cihazın doğal hızı 48 kHz; Yüksek kipte 48 kHz / 2 kanal / 6 stem
+//   - 9.1 dakikalık şarkı (yükleme sınırı 10 dk) sorunsuz: çökme, takılma,
+//     kesilme yok - yani ~1.25 GB PCM bu cihazda sorun değilmiş
+//   - hiza testi tamamen geçti (metronom 0.0 / +0.1 ms, esnetici 119.9-120.0 ms)
+//   - kulakla kalite belirgin şekilde daha iyi, stereo doğrulandı, cızırtı yok
+// Eski varsayılanı (32 kHz mono) doğuran 508 MB hesabı ölçümle ÇÜRÜDÜ; ayar
+// yedek olarak duruyor, çünkü başka bir cihaz aynı payı vermeyebilir.
 // Masaüstünde bu ayarın etkisi YOK: orada zaten tam kalite çalışıyor.
 export const AUDIO_SAVE = "save";
 export const AUDIO_HIGH = "high";
 
 const DEFAULTS = {
   url: "", token: "", stretcher: "signalsmith", formants: false,
-  mobileAudio: AUDIO_SAVE,
+  mobileAudio: AUDIO_HIGH,
 };
 
+// ELLE SEÇİLMİŞ TERCİH KORUNUYOR: kayıtta açıkça "save" yazıyorsa varsayılan
+// devreye girmiyor. Yalnızca tanınmayan/boş değer varsayılana düşüyor - yoksa
+// varsayılanı değiştirmek, Tasarruf'u bilerek seçmiş bir cihazı sessizce
+// Yüksek'e çevirirdi.
 export function normalizeAudioMode(value) {
-  return value === AUDIO_HIGH ? AUDIO_HIGH : AUDIO_SAVE;
+  if (value === AUDIO_HIGH) return AUDIO_HIGH;
+  if (value === AUDIO_SAVE) return AUDIO_SAVE;
+  return DEFAULTS.mobileAudio;
 }
 
 export function loadSettings() {

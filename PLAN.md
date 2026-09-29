@@ -38,8 +38,9 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE: `modal run backend/app.py::h
    çıkıyor, şimdilik Escape'e bağlı.
 2. [ ] **Deney şarkılarını temizle.** `modal run backend/experiment.py::cleanup`
    (önce listeler, `--yes` ile siler). Orijinal şarkılara dokunmuyor.
-3. [~] **Kalite paketi.** Rapor çıkarıldı, ANAHTAR kondu, karar telefon
-   ölçümünü bekliyor. Ayarlarda "Mobil ses kalitesi": Tasarruf (32 kHz mono,
+3. [~] **Kalite paketi.** Rapor çıkarıldı, anahtar kondu, **telefonda ölçüldü
+   ve varsayılan Yüksek oldu** (48 kHz stereo). Kalan: sunucu tarafı (AAC
+   256k + 48 kHz kodlama, mevcut şarkıların yeniden kodlanması). Ayarlarda "Mobil ses kalitesi": Tasarruf (32 kHz mono,
    varsayılan) / Yüksek (cihaz hızı, stereo). Kip değişince AudioContext
    yeniden kuruluyor, açık şarkı kapanıyor (AudioBuffer'lar context hızına
    bağlı, taşınamıyor). Ayarlar ekranı cihazın doğal hızını ve o an kullanılan
@@ -386,6 +387,15 @@ Düzeltme sonrası masaüstü (48 kHz), iki koşuda aynı:
   sürüklenmesi yok (+0.1 ms/sn). Bu 1.0x'te de var, esneticiyle ilgisi yok
   ve TEK ŞARKIDA ölçüldü - genellemeden düzeltme yapmak aşırı uyum riski.
   Birkaç şarkı daha ölçülmeden dokunulmayacak.
+
+  **AAC priming ELENDİ (2026-09-29).** Şüphelilerden biri şuydu: m4a'nın
+  encoder priming'i (1024-2112 örnek = 23-48 ms) tarayıcıda kırpılmıyorsa
+  ses ızgaraya göre kayar. Ölçüldü: çözülen tamponun süresi ile sunucunun
+  ham PCM'den hesapladığı süre arasındaki fark masaüstünde **-1 ms**,
+  telefonda **-0.2 ms**. Yani Chrome priming'i ve çerçeve dolgusunu
+  kırpıyor; 8-15 ms'lik kaymanın sebebi bu DEĞİL. Mertebe de zaten
+  tutmuyordu. Kesin ölçüm (aynı stem'in FLAC aslıyla çapraz ilinti) hâlâ
+  yapılabilir ama önceliği düştü.
 - **Android'de `ctx.outputLatency` 0 dönüyor.** Görsel imleçten düşülen
   telafi (`visualTime`) o cihazda etkisiz kalıyor. Kod doğru ve destekleyen
   tarayıcıda çalışıyor; Bluetooth kulaklıkta 200 ms'yi bulan gecikme için
@@ -1035,7 +1045,8 @@ Kalan dört parça, her biri AYRI commit:
 - [x] **Wake Lock.** Çalarken `navigator.wakeLock.request("screen")`,
       duraklatınca bırak, `visibilitychange`'de yeniden al (arkaplana gidince
       kilit düşüyor). Desteklenmiyorsa sessizce atla.
-- [x] **Bellek önlemleri.** Mobilde `AudioContext` `sampleRate: 32000`,
+- [x] **Bellek önlemleri.** (2026-09-29: ÖLÇÜMLE GEREKSİZ ÇIKTI, aşağıya bak.)
+      Mobilde `AudioContext` `sampleRate: 32000`,
       stem'ler TEK TEK çözülüp hemen mono'ya indirilecek ve stereo tampon
       bırakılacak (tepe bellek 6 stereo yerine 1 stereo + 6 mono).
       Masaüstünde tam kalite. Uyarı eşiği aşağıdaki kurala göre.
@@ -1053,6 +1064,24 @@ ediyor, fader'lar çalışıyor. İki açık madde, her biri AYRI commit:
       silinecek (LRU). `navigator.storage.persist()` istenecek. Ayarlara
       "çevrimdışı kopyaları sil" düğmesi. İkinci açılışta stem için ağ
       isteği OLMAMALI.
+
+### Aşama 5 notu – bellek önlemi ÖLÇÜMLE ÇÜRÜDÜ (2026-09-29)
+"32 kHz mono" kararı ölçüme değil tek bir HESABA dayanıyordu: "6 stem x 4 dk x
+44,1 kHz x 2 kanal x 4 bayt = 508 MB, telefon için fazla". Telefonda hiç
+denenmemişti - PLAN bu kuralı kod yazılmadan önce koymuştu.
+
+Ölçüm (S24 FE, 8 GB, Chrome): **9.1 dakikalık şarkı Yüksek kipte (48 kHz
+stereo, ~1.25 GB PCM) sorunsuz çaldı** - çökme, takılma, kesilme yok. Hiza
+testi tamamen geçti (metronom 0.0 / +0.1 ms, esnetici 119.9-120.0 ms).
+Kulakla kalite belirgin şekilde daha iyi, stereo doğrulandı.
+
+Bu yüzden **varsayılan artık Yüksek**; 32 kHz mono ayarlarda yedek seçenek
+olarak duruyor (başka bir cihaz aynı payı vermeyebilir).
+
+**Süre eşiği YOK.** Uzun şarkıda kaliteyi düşüren bir kural zaten hiç
+olmamıştı: `longSongThresholdSec()` yalnızca bir UYARI METNİ eşiği ve
+`deviceMemory >= 8` iken `Infinity` dönüyor, yani bu telefonda hiç çıkmıyor.
+4 GB'lık bir cihazda 8 dakikada uyarı verir ama açmaya yine izin verir.
 
 ### Aşama 5 notu – bellek uyarı eşiği cihaza göre
 Sabit 6 dakika değil, `navigator.deviceMemory` değerine göre:

@@ -46,6 +46,10 @@ const GAIN_GLIDE = 0.012; // setTargetAtTime zaman sabiti; tık sesi olmasın
 // Mobilde bellek: 6 stem x 4 dk x 44,1 kHz x 2 kanal x 4 bayt = 508 MB.
 // 32 kHz mono'da aynı şarkı 184 MB. Masaüstünde tam kalite kalıyor.
 //
+// BU HESAP ÖLÇÜMLE ÇÜRÜDÜ (2026-09-29): telefonda 9.1 dakikalık şarkı Yüksek
+// kipte (48 kHz stereo, ~1.25 GB PCM) çökmeden, takılmadan çaldı. Varsayılan
+// artık Yüksek; aşağıdaki hız yalnız Tasarruf kipinde kullanılıyor.
+//
 // Bu artık AYARA bağlı ("Mobil ses kalitesi", settings.js):
 //   AUDIO_SAVE -> aşağıdaki hız + mono indirme (varsayılan, bugünkü davranış)
 //   AUDIO_HIGH -> hiç zorlama yok, cihazın doğal hızı ve stereo
@@ -116,9 +120,10 @@ export class Engine {
     this.duration = 0;
     this.onEnded = null;
     this.mobile = isMobile();
-    // Ayar motora app.js'ten geliyor; varsayılan bugünkü davranış.
-    this.audioMode = AUDIO_SAVE;
-    this.monoDownmix = this.mobile;
+    // Ayar motora app.js'ten geliyor; ilk değer settings.js'teki varsayılan
+    // (Yüksek), yoksa kip hiç verilmeyen bir Engine eski davranışa düşerdi.
+    this.audioMode = normalizeAudioMode();
+    this.monoDownmix = this.mobile && this.audioMode === AUDIO_SAVE;
 
     // --- esnetme durumu ---
     this.rate = 1;          // 1 = orijinal hız
