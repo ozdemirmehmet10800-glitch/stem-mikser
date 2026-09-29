@@ -34,6 +34,15 @@ DOWNLOAD_TTL = 600
 
 STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"]
 
+# Sahte silme. out/ altindaki dosyalara DOKUNULMUYOR - onlar yerel test
+# malzemesi, silinseler yeniden indirmek gerekirdi. Silinen kimlikler yalniz
+# bellekte tutuluyor ve listeden duserek arayuzun silme akisini tam olarak
+# yasatiyor. Sunucu yeniden baslayinca sarkilar geri geliyor.
+DELETED = set()
+
+# app.py'deki SONG_ID_RE ile ayni: 64 kucuk hex + istege bagli kisa deney eki.
+SONG_ID_RE = re.compile(r"^[0-9a-f]{64}(-[a-z0-9]{1,12})?$")
+
 
 def find_songs():
     """out/<sha>/ altindaki isi bitmis sarkilari bulur."""
@@ -41,6 +50,8 @@ def find_songs():
     if not OUT_DIR.is_dir():
         return songs
     for entry in sorted(OUT_DIR.iterdir()):
+        if entry.name in DELETED:
+            continue          # sahte silme; dosyalar yerinde
         stems_dir = entry / "stems"
         if not stems_dir.is_dir():
             continue
@@ -136,6 +147,36 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"url": url, "expires_at": expires, "ttl": DOWNLOAD_TTL})
             return
 
+        if path == "/songs/delete":
+            if not self._authorized():
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except ValueError:
+                self._json(400, {"detail": "Govde JSON olmali"})
+                return
+            ids = body.get("ids") if isinstance(body, dict) else None
+            if not isinstance(ids, list) or not ids:
+                self._json(400, {"detail": "ids listesi gerekli"})
+                return
+            results = []
+            for song_id in ids:
+                if not SONG_ID_RE.match(str(song_id)):
+                    results.append({"id": str(song_id)[:80], "outcome": "invalid",
+                                    "detail": "Gecersiz sarki kimligi"})
+                elif self._song(song_id):
+                    DELETED.add(str(song_id))
+                    results.append({"id": song_id, "outcome": "deleted"})
+                else:
+                    results.append({"id": song_id, "outcome": "not_found"})
+            counts = {}
+            for item in results:
+                counts[item["outcome"]] = counts.get(item["outcome"], 0) + 1
+            self._json(200, {"results": results, "counts": counts,
+                             "deleted": counts.get("deleted", 0)})
+            return
+
         if path == "/songs":
             if not self._authorized():
                 return
@@ -149,6 +190,25 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self._json(404, {"detail": "yok"})
+
+    def do_DELETE(self):
+        path = self.path.split("?")[0]
+        match = re.fullmatch(r"/songs/([^/]+)", path)
+        if not match:
+            self._json(404, {"detail": "yok"})
+            return
+        if not self._authorized():
+            return
+        song_id = match.group(1)
+        if not SONG_ID_RE.match(song_id):
+            self._json(400, {"detail": "Gecersiz sarki kimligi"})
+            return
+        if not self._song(song_id):
+            self._json(200, {"id": song_id, "deleted": False,
+                             "outcome": "not_found"})
+            return
+        DELETED.add(song_id)
+        self._json(200, {"id": song_id, "deleted": True, "outcome": "deleted"})
 
     def do_GET(self):
         path = self.path.split("?")[0]

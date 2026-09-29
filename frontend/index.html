@@ -49,6 +49,19 @@
       </label>
     </div>
 
+    <!-- Seçim çubuğu: şarkıya uzun basınca açılır. -->
+    <div class="select-bar" id="select-bar" hidden>
+      <button class="icon-btn" id="select-cancel" title="Seçimden çık"
+              aria-label="Seçimden çık">
+        <svg viewBox="0 0 24 24"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg>
+      </button>
+      <span class="select-count" id="select-count">0 seçili</span>
+      <button class="btn btn-small" id="select-all">Tümünü seç</button>
+      <button class="btn btn-small btn-danger" id="select-delete" disabled>
+        Sil (0)
+      </button>
+    </div>
+
     <div id="upload-status" class="upload-status" hidden></div>
     <div id="library-message" class="message" hidden></div>
     <ul class="song-list" id="song-list"></ul>

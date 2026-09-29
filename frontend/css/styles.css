@@ -92,6 +92,32 @@ html, body {
 .library-actions .btn { flex: 1; }
 .library-actions .btn:last-child { flex: 0 0 auto; }
 
+.btn-danger {
+  border-color: rgba(248, 113, 113, 0.5);
+  color: var(--danger);
+}
+.btn-danger:not(:disabled):hover { background: rgba(248, 113, 113, 0.14); }
+
+/* ---------- seçim çubuğu (silme) ---------- */
+
+.select-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+/* display:flex, hidden niteliğinin display:none'ını ezer. */
+.select-bar[hidden] { display: none; }
+.select-bar .select-count {
+  flex: 1;
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
 /* ---------- şarkı listesi ---------- */
 
 .song-list { list-style: none; margin: 0; padding: 0 0 24px; overflow-y: auto; flex: 1; }
@@ -105,6 +131,34 @@ html, body {
   cursor: pointer;
 }
 .song-row:hover { background: var(--panel); }
+/* Uzun basışta metin seçimi / iOS'un "kopyala" balonu çıkmasın. */
+.song-row {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Onay kutusu yalnız seçim modunda görünüyor; yeri ayrılmadığı için satır
+   düzeni seçim modu dışında hiç değişmiyor. */
+.song-check { display: none; }
+.song-list.select-mode .song-check {
+  display: grid;
+  place-items: center;
+  flex: 0 0 24px;
+  width: 24px; height: 24px;
+  border: 2px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.song-list.select-mode .song-check svg { width: 16px; height: 16px; fill: transparent; }
+.song-list.select-mode .song-row.selected .song-check {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.song-list.select-mode .song-row.selected .song-check svg { fill: #06202a; }
+.song-list.select-mode .song-row.selected { background: var(--panel); }
+/* Dokunma alanı en az 44 px: seçim modunda satırın kendisi hedef. */
+.song-list.select-mode .song-row { padding: 12px 6px; }
 
 .song-thumb {
   width: 52px; height: 52px;

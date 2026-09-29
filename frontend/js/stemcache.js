@@ -134,6 +134,75 @@ export class StemCache {
     return { bytes, files: entries.length, songs, limit: MAX_BYTES, quota };
   }
 
+  // Bir şarkının bütün stem'lerini önbellekten siler (şarkı silinince).
+  // İki kaynaktan da temizliyor: indeks (songId alanı) VE Cache Storage'ın
+  // kendi anahtarları. Sebep: localStorage silinmiş ama Cache Storage
+  // dolu kalmış olabilir - o zaman indekse bakan bir temizlik depoyu
+  // şişmiş bırakır ve kullanıcı neden yer açılmadığını anlamaz.
+  //
+  // Anahtar sürümlü olabildiği için (`...@3.m4a`) isimden değil, önekten
+  // eşleşiyoruz: `stems/<id>/`.
+  async removeSongs(songIds) {
+    const wanted = new Set(songIds || []);
+    if (!wanted.size) return { removed: 0, bytes: 0 };
+
+    const prefixes = [...wanted].map((id) => `stems/${id}/`);
+    const matches = (text) => prefixes.some((prefix) => text.includes(prefix));
+    // Cache Storage anahtarları Request'e dönüşüyor ve URL'leri MUTLAK oluyor
+    // (sayfa origin'ine göre çözülüyor); indeks anahtarları ise göreli. İki
+    // tarafı aynı kefeye koymak için "stems/" ile başlayan kuyruğu alıyoruz,
+    // yoksa aynı dosya iki kez sayılırdı.
+    const tailOf = (text) => {
+      const at = text.indexOf("stems/");
+      return at < 0 ? text : text.slice(at);
+    };
+
+    let cache = null;
+    if (this.available) {
+      try {
+        cache = await caches.open(CACHE_NAME);
+      } catch {
+        cache = null;
+      }
+    }
+
+    const dropped = new Set();
+    if (cache) {
+      try {
+        for (const request of await cache.keys()) {
+          if (!matches(request.url)) continue;
+          try {
+            await cache.delete(request);
+          } catch {
+            /* yok say */
+          }
+          dropped.add(tailOf(request.url));
+        }
+      } catch {
+        /* keys() patlarsa indeks yolu yeter */
+      }
+    }
+
+    const index = loadIndex();
+    let bytes = 0;
+    for (const key of Object.keys(index)) {
+      const entry = index[key] || {};
+      if (!wanted.has(entry.songId) && !matches(key)) continue;
+      bytes += entry.size || 0;
+      dropped.add(tailOf(key));
+      delete index[key];
+      if (cache) {
+        try {
+          await cache.delete(key);      // indekste var, cache'te kalmışsa
+        } catch {
+          /* yok say */
+        }
+      }
+    }
+    saveIndex(index);
+    return { removed: dropped.size, bytes };
+  }
+
   async clear() {
     if (this.available) {
       try {

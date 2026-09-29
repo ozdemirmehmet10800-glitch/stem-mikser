@@ -148,6 +148,22 @@ export class Api {
     return (await this.#request(path, { method: "POST" })).json();
   }
 
+  /** Tek şarkıyı siler. Olmayan kimlik hata değil: {deleted:false} döner. */
+  async deleteSong(id) {
+    const path = `/songs/${encodeURIComponent(id)}`;
+    return (await this.#request(path, { method: "DELETE" })).json();
+  }
+
+  /** Çoklu silme. Kısmi başarı normal: her kimlik için ayrı `outcome`. */
+  async deleteSongs(ids) {
+    const response = await this.#request("/songs/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    return response.json();
+  }
+
   /** Ayrıştırmayı yeniden koşturur; akor ve vuruşa dokunmaz. */
   async reprocess(id, quality = "hifi") {
     const path = `/songs/${encodeURIComponent(id)}/reprocess` +

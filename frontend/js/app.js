@@ -122,6 +122,16 @@ const stateLabels = {
   error: "hata",
 };
 
+// --- seçim modu (silme) ---
+// Uzun basınca açılıyor. Yoklama (POLL_MS) listeyi yeniden çizdiği için
+// seçim SATIRLARDA değil burada tutuluyor; çizim bunu okuyor.
+const LONG_PRESS_MS = 500;
+let selectMode = false;
+const selectedIds = new Set();
+let librarySongs = [];
+// Uzun basıştan sonra parmak kalkarken gelen click şarkıyı açmasın.
+let suppressClick = false;
+
 async function refreshLibrary() {
   hideMessage(el("library-message"));
   try {
@@ -135,8 +145,107 @@ async function refreshLibrary() {
   }
 }
 
+// Uzun basış. Kaydırmayı bozmamak için 10 px'den fazla hareket iptal ediyor;
+// sağ tık masaüstünde aynı kapıyı açıyor. `handler` TOGGLE DEĞİL "seç" olmak
+// zorunda: Android'de uzun basışta hem zamanlayıcı hem `contextmenu`
+// tetiklenebiliyor, toggle olsa seçim anında geri alınırdı.
+function bindLongPress(node, handler) {
+  let timer = 0;
+  let startX = 0;
+  let startY = 0;
+  const cancel = () => {
+    clearTimeout(timer);
+    timer = 0;
+  };
+  node.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    // Her yeni dokunuşta temizleniyor: uzun basıştan sonra click gelmeyen
+    // platformlarda (Android'de contextmenu iptal edilince olabiliyor) bayrak
+    // asılı kalır ve BİR SONRAKİ dokunuşu yutardı.
+    suppressClick = false;
+    startX = event.clientX;
+    startY = event.clientY;
+    cancel();
+    timer = setTimeout(() => {
+      timer = 0;
+      suppressClick = true;
+      handler();
+    }, LONG_PRESS_MS);
+  });
+  node.addEventListener("pointermove", (event) => {
+    if (!timer) return;
+    if (Math.abs(event.clientX - startX) > 10
+        || Math.abs(event.clientY - startY) > 10) cancel();
+  });
+  for (const name of ["pointerup", "pointercancel", "pointerleave"]) {
+    node.addEventListener(name, cancel);
+  }
+  node.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    handler();
+  });
+}
+
+function enterSelectMode(songId) {
+  selectMode = true;
+  if (songId) selectedIds.add(songId);
+  renderLibrary(librarySongs);
+}
+
+function exitSelectMode() {
+  if (!selectMode) return false;
+  selectMode = false;
+  selectedIds.clear();
+  renderLibrary(librarySongs);
+  return true;
+}
+
+function toggleSelect(songId) {
+  if (selectedIds.has(songId)) selectedIds.delete(songId);
+  else selectedIds.add(songId);
+  renderLibrary(librarySongs);
+}
+
+function syncSelectBar() {
+  const bar = el("select-bar");
+  if (!bar) return;
+  bar.hidden = !selectMode;
+  const count = selectedIds.size;
+  if (el("select-count")) {
+    el("select-count").textContent = `${count} seçili`;
+  }
+  const button = el("select-delete");
+  if (button) {
+    button.textContent = `Sil (${count})`;
+    button.disabled = count === 0;
+  }
+  const all = el("select-all");
+  if (all) {
+    const every = librarySongs.length > 0 && count === librarySongs.length;
+    all.textContent = every ? "Seçimi bırak" : "Tümünü seç";
+  }
+}
+
+// Geri tuşu işi (PLAN'daki "geri tuşu" maddesi) BUNU ilk sırada çağıracak:
+// geri = önce seçimden çık. Şimdilik yalnız Escape'e bağlı; History API
+// tarafı o madde gelince buraya eklenecek.
+function handleBack() {
+  if (exitSelectMode()) return true;
+  return false;
+}
+
 function renderLibrary(songs) {
   const list = el("song-list");
+  librarySongs = songs;
+  // Silinen ya da listeden düşen kimlikler seçimde kalmasın.
+  const present = new Set(songs.map((song) => song.id));
+  for (const id of [...selectedIds]) {
+    if (!present.has(id)) selectedIds.delete(id);
+  }
+  if (selectMode && !songs.length) selectMode = false;
+  list.classList.toggle("select-mode", selectMode);
+  syncSelectBar();
+
   list.innerHTML = "";
   if (!songs.length) {
     showMessage(el("library-message"), "Henüz şarkı yok. Yukarıdan bir tane ekle.", "warn");
@@ -145,6 +254,19 @@ function renderLibrary(songs) {
   for (const song of songs) {
     const item = document.createElement("li");
     item.className = "song-row";
+    item.dataset.id = song.id;
+    const picked = selectedIds.has(song.id);
+    item.classList.toggle("selected", picked);
+    if (selectMode) {
+      item.setAttribute("role", "checkbox");
+      item.setAttribute("aria-checked", picked ? "true" : "false");
+    }
+
+    const box = document.createElement("span");
+    box.className = "song-check";
+    box.setAttribute("aria-hidden", "true");
+    box.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9.6 16.2 5.4 12 4 13.4l5.6 5.6L20 8.6 18.6 7.2z"/></svg>';
+    item.append(box);
 
     const busy = song.state !== "done" && song.state !== "error";
     const thumb = document.createElement("div");
@@ -180,14 +302,104 @@ function renderLibrary(songs) {
     }
 
     item.append(thumb, info);
-    if (song.state === "done") {
-      item.addEventListener("click", () => openSong(song));
-    } else if (song.state === "error") {
-      item.addEventListener("click", () =>
-        showMessage(el("library-message"), `${song.title || song.id}: işlenemedi.`)
+
+    // Tek click işleyici: seçim modunda seçer, dışında açar.
+    item.addEventListener("click", () => {
+      if (suppressClick) {
+        suppressClick = false;
+        return;
+      }
+      if (selectMode) {
+        toggleSelect(song.id);
+        return;
+      }
+      if (song.state === "done") {
+        openSong(song);
+      } else if (song.state === "error") {
+        showMessage(el("library-message"), `${song.title || song.id}: işlenemedi.`);
+      }
+    });
+    // İşlenmekte olan şarkı da seçilebiliyor: sunucu 409 dönüp anlaşılır bir
+    // mesaj veriyor, seçimi burada engellemek kullanıcıya "neden seçemiyorum"
+    // diye sormaktan iyi değil.
+    bindLongPress(item, () => enterSelectMode(song.id));
+
+    list.append(item);
+  }
+}
+
+// Açık şarkı silindiyse: çalmayı durdur, kütüphaneye dön.
+function closeCurrentSong() {
+  stopPlayback();
+  stopLoop();
+  currentSong = null;
+  showView("library");
+}
+
+async function deleteSelected() {
+  const ids = [...selectedIds];
+  if (!ids.length) return;
+
+  const titles = librarySongs
+    .filter((song) => selectedIds.has(song.id))
+    .map((song) => song.title || song.id.slice(0, 12));
+  const preview = titles.slice(0, 5).join("\n• ");
+  const more = titles.length > 5 ? `\n• … ve ${titles.length - 5} tane daha` : "";
+  const confirmed = window.confirm(
+    `${ids.length} şarkı silinecek:\n\n• ${preview}${more}\n\n`
+    + "Stem'ler, kayıpsız FLAC asıllar, akor ve vuruş bilgisi kalıcı olarak "
+    + "gidecek. BU İŞLEM GERİ ALINAMAZ.\n\nSilinsin mi?"
+  );
+  if (!confirmed) return;
+
+  const button = el("select-delete");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Siliniyor…";
+  }
+  try {
+    const report = await api.deleteSongs(ids);
+    const results = report.results || [];
+    // not_found da "gitti" sayılıyor: sonuç istenen durumda (belki başka bir
+    // cihazdan silinmiş). Önbelleği onlar için de temizliyoruz.
+    const gone = results
+      .filter((item) => item.outcome === "deleted" || item.outcome === "not_found")
+      .map((item) => item.id);
+    const busy = results.filter((item) => item.outcome === "busy");
+    const invalid = results.filter((item) => item.outcome === "invalid");
+
+    // Telefondaki sesler de gitsin, yoksa depolama boşuna şişer.
+    let freed = { removed: 0, bytes: 0 };
+    if (gone.length) freed = await stemCache.removeSongs(gone);
+
+    if (currentSong && gone.includes(currentSong.id)) closeCurrentSong();
+
+    selectMode = false;
+    selectedIds.clear();
+    await refreshLibrary();
+
+    const notes = [];
+    if (gone.length) {
+      // Yalnız anlamlı büyüklükte söyleniyor: "0 MB yer açıldı" saçma duruyor.
+      const mb = freed.bytes >= 1024 ** 2
+        ? ` (${(freed.bytes / 1024 ** 2).toFixed(0)} MB yer açıldı)` : "";
+      notes.push(`${gone.length} şarkı silindi${mb}.`);
+    }
+    for (const item of busy) {
+      notes.push(item.detail || "Bir şarkı işlendiği için silinemedi.");
+    }
+    if (invalid.length) notes.push(`${invalid.length} geçersiz kimlik atlandı.`);
+    if (notes.length) {
+      showMessage(
+        el("library-message"),
+        notes.join("\n"),
+        busy.length || invalid.length ? "warn" : "ok"
       );
     }
-    list.append(item);
+  } catch (error) {
+    showMessage(el("library-message"), describeError(error));
+  } finally {
+    syncSelectBar();
   }
 }
 
@@ -678,6 +890,21 @@ on("upload-input", "change", (event) => {
 });
 
 on("refresh-list", "click", refreshLibrary);
+
+// --- seçim modu düğmeleri ---
+on("select-cancel", "click", exitSelectMode);
+on("select-delete", "click", deleteSelected);
+on("select-all", "click", () => {
+  if (selectedIds.size === librarySongs.length) selectedIds.clear();
+  else for (const song of librarySongs) selectedIds.add(song.id);
+  renderLibrary(librarySongs);
+});
+
+// Escape = geri. Geri tuşu maddesi gelince aynı handleBack() popstate'e de
+// bağlanacak; sıralama orada da "önce seçimden çık" olmalı.
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && handleBack()) event.preventDefault();
+});
 
 on("back-to-library", "click", () => {
   stopPlayback();
