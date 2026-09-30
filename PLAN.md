@@ -294,6 +294,22 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
    4-5 dB kötü (SW davulu yerine demucs davulu konunca sapma büyüyor); HAZBIN'de
    0:12 (-3.6 dB) ve 4:10 (-5.2 dB) pencereleri çok kötü.
 
+   **V3 KULAK SONUCU (2026-10-01, uygulama hatasız oturum, anahtar açıldı):**
+   - HAZBIN V0/V2o/V3 "hepsi açık": üçü temiz (V3'ün 0:12 ve 4:10 kötü sapma
+     pencereleri DAHİL): sapma ölçümü duyulur bozulma göstermedi.
+   - V3 = V2 ile AYNI piyano/bas/gitar/other; fark yalnız davul (V3'te V0'dan).
+     Kulakta V3'ün V2'ye üstünlüğü HİÇBİR yerde çıkmadı; V3 toplam sapması V0'dan
+     4-5 dB kötü, V2 10 dB iyi. V3 ELENDİ (V2 tarafından domine ediliyor).
+   - Zeus: V0 bas cızırtılı + piyano solosunda müzik sızıyor; V2o temiz. (V2 ve V3'te
+     N/H arasındaki farklar, aynı stem'ler olduğu için kulak gürültüsü.)
+   - BTS davul solo 1:19-1:29: üçünde de piyano sızıyor; V2p BELİRGİN az, V0 ve V3
+     (aynı davul) daha çok. Önceki oturumda V2p "en kötü" bulunmuştu: ÇELİŞKİ,
+     yeni oturum hatasız olduğu için ona güvenildi; tekrar dinleme önerildi.
+   - NEM'de önceki testteki V0 piyano solosu sızıntısı (2:59-3:09) bu kez kesitlere
+     girmediği için görülmedi; piyano stem'inde >2 kHz payı V0 0.33, SW 0.027.
+   - **ÖNERİ: canlıya V2o** (piyano+davul SW'den, artık other'a). V1 (yalnız piyano)
+     ve V3 değil.
+
    **Canlı yola girerse (sonuç iyi çıkarsa):**
    - `_hifi_vocals`'ın dönüşü genişler, `separate` piyano/davulu çıkarır,
      artığı yön faktörünün sonucuna göre yönlendirir; `hifi_smoke` güncellenir.
