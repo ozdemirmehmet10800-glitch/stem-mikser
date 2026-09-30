@@ -183,6 +183,20 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
    kaybolursa denenir. Maliyet tahmini ~35-60 sent (5 şarkı; en belirsiz kalem
    yazma süresi, ilk koşuda `timing`'den bakılır).
 
+   **Kulak testi notları (2026-09-30, anahtar HENÜZ AÇILMADI; 5 şarkı bitince açılacak):**
+   - Oturum 1 yapıldı: Final Duet ve Zeus (bkz. pd_out, gitignore'lı). Nothing Else
+     Matters, Below The Surface, HAZBIN başka gün dinlenecek.
+   - **CANLI SÜRÜMDE BAS CIZIRTISI VAR (yeni bulgu).** Orijinal Zeus (harfsiz,
+     canlıdaki) hepsi açıkken 2:25-2:40 temiz; bas SOLO'da cızırtı var. Yani kaynak
+     şarkıda değil, ayrıştırmadan geliyor ve bugünkü zincirde de var. Anahtar
+     açılınca değerlendirilecek: yeni yöntemler bu bas cızırtısını azaltıyor mu,
+     artırıyor mu? Ölçüt: bas stem'inde >2 kHz enerji payı ve darbe sayacı
+     (`pd_crackle`), canlı şarkının kendi bas stem'iyle karşılaştırmalı. NOT: bu
+     karşılaştırma harf kimliğini açık eder, anahtarla birlikte yapılacak.
+   - `::crackle` (mutlak eşik 0.25) solo stem cızırtısını GÖREMİYOR (bas tepesi
+     0.025); `pd_crackle` stem'e göreli. Darbe sayacı piyano vuruşlarında yanlış
+     alarm veriyor, güvenilir gösterge >2 kHz payı.
+
    **Canlı yola girerse (sonuç iyi çıkarsa):**
    - `_hifi_vocals`'ın dönüşü genişler, `separate` piyano/davulu çıkarır,
      artığı yön faktörünün sonucuna göre yönlendirir; `hifi_smoke` güncellenir.
