@@ -2661,8 +2661,13 @@ def _pd_segment_start(center: float, total: float) -> float:
     timeout=1800,
     memory=16384,
 )
-def pd_excerpt_song(song_id: str, variants: dict, letters: dict) -> dict:
-    """variants: {V0/V1p/...: hedef_id}; letters: {V0/V1p/...: harf}."""
+def pd_excerpt_song(song_id: str, variants: dict, letters: dict,
+                    forced: dict = None) -> dict:
+    """variants: {V0/V1p/...: hedef_id}; letters: {V0/V1p/...: harf}.
+
+    `forced`: {"normal": pencere_indeksi, "worst": pencere_indeksi} verilirse
+    bölümler ölçümden değil BUNLARDAN alınır (2 sn'lik pencere indeksi).
+    """
     import numpy as np
 
     volume.reload()
@@ -2690,6 +2695,10 @@ def pd_excerpt_song(song_id: str, variants: dict, letters: dict) -> dict:
     tables = {name: _pd_metrics(feats["V0"], feats[name], mixf, samplerate)
               for name in variants if name != "V0"}
     listen = _pd_listen(tables, mixf["E"])
+    if forced:
+        listen = {kind: {"t": _pd_fmt(int(forced[kind]) * PD_WINDOW_SEC),
+                         "index": int(forced[kind]), "score": 0.0}
+                  for kind in ("normal", "worst")}
     if not listen:
         raise ValueError("Dinleme bolumu secilemedi (sessiz sarki?)")
 
@@ -2962,7 +2971,7 @@ def _pd_worst_spread(values, k: int = 3, min_gap_windows: int = 5) -> list:
 @app.function(image=excerpt_image, volumes={DATA_DIR: volume}, timeout=1800,
               memory=16384)
 def pd_v3_song(song_id: str, v0_id: str, v2_id: str, v2_name: str,
-               letters: dict, write: bool) -> dict:
+               letters: dict, write: bool, forced: dict = None) -> dict:
     """V0, V2 (o ya da p) ve V3'ü kıyaslar; write ise 3 tam + 3 kesit yazar."""
     import numpy as np
 
@@ -3021,7 +3030,7 @@ def pd_v3_song(song_id: str, v0_id: str, v2_id: str, v2_name: str,
                        clip_scale=scale)
         print(f"[v3] yazildi: [{letter}] -> {target}")
     # Kesitler: mevcut işlev, aynı kapsayıcıda (.local); V0 adı "V0" olmalı.
-    excerpt = pd_excerpt_song.local(song_id, ids, dict(letters))
+    excerpt = pd_excerpt_song.local(song_id, ids, dict(letters), forced)
     report["excerpt"] = excerpt
     report["ids"] = ids
     return json.loads(json.dumps(report, default=float))
@@ -3029,7 +3038,7 @@ def pd_v3_song(song_id: str, v0_id: str, v2_id: str, v2_name: str,
 
 @app.local_entrypoint()
 def pd_v3(songs: str = "Zeus,Below The Surface,Nothing Else Matters",
-          measure_only: str = "HAZBIN"):
+          measure_only: str = "HAZBIN", windows: str = ""):
     """V3 karşılaştırması (GPU yok): V0, V2(o), V3.
 
         modal run backend/experiment.py::pd_v3
@@ -3051,6 +3060,12 @@ def pd_v3(songs: str = "Zeus,Below The Surface,Nothing Else Matters",
             raise SystemExit(f"'{needle}' icin {len(found)} eslesme")
         return found[0]
 
+    # windows="6,125": bölüm 1 / bölüm 2 = bu 2 sn'lik pencere indeksleri
+    # (6 = 0:12, 125 = 4:10); verilirse kağıt yalnız "hepsi açık" içerir.
+    forced = None
+    if windows:
+        first, second = (int(part) for part in windows.split(","))
+        forced = {"normal": first, "worst": second}
     jobs = [(n.strip(), True) for n in songs.split(",") if n.strip()]
     jobs += [(n.strip(), False) for n in measure_only.split(",") if n.strip()]
     for needle, write in jobs:
@@ -3064,7 +3079,7 @@ def pd_v3(songs: str = "Zeus,Below The Surface,Nothing Else Matters",
         letters = {"V0": pool.pop(), v2_name: pool.pop(), "V3": pool.pop()}
         print(f"\n--- {entry['title']} ({'dinleme' if write else 'yalniz olcum'}; "
               f"V2 kaynagi: {v2_name}) ---")
-        result = pd_v3_song.remote(song_id, v0_id, v2_id, v2_name, letters, write)
+        result = pd_v3_song.remote(song_id, v0_id, v2_id, v2_name, letters, write, forced)
 
         dev = result["sum_deviation"]
         print("  toplam sapmasi (karisim - stem toplami, dB; ort / en kotu 5 pencere):")
@@ -3083,7 +3098,8 @@ def pd_v3(songs: str = "Zeus,Below The Surface,Nothing Else Matters",
                                 encoding="utf-8")
         slug = "".join(ch if ch.isalnum() else "_" for ch in entry["title"])[:40]
         (sheets / f"{slug}.md").write_text(
-            _pd_v3_sheet(entry["title"], result, sorted(letters.values())),
+            _pd_v3_sheet(entry["title"], result, sorted(letters.values()),
+                         forced=forced),
             encoding="utf-8")
         seg = result["excerpt"]["segments"]
         print(f"  kesit: 1. bolum {seg['normal']['full_start']}-{seg['normal']['full_end']}, "
@@ -3098,7 +3114,7 @@ PD_V3_BASS_EXTRAS = {
 }
 
 
-def _pd_v3_sheet(title: str, result: dict, letters: list) -> str:
+def _pd_v3_sheet(title: str, result: dict, letters: list, forced: dict = None) -> str:
     seg = result["excerpt"]["segments"]
     spread = result["sum_deviation"]["V3"]["worst3_spread"]
     lines = [
@@ -3106,9 +3122,9 @@ def _pd_v3_sheet(title: str, result: dict, letters: list) -> str:
         f"Kitaplıktaki yeni `[X kisa]` şarkıları. Harfler: **{', '.join(letters)}** "
         f"(her biri {result['excerpt']['excerpt_seconds']:.0f} sn).", "",
         "| kesit içi | bölüm | tam sürümde |", "|---|---|---|",
-        f"| 0:00 - 0:10 | 1. bölüm (normal) | {seg['normal']['full_start']} - {seg['normal']['full_end']} |",
+        f"| 0:00 - 0:10 | 1. bölüm ({'zorunlu pencere ' + seg['normal']['window'] if forced else 'normal'}) | {seg['normal']['full_start']} - {seg['normal']['full_end']} |",
         "| 0:10 - 0:11 | sessizlik | |",
-        f"| 0:11 - 0:21 | 2. bölüm (en kötü pencere) | {seg['worst']['full_start']} - {seg['worst']['full_end']} |",
+        f"| 0:11 - 0:21 | 2. bölüm ({'zorunlu pencere ' + seg['worst']['window'] if forced else 'en kötü pencere'}) | {seg['worst']['full_start']} - {seg['worst']['full_end']} |",
         "", "Harflerin hepsini aynı sırayla, aynı kanal ayarıyla ve ses seviyesinde dinle.", "",
         "| # | kontrol | ne dinlenir | EN İYİ harf | BELİRGİN KUSURLU harfler | kusur bölümü (1/2) |",
         "|---|---|---|---|---|---|",
@@ -3120,16 +3136,18 @@ def _pd_v3_sheet(title: str, result: dict, letters: list) -> str:
         ("davul solo", "Piyano/bas/gitar sızıyor mu? Zil/hi-hat eksik mi?"),
         ("bas solo", "Bas gerçekten var mı? Gitar/müzik karışıyor mu? Çızırtı?"),
     ]
+    if forced:
+        rows = rows[:1]
     number = 0
     for check, hint in rows:
         number += 1
         lines.append(f"| {number} | {check} | {hint} | | | |")
-    for key, extras in PD_V3_BASS_EXTRAS.items():
+    for key, extras in ({} if forced else PD_V3_BASS_EXTRAS).items():
         if key in title.lower():
             for span, hint in extras:
                 number += 1
                 lines.append(f"| {number} | **ek (TAM sürüm): bas solo, {span}** | {hint} | | | |")
-    for item in spread:
+    for item in ([] if forced else spread):
         start = item["t"]
         number += 1
         lines.append(f"| {number} | **ek (TAM sürüm): hepsi açık, {start} çevresi (±4 sn)** "
