@@ -2820,3 +2820,105 @@ def pd_excerpts(songs: str = ""):
               f"2. bolum {seg['worst']['full_start']}-{seg['worst']['full_end']}, "
               f"kesit {result['excerpt_seconds']} sn")
     print(f"\nKagitlar: {sheets}")
+
+
+# --------------------------------------------------------------------------
+# Cızırtı: stem'e GÖRELİ darbe sayacı (kulak testi Zeus sonrası)
+# --------------------------------------------------------------------------
+# `::crackle`'ın eşiği MUTLAK (0.25): bas stem'inin tepesi 0.025, yani orada
+# hiçbir şey yakalayamaz. Burada eşik yerel gürültü tabanına göre: ikinci fark
+# (d2) blok başına medyan-mutlak-sapma ile ölçekleniyor, 12 katını aşan
+# örnekler "darbe". Kulak testinde duyulan cızırtı (bas/piyano solo) bu ölçüyle
+# aranıyor. Karışımın (girdi) kendisi de ölçülüyor: cızırtı şarkıda zaten
+# varsa karışımda da görünür.
+
+PD_IMPULSE_BLOCK = 2048
+PD_IMPULSE_Z = 12.0
+
+
+def _pd_impulses(mono, sr: int):
+    """2 sn'lik pencere başına darbe sayısı (yerel MAD'e göre)."""
+    import numpy as np
+
+    d2 = np.diff(mono.astype(np.float64), n=2)
+    blocks = len(d2) // PD_IMPULSE_BLOCK
+    if blocks == 0:
+        return np.zeros(0)
+    shaped = d2[:blocks * PD_IMPULSE_BLOCK].reshape(blocks, PD_IMPULSE_BLOCK)
+    global_rms = float(np.sqrt(np.mean(d2 ** 2))) + 1e-12
+    scale = np.maximum(np.median(np.abs(shaped), axis=1) * 1.4826, 1e-3 * global_rms)
+    flagged = (np.abs(shaped) / scale[:, None]) > PD_IMPULSE_Z
+    positions = np.flatnonzero(flagged.ravel())
+    win = int(PD_WINDOW_SEC * sr)
+    count = len(mono) // win
+    return np.bincount(np.minimum(positions // win, count - 1), minlength=count)[:count]
+
+
+@app.function(image=excerpt_image, volumes={DATA_DIR: volume}, timeout=1800, memory=8192)
+def pd_crackle_song(song_id: str, targets: dict, regions: list) -> dict:
+    """targets: {harf: hedef_id}; regions: [[baslangic_sn, bitis_sn], ...]."""
+    import numpy as np
+    from scipy.signal import butter, sosfiltfilt
+
+    volume.reload()
+    mix = _decode(_find_input(song_id), 44100, 2)
+    sr = 44100
+    hp = butter(4, 2000, btype="high", fs=sr, output="sos")
+
+    def summarize(counts, hf_share=None):
+        def span(lo, hi):
+            a, b = int(lo // PD_WINDOW_SEC), int(np.ceil(hi / PD_WINDOW_SEC))
+            return int(counts[a:b].sum())
+        entry = {"total": int(counts.sum()),
+                 "regions": {f"{lo:g}-{hi:g}": span(lo, hi) for lo, hi in regions}}
+        if hf_share is not None:
+            entry["hf2k_share"] = {
+                "all": round(float(np.mean(hf_share)), 5),
+                **{f"{lo:g}-{hi:g}": round(float(np.mean(
+                    hf_share[int(lo // PD_WINDOW_SEC):int(np.ceil(hi / PD_WINDOW_SEC))])), 5)
+                   for lo, hi in regions}}
+        return entry
+
+    report = {"mix": summarize(_pd_impulses(mix.mean(axis=0), sr)), "letters": {}}
+    for letter, target in targets.items():
+        stems, _ = _load_stems(target)
+        row = {}
+        for name in ("bass", "piano"):
+            mono = stems[name].mean(axis=0)
+            energy = _pd_energy(mono, int(PD_WINDOW_SEC * sr))
+            high = _pd_energy(sosfiltfilt(hp, mono), int(PD_WINDOW_SEC * sr))
+            share = high / np.maximum(energy, 1e-12)
+            row[name] = summarize(_pd_impulses(mono, sr), share)
+        report["letters"][letter] = row
+        del stems
+    return json.loads(json.dumps(report, default=float))
+
+
+@app.local_entrypoint()
+def pd_crackle(song: str = "Zeus", regions: str = "0-10,145-160"):
+    """Harf başına stem'e göreli darbe sayısı (bas + piyano) ve karışım.
+
+        modal run backend/experiment.py::pd_crackle --song Zeus
+    """
+    keys = json.loads((PD_OUT / "key.json").read_text("utf-8"))
+    matches = [(sid, item) for sid, item in keys.items()
+               if song.lower() in item["title"].lower()]
+    if len(matches) != 1:
+        raise SystemExit(f"'{song}' icin {len(matches)} eslesme")
+    song_id, entry = matches[0]
+    spans = [[float(x) for x in part.split("-")] for part in regions.split(",")]
+    report = pd_crackle_song.remote(song_id, dict(entry["ids"]), spans)
+    labels = list(report["mix"]["regions"])
+    print(f"\n{entry['title']}  (darbe sayilari; bolge: {', '.join(labels)} sn)")
+    print(f"{'kaynak':<12}{'toplam':>8}" + "".join(f"{lab:>12}" for lab in labels))
+    mix = report["mix"]
+    print(f"{'karisim':<12}{mix['total']:>8}"
+          + "".join(f"{mix['regions'][lab]:>12}" for lab in labels))
+    for stem in ("bass", "piano"):
+        print(f"\n{stem} stem'i  (darbe: toplam / bolgeler | >2 kHz enerji payi: tumu / bolgeler)")
+        for letter, row in sorted(report["letters"].items()):
+            item = row[stem]
+            hf = item["hf2k_share"]
+            print(f"  {letter:<8}{item['total']:>8}"
+                  + "".join(f"{item['regions'][lab]:>12}" for lab in labels)
+                  + f"   | {hf['all']:.5f}" + "".join(f" {hf[lab]:.5f}" for lab in labels))
