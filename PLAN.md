@@ -228,6 +228,16 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      gerekiyor; bir kez süre çubuğu dondu. Üçünde de davul kanalına dokunulduktan
      sonra. Bellek/önbellek ya da mute/solo geçişi şüpheli. Henüz incelenmedi.
 
+   **V3 turu (2026-10-01, GPU YOK, CPU birleştirme; dinleme mute/solo hatası
+   düzelince):** V3 = V2 stem'leri, yalnız davul V0'dan. Kör test: V0, V2o, V3
+   (yeni harfler D F G H J L N R; anahtar pd_out/key_v3.json). Zeus, BTS, NEM
+   dinlenecek, HAZBIN yalnız ölçüm. BTS'de V2 yalnız "p" üretilmişti, orada V2p
+   kullanıldı (GPU harcanmadı). Toplam sapması (karışım - stem toplamı, ortalama
+   dB; V0 / V2 / V3): Zeus -23.0 / -36.4 / -18.8, BTS -25.3 / -25.6 / -19.9,
+   NEM -27.8 / -28.6 / -23.3, HAZBIN -24.2 / -29.2 / -24.7. V3 toplamı V0'dan
+   4-5 dB kötü (SW davulu yerine demucs davulu konunca sapma büyüyor); HAZBIN'de
+   0:12 (-3.6 dB) ve 4:10 (-5.2 dB) pencereleri çok kötü.
+
    **Canlı yola girerse (sonuç iyi çıkarsa):**
    - `_hifi_vocals`'ın dönüşü genişler, `separate` piyano/davulu çıkarır,
      artığı yön faktörünün sonucuna göre yönlendirir; `hifi_smoke` güncellenir.

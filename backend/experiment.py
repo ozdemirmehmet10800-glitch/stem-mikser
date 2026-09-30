@@ -2922,3 +2922,218 @@ def pd_crackle(song: str = "Zeus", regions: str = "0-10,145-160"):
             print(f"  {letter:<8}{item['total']:>8}"
                   + "".join(f"{item['regions'][lab]:>12}" for lab in labels)
                   + f"   | {hf['all']:.5f}" + "".join(f" {hf[lab]:.5f}" for lab in labels))
+
+
+# --------------------------------------------------------------------------
+# V3: mevcut FLAC'lerden birleştirme (GPU YOK)
+# --------------------------------------------------------------------------
+# Kulak testi sonrası aday (PLAN.md madde 7, sonuç bölümü):
+#   vokal   SW            (V2'deki vokal, hepsinde aynı)
+#   piyano  SW            (V2'nin piyanosu; "o" yönünde saf SW çıktısı)
+#   davul   V0'dan        (demucs, karışım - vokal üzerinde)
+#   bas, gitar, other  V2'den (piyano + davul çıkarılmış enstrümantalde demucs)
+# Yani V3 = V2 stem'leri, yalnız davul V0'dan. Toplam karışıma TAM eşit değil:
+# sapma = (SW davulu - demucs davulu) kadar ek. Bu sapma 2 sn pencerelerle
+# ölçülüyor ve en kötü pencereler dinleme kağıdına "hepsi açık" satırı oluyor.
+#
+# BTS'de V2 yalnız "p" yönünde üretilmişti ("o" yok, GPU harcanmıyor): orada
+# V2p kullanılıyor ve raporda açıkça işaretli.
+
+PD_V3_LETTERS = "DFGHJLNR"
+
+
+def _pd_worst_spread(values, k: int = 3, min_gap_windows: int = 5) -> list:
+    """En kötü k pencere, birbirine yakın olmayanlar (nan = geçersiz)."""
+    import numpy as np
+
+    arr = np.asarray(values, dtype=np.float64)
+    order = [int(i) for i in np.argsort(-np.where(np.isfinite(arr), arr, -np.inf))
+             if np.isfinite(arr[i])]
+    chosen = []
+    for index in order:
+        if all(abs(index - other) >= min_gap_windows for other in chosen):
+            chosen.append(index)
+        if len(chosen) == k:
+            break
+    return [{"t": _pd_fmt(i * PD_WINDOW_SEC), "value": round(float(arr[i]), 2)}
+            for i in chosen]
+
+
+@app.function(image=excerpt_image, volumes={DATA_DIR: volume}, timeout=1800,
+              memory=16384)
+def pd_v3_song(song_id: str, v0_id: str, v2_id: str, v2_name: str,
+               letters: dict, write: bool) -> dict:
+    """V0, V2 (o ya da p) ve V3'ü kıyaslar; write ise 3 tam + 3 kesit yazar."""
+    import numpy as np
+
+    volume.reload()
+    source_status = json.loads((_song_dir(song_id) / "status.json").read_text("utf-8"))
+    title = str(source_status.get("title") or song_id[:12])
+
+    def scale_of(target: str) -> float:
+        data = json.loads((_song_dir(target) / "status.json").read_text("utf-8"))
+        return float((data.get("experiment") or {}).get("clip_scale", 1.0))
+
+    scale = scale_of(v0_id)
+    if abs(scale - scale_of(v2_id)) > 1e-6:
+        raise ValueError("V0 ve V2 ortak clip_scale kullanmiyor; birlestirilemez")
+    s0, samplerate = _load_stems(v0_id)
+    s2, _ = _load_stems(v2_id)
+    s3 = {"vocals": s2["vocals"], "piano": s2["piano"], "drums": s0["drums"],
+          "bass": s2["bass"], "guitar": s2["guitar"], "other": s2["other"]}
+    variants = {"V0": s0, v2_name: s2, "V3": s3}
+
+    mix = _decode(_find_input(song_id), samplerate, 2)
+    duration = round(mix.shape[1] / samplerate, 3)
+    sos = _pd_sos(samplerate)
+    mixf = _pd_mix_features(mix, samplerate, sos)
+    music = mixf["E"] > 0.05 * float(np.mean(mixf["E"]))
+
+    deviation = {}
+    feats = {}
+    for name, stems in variants.items():
+        feats[name] = _pd_features({k: v * scale for k, v in stems.items()},
+                                   mix, samplerate, sos)
+        size = min(len(feats[name]["sumres"]), len(mixf["E"]))
+        db = 10.0 * np.log10((feats[name]["sumres"][:size] + 1e-20)
+                             / (mixf["E"][:size] + 1e-20))
+        db[~music[:size]] = np.nan
+        deviation[name] = {
+            "mean_db": round(float(np.nanmean(db)), 2),
+            "worst5": _pd_summarize(db, True)["worst"],
+            "worst3_spread": _pd_worst_spread(db),
+        }
+    report = {"song": song_id, "title": title, "duration": duration,
+              "v2_name": v2_name, "clip_scale": round(scale, 4),
+              "sum_deviation": deviation}
+    if not write:
+        return json.loads(json.dumps(report, default=float))
+
+    ids = {}
+    for name, stems in variants.items():
+        letter = letters[name]
+        target = f"{song_id}-pd{letter.lower()}"
+        ids[name] = target
+        _write_outputs(target, f"[{letter}] {title}",
+                       {k: v * scale for k, v in stems.items()}, samplerate, 2,
+                       duration, song_id,
+                       meta={"pd": "v3", "clip_scale": round(scale, 6)},
+                       clip_scale=scale)
+        print(f"[v3] yazildi: [{letter}] -> {target}")
+    # Kesitler: mevcut işlev, aynı kapsayıcıda (.local); V0 adı "V0" olmalı.
+    excerpt = pd_excerpt_song.local(song_id, ids, dict(letters))
+    report["excerpt"] = excerpt
+    report["ids"] = ids
+    return json.loads(json.dumps(report, default=float))
+
+
+@app.local_entrypoint()
+def pd_v3(songs: str = "Zeus,Below The Surface,Nothing Else Matters",
+          measure_only: str = "HAZBIN"):
+    """V3 karşılaştırması (GPU yok): V0, V2(o), V3.
+
+        modal run backend/experiment.py::pd_v3
+
+    Anahtar pd_out/key_v3.json (dinlemeden ÖNCE açma), kağıtlar pd_out/sheets_v3/.
+    """
+    import random
+
+    keys = json.loads((PD_OUT / "key.json").read_text("utf-8"))
+    out_key_path = PD_OUT / "key_v3.json"
+    out_keys = json.loads(out_key_path.read_text("utf-8")) if out_key_path.is_file() else {}
+    sheets = PD_OUT / "sheets_v3"
+    sheets.mkdir(parents=True, exist_ok=True)
+
+    def find(needle: str):
+        found = [(sid, item) for sid, item in keys.items()
+                 if needle.lower() in item["title"].lower()]
+        if len(found) != 1:
+            raise SystemExit(f"'{needle}' icin {len(found)} eslesme")
+        return found[0]
+
+    jobs = [(n.strip(), True) for n in songs.split(",") if n.strip()]
+    jobs += [(n.strip(), False) for n in measure_only.split(",") if n.strip()]
+    for needle, write in jobs:
+        song_id, entry = find(needle)
+        by_name = {name: letter for letter, name in entry["key"].items()}
+        v2_name = "V2o" if "V2o" in by_name else "V2p"
+        v0_id = entry["ids"][by_name["V0"]]
+        v2_id = entry["ids"][by_name[v2_name]]
+        pool = list(PD_V3_LETTERS)
+        random.SystemRandom().shuffle(pool)
+        letters = {"V0": pool.pop(), v2_name: pool.pop(), "V3": pool.pop()}
+        print(f"\n--- {entry['title']} ({'dinleme' if write else 'yalniz olcum'}; "
+              f"V2 kaynagi: {v2_name}) ---")
+        result = pd_v3_song.remote(song_id, v0_id, v2_id, v2_name, letters, write)
+
+        dev = result["sum_deviation"]
+        print("  toplam sapmasi (karisim - stem toplami, dB; ort / en kotu 5 pencere):")
+        for name, item in dev.items():
+            worst = ", ".join(f"{w['t']}={w['value']}" for w in item["worst5"])
+            print(f"    {name:<5} ort {item['mean_db']:>7}   {worst}")
+        if not write:
+            continue
+
+        out_keys[song_id] = {"title": entry["title"],
+                             "key": {letter: name for name, letter in letters.items()},
+                             "ids": {letters[n]: i for n, i in result["ids"].items()},
+                             "v2_name": v2_name,
+                             "excerpt_ids": result["excerpt"]["excerpt_ids"]}
+        out_key_path.write_text(json.dumps(out_keys, ensure_ascii=False, indent=2),
+                                encoding="utf-8")
+        slug = "".join(ch if ch.isalnum() else "_" for ch in entry["title"])[:40]
+        (sheets / f"{slug}.md").write_text(
+            _pd_v3_sheet(entry["title"], result, sorted(letters.values())),
+            encoding="utf-8")
+        seg = result["excerpt"]["segments"]
+        print(f"  kesit: 1. bolum {seg['normal']['full_start']}-{seg['normal']['full_end']}, "
+              f"2. bolum {seg['worst']['full_start']}-{seg['worst']['full_end']}")
+    print(f"\nKagitlar: {sheets}   (anahtar: {out_key_path}, dinlemeden once acma)")
+
+
+PD_V3_BASS_EXTRAS = {
+    "zeus": [("0:00 - 0:10", "Zeus girisi: bas var mi?"),
+             ("2:25 - 2:40", "Bas var mi, cizirti var mi?")],
+    "below the surface": [("2:08 - 2:16", "Bas var mi?")],
+}
+
+
+def _pd_v3_sheet(title: str, result: dict, letters: list) -> str:
+    seg = result["excerpt"]["segments"]
+    spread = result["sum_deviation"]["V3"]["worst3_spread"]
+    lines = [
+        f"# Dinleme kağıdı (V3 turu): {title}", "",
+        f"Kitaplıktaki yeni `[X kisa]` şarkıları. Harfler: **{', '.join(letters)}** "
+        f"(her biri {result['excerpt']['excerpt_seconds']:.0f} sn).", "",
+        "| kesit içi | bölüm | tam sürümde |", "|---|---|---|",
+        f"| 0:00 - 0:10 | 1. bölüm (normal) | {seg['normal']['full_start']} - {seg['normal']['full_end']} |",
+        "| 0:10 - 0:11 | sessizlik | |",
+        f"| 0:11 - 0:21 | 2. bölüm (en kötü pencere) | {seg['worst']['full_start']} - {seg['worst']['full_end']} |",
+        "", "Harflerin hepsini aynı sırayla, aynı kanal ayarıyla ve ses seviyesinde dinle.", "",
+        "| # | kontrol | ne dinlenir | EN İYİ harf | BELİRGİN KUSURLU harfler | kusur bölümü (1/2) |",
+        "|---|---|---|---|---|---|",
+    ]
+    rows = [
+        ("hepsi açık", "Çızırtı, tık, boşluk, denge bozukluğu?"),
+        ("piyano solo", "Yalnız piyano mu, başka bir şey (gitar, bas, davul, vokal) karışıyor mu? "
+                        "(Piyanosuz şarkıda sessiz olmalı.)"),
+        ("davul solo", "Piyano/bas/gitar sızıyor mu? Zil/hi-hat eksik mi?"),
+        ("bas solo", "Bas gerçekten var mı? Gitar/müzik karışıyor mu? Çızırtı?"),
+    ]
+    number = 0
+    for check, hint in rows:
+        number += 1
+        lines.append(f"| {number} | {check} | {hint} | | | |")
+    for key, extras in PD_V3_BASS_EXTRAS.items():
+        if key in title.lower():
+            for span, hint in extras:
+                number += 1
+                lines.append(f"| {number} | **ek (TAM sürüm): bas solo, {span}** | {hint} | | | |")
+    for item in spread:
+        start = item["t"]
+        number += 1
+        lines.append(f"| {number} | **ek (TAM sürüm): hepsi açık, {start} çevresi (±4 sn)** "
+                     f"| Toplam sapmasının en kötü pencerelerinden biri ({item['value']} dB). "
+                     f"Bozulma, eksik ya da fazla ses? | | | |")
+    lines += ["", "Not (serbest):", "", ""]
+    return "\n".join(lines)
