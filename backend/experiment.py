@@ -505,7 +505,8 @@ def _residual_report(mix, stems: dict) -> dict:
 
 def _write_outputs(song_id: str, title: str, stems: dict, samplerate: int,
                    channels: int, duration: float, source_song: str,
-                   meta: dict, clip_scale: float = None) -> list:
+                   meta: dict, clip_scale: float = None,
+                   copy_analysis: bool = True) -> list:
     """FLAC master + m4a, canlı `separate` ile AYNI kurallarla.
 
     Ortak clip_scale: stem başına ayrı ölçek mikserde dengeyi bozardı.
@@ -547,7 +548,7 @@ def _write_outputs(song_id: str, title: str, stems: dict, samplerate: int,
     # karşılaştırmak istediğimiz ayrıştırma, analiz değil. Aynı ızgara
     # olması zaten şart, yoksa şerit kayar.
     copied = []
-    for name in ("chords.json", "beats.json"):
+    for name in (("chords.json", "beats.json") if copy_analysis else ()):
         source = _song_dir(source_song) / name
         if source.is_file():
             shutil.copyfile(source, song_dir / name)
@@ -1483,6 +1484,17 @@ def analyze_instrumental(song_id: str, variants: str = "a,c,cfp32,cov4,cboth,cin
         if not stems or "vocals" not in stems:
             print(f"[atla] {target} yok")
             continue
+        if variant.startswith("pd"):
+            # Madde 7 varyantı: vokal HEP aynı SW çıktısı, yani "karışım -
+            # vokal" hepsinde aynı olurdu. Fark piyano/davul çıkarmalarında;
+            # duyulan şey "vokal kapalı" karışımı = vokal dışı stem toplamı.
+            total = None
+            for name, value in stems.items():
+                if name == "vocals":
+                    continue
+                total = value.copy() if total is None else total + value
+            candidates[variant] = total * scale
+            continue
         vocals = stems["vocals"] * scale
         length = min(mix.shape[1], vocals.shape[1])
         candidates[variant] = mix[:, :length] - vocals[:, :length]
@@ -2306,9 +2318,9 @@ def _pd_listen(tables: dict, mix_energy) -> dict:
     else:
         normal = worst
     return {
-        "worst": {"t": _pd_fmt(worst * PD_WINDOW_SEC),
+        "worst": {"t": _pd_fmt(worst * PD_WINDOW_SEC), "index": worst,
                   "score": round(float(composite[worst]), 2)},
-        "normal": {"t": _pd_fmt(normal * PD_WINDOW_SEC),
+        "normal": {"t": _pd_fmt(normal * PD_WINDOW_SEC), "index": normal,
                    "score": round(float(composite[normal]), 2)},
     }
 
@@ -2496,7 +2508,8 @@ def run_pd(song_id: str, letters: str = PD_LETTERS) -> dict:
         key[letter] = name
         written_ids[letter] = target_id
         _write_outputs(target_id, f"[{letter}] {title}", assemble(kind, route),
-                       samplerate, channels, duration, song_id, meta={"pd": True},
+                       samplerate, channels, duration, song_id,
+                       meta={"pd": True, "clip_scale": round(clip_scale, 6)},
                        clip_scale=clip_scale)
         print(f"[pd] yazildi: [{letter}] -> {target_id}")
 
@@ -2617,3 +2630,193 @@ def _print_pd(report: dict):
             worst = ", ".join(f"{w['t']}={w['value']}" for w in summary["worst"])
             print(f"      {metric:<24} ort={summary['mean']}  en kotu: {worst}")
     print(f"  dinleme: {report['listen']}")
+
+
+# --------------------------------------------------------------------------
+# Kulak testi kesitleri: her harf için yalnız dinleme bölümleri
+# --------------------------------------------------------------------------
+# Dinleme bölümleri (normal + en kötü pencere) DİSKTEKİ FLAC master'lardan
+# yeniden hesaplanıyor: böylece GPU'suz ve run_pd'den bağımsız; eski koşumlar
+# (Zeus, Final Duet) da aynı yöntemle işleniyor. Her bölüm pencerenin çevresinde
+# EXCERPT_SECONDS uzunluğunda, aralarında 1 sn sessizlik, kenarlarda 20 ms
+# fade (aksi halde kesim yerlerinde tık olur). Harfler tam sürümle AYNI:
+# kesit id'si `<id>-pd<harf>s`.
+
+EXCERPT_SECONDS = 10.0
+EXCERPT_GAP = 1.0
+EXCERPT_FADE = 0.020
+
+excerpt_image = modal.Image.debian_slim(python_version="3.11").apt_install(
+    "ffmpeg"
+).pip_install("numpy==1.26.4", "scipy==1.13.1", "soundfile==0.13.1")
+
+
+def _pd_segment_start(center: float, total: float) -> float:
+    return max(0.0, min(center - EXCERPT_SECONDS * 0.4, total - EXCERPT_SECONDS))
+
+
+@app.function(
+    image=excerpt_image,
+    volumes={DATA_DIR: volume},
+    timeout=1800,
+    memory=16384,
+)
+def pd_excerpt_song(song_id: str, variants: dict, letters: dict) -> dict:
+    """variants: {V0/V1p/...: hedef_id}; letters: {V0/V1p/...: harf}."""
+    import numpy as np
+
+    volume.reload()
+    source_status = json.loads((_song_dir(song_id) / "status.json").read_text("utf-8"))
+    title = str(source_status.get("title") or song_id[:12])
+
+    def scale_of(target: str) -> float:
+        data = json.loads((_song_dir(target) / "status.json").read_text("utf-8"))
+        return float((data.get("experiment") or {}).get("clip_scale", 1.0))
+
+    stems0, samplerate = _load_stems(variants["V0"])
+    del stems0
+    mix = _decode(_find_input(song_id), samplerate, 2)
+    total = mix.shape[1] / samplerate
+    sos = _pd_sos(samplerate)
+    mixf = _pd_mix_features(mix, samplerate, sos)
+
+    feats = {}
+    for name, target in variants.items():
+        stems, _ = _load_stems(target)
+        scale = scale_of(target)
+        feats[name] = _pd_features({k: v * scale for k, v in stems.items()},
+                                   mix, samplerate, sos)
+        del stems
+    tables = {name: _pd_metrics(feats["V0"], feats[name], mixf, samplerate)
+              for name in variants if name != "V0"}
+    listen = _pd_listen(tables, mixf["E"])
+    if not listen:
+        raise ValueError("Dinleme bolumu secilemedi (sessiz sarki?)")
+
+    centers = {kind: listen[kind]["index"] * PD_WINDOW_SEC + PD_WINDOW_SEC / 2
+               for kind in ("normal", "worst")}
+    starts = {kind: _pd_segment_start(center, total) for kind, center in centers.items()}
+    length = int(EXCERPT_SECONDS * samplerate)
+    gap = np.zeros((2, int(EXCERPT_GAP * samplerate)), dtype=np.float32)
+    fade = int(EXCERPT_FADE * samplerate)
+    ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+
+    def cut(stem):
+        pieces = []
+        for kind in ("normal", "worst"):
+            begin = int(starts[kind] * samplerate)
+            piece = stem[:, begin:begin + length].copy()
+            if piece.shape[1] > 2 * fade:
+                piece[:, :fade] *= ramp
+                piece[:, -fade:] *= ramp[::-1]
+            pieces.append(piece)
+            if kind == "normal":
+                pieces.append(gap)
+        return np.concatenate(pieces, axis=1)
+
+    ids = {}
+    excerpt_seconds = None
+    for name, target in variants.items():
+        stems, _ = _load_stems(target)          # FLAC alanı: tam sürümle AYNI seviye
+        short = {key: cut(value) for key, value in stems.items()}
+        del stems
+        letter = letters[name]
+        excerpt_id = f"{song_id}-pd{letter.lower()}s"
+        excerpt_seconds = short["bass"].shape[1] / samplerate
+        _write_outputs(excerpt_id, f"[{letter} kisa] {title}", short, samplerate, 2,
+                       round(excerpt_seconds, 3), song_id,
+                       meta={"pd": "excerpt", "clip_scale": 1.0},
+                       clip_scale=1.0, copy_analysis=False)
+        ids[letters[name]] = excerpt_id
+        print(f"[kesit] [{letter}] -> {excerpt_id} ({excerpt_seconds:.1f} sn)")
+
+    return {
+        "title": title, "duration": round(total, 1),
+        "excerpt_seconds": round(float(excerpt_seconds), 1),
+        "segments": {
+            kind: {"full_start": _pd_fmt(starts[kind]),
+                   "full_end": _pd_fmt(starts[kind] + EXCERPT_SECONDS),
+                   "window": listen[kind]["t"], "score": listen[kind]["score"]}
+            for kind in ("normal", "worst")
+        },
+        "excerpt_ids": ids,
+    }
+
+
+SHEET_CHECKS = (
+    ("hepsi acik", "Tum kanallar acik. Cizirti, tik, ses bosluklari, denge bozuklugu?"),
+    ("piyano solo", "Yalniz piyano. Baska bir sey (bas, gitar, davul, vokal) karisiyor mu? "
+                    "Piyanonun bir kismi eksik mi?"),
+    ("piyano kapali", "Piyano MUTE, gerisi acik. Piyanodan iz (hayalet) kaliyor mu?"),
+    ("davul solo", "Yalniz davul. Baska bir sey (ozellikle bas/808, piyano) var mi? "
+                   "Zil/hi-hat eksik mi?"),
+    ("davul kapali", "Davul MUTE, gerisi acik. Zil/hi-hat/kick izi (hayalet) kaliyor mu?"),
+    ("bas solo", "Yalniz bas. Bas gercekten var mi, yoksa ince/bos mu? "
+                 "Baska bir sey karisiyor mu?"),
+)
+
+
+def _pd_sheet(title: str, result: dict) -> str:
+    seg = result["segments"]
+    letters = sorted(result["excerpt_ids"])
+    normal_len = EXCERPT_SECONDS
+    lines = [
+        f"# Dinleme kagidi: {title}",
+        "",
+        f"Kitapliktaki `[X kisa]` sarkilari ({len(letters)} harf: {', '.join(letters)}) "
+        f"her biri {result['excerpt_seconds']:.0f} sn.",
+        "",
+        "| kesit ici | bolum | tam surumde |",
+        "|---|---|---|",
+        f"| 0:00 - 0:{normal_len:04.1f} | 1. bolum (normal) | "
+        f"{seg['normal']['full_start']} - {seg['normal']['full_end']} |",
+        f"| 0:{normal_len:04.1f} - 0:{normal_len + EXCERPT_GAP:04.1f} | sessizlik | |",
+        f"| 0:{normal_len + EXCERPT_GAP:04.1f} - 0:{result['excerpt_seconds']:04.1f} "
+        f"| 2. bolum (en kotu pencere) | {seg['worst']['full_start']} - "
+        f"{seg['worst']['full_end']} |",
+        "",
+        "Her kontrolde ayni sirayla butun harfleri dinle (ayni kanal ayarlari, ayni ses "
+        "seviyesi). Harfleri kendi sirana gore dinleyebilirsin.",
+        "",
+        "| # | kontrol | ne dinlenir | EN IYI harf | BELIRGIN KUSURLU harfler | kusur hangi bolumde (1/2) |",
+        "|---|---|---|---|---|---|",
+    ]
+    for number, (check, hint) in enumerate(SHEET_CHECKS, start=1):
+        lines.append(f"| {number} | {check} | {hint} | | | |")
+    lines += ["", "Not (serbest):", "", ""]
+    return "\n".join(lines)
+
+
+@app.local_entrypoint()
+def pd_excerpts(songs: str = ""):
+    """Kesit sürümleri + dinleme kağıtları.
+
+        modal run backend/experiment.py::pd_excerpts
+
+    pd_out/key.json'daki her şarkı için (ya da `songs` ile süzülmüş). Kağıtlar
+    pd_out/sheets/ altında; harflerin NE OLDUĞUNU içermiyor.
+    """
+    key_path = PD_OUT / "key.json"
+    if not key_path.is_file():
+        raise SystemExit("pd_out/key.json yok; once pd_run calistir.")
+    keys = json.loads(key_path.read_text("utf-8"))
+    needles = [item.strip().lower() for item in songs.split(",") if item.strip()]
+    sheets = PD_OUT / "sheets"
+    sheets.mkdir(parents=True, exist_ok=True)
+
+    for song_id, entry in keys.items():
+        if needles and not any(n in entry["title"].lower() for n in needles):
+            continue
+        variants = {name: entry["ids"][letter] for letter, name in entry["key"].items()}
+        letters = {name: letter for letter, name in entry["key"].items()}
+        print(f"\n--- {entry['title']} ---")
+        result = pd_excerpt_song.remote(song_id, variants, letters)
+        entry["excerpt_ids"] = result["excerpt_ids"]
+        key_path.write_text(json.dumps(keys, ensure_ascii=False, indent=2), encoding="utf-8")
+        slug = "".join(ch if ch.isalnum() else "_" for ch in entry["title"])[:40]
+        (sheets / f"{slug}.md").write_text(_pd_sheet(entry["title"], result), encoding="utf-8")
+        seg = result["segments"]
+        print(f"  1. bolum {seg['normal']['full_start']}-{seg['normal']['full_end']}, "
+              f"2. bolum {seg['worst']['full_start']}-{seg['worst']['full_end']}, "
+              f"kesit {result['excerpt_seconds']} sn")
+    print(f"\nKagitlar: {sheets}")
