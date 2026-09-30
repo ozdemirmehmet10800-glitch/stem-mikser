@@ -197,6 +197,37 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      0.025); `pd_crackle` stem'e göreli. Darbe sayacı piyano vuruşlarında yanlış
      alarm veriyor, güvenilir gösterge >2 kHz payı.
 
+   **SONUÇ (2026-10-01, anahtar açıldı, 5 şarkı dinlendi): kural GEÇMEDİ, canlı V0'da KALIYOR.**
+   - **Piyano (SW'den, V1):** piyano stem'i 4/5 şarkıda V0'dan temiz (Zeus, Final Duet,
+     Nothing Else Matters, HAZBIN; BTS benzer). AMA V1'de demucs'un bası bozuluyor:
+     Zeus'ta bas ölü, NEM'de bas stem'ine gitar/müzik karışıyor, BTS'de piyano
+     bölüm 1'de davula gidip piyano stem'i boş kalıyor. "Hiçbirinde kötü yok" ✗.
+   - **Davul (SW'den, V2):** hayalet yok (davul kapalı: hiçbirinde fark), Zeus'ta bas
+     V0'dan iyi. AMA BTS'de davula piyano sızıntısı V0'dan KÖTÜ (T en kötü), HAZBIN'de
+     davula müzik karışıyor (V0 de kötü). Net kazanç yalnız Zeus. ✗.
+   - **Yön:** o (artık other'a) piyano solosunda tutarlı daha temiz; p (artık piyanoya)
+     gitar/ses kalıntısı getiriyor (NEM, Zeus, HAZBIN). Piyano kapalıyken o'da
+     hayalet duyulmadı.
+   - **Sürpriz:** V2 (piyano+davul önce çıkarılınca) Zeus'un basını V0'dan çok daha iyi
+     yaptı (kulak: V2 en iyi, V0 "ince, kesintili, cızırtılı"). `bass_low_delta`
+     metriği "V2 bas kaybediyor" demişti: YANLIŞ ALARM; metrik V0'ın basını doğru
+     kabul ediyor, V0'ın bası kirliymiş. Bu metriği doğruluk ölçüsü olarak KULLANMA.
+   - **Canlı (V0) kusurları:** Zeus bas ince/cızırtılı; NEM'de piyanosuz şarkıda piyano
+     stem'inde gitar+müzik; Final Duet'te keman sızıntısı; HAZBIN'de davul solosunda
+     müzik+hışırtı ve piyano solosunda cızırtı.
+   - **Bas cızırtısı (Zeus, >2 kHz payı, 2:25-2:40):** V0 0.0043, V1 0.0087 (2 kat
+     kötü), V2 0.0006 (7 kat az). Diğer 4 şarkıda ölçüm anlamlı fark göstermedi.
+   - **Kulak gürültüsü:** aynı stem'i taşıyan harfler arasında puan ters dönüyor
+     (HAZBIN davul P/W, HAZBIN bas 3:05 Q/T, NEM bas K/Q). Uygulama S/M cızırtısı
+     hatası (aşağıda) sebep olabilir. Tek tek satırlara değil, şarkılar arası
+     tutarlı örüntüye güvenildi.
+   - **Sıradaki aday (CPU, GPU'suz, kararını bekliyor):** V3 = vokal SW, piyano SW (o),
+     davul V0'dan, bas/gitar/other V2'den; mevcut FLAC'lerden birleştirilir.
+   - **AYRI İŞ: uygulamada S/M cızırtısı.** Kesitlerde solo/mute yaparken bazen
+     cızırtı başlıyor, şarkıdan çıkıp girmek düzeltmiyor, uygulamayı kapatıp açmak
+     gerekiyor; bir kez süre çubuğu dondu. Üçünde de davul kanalına dokunulduktan
+     sonra. Bellek/önbellek ya da mute/solo geçişi şüpheli. Henüz incelenmedi.
+
    **Canlı yola girerse (sonuç iyi çıkarsa):**
    - `_hifi_vocals`'ın dönüşü genişler, `separate` piyano/davulu çıkarır,
      artığı yön faktörünün sonucuna göre yönlendirir; `hifi_smoke` güncellenir.
