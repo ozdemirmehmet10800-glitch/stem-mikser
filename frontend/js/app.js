@@ -21,6 +21,7 @@ import {
 } from "./stretch.js";
 import { transposeKey } from "./tonality.js";
 import { NavStack, CLOSE, BLOCKED } from "./navstack.js";
+import { diag, summarize, eventsText } from "./diag.js";
 
 const POLL_MS = 3000;
 
@@ -1586,6 +1587,7 @@ on("open-settings", "click", () => {
   refreshAudioUi();
   refreshParallelUi();
   refreshOpenStats();
+  refreshAudioDiag();
   hideMessage(el("settings-message"));
   showView("settings");
   pushLayer("view");
@@ -1826,6 +1828,24 @@ function refreshParallelUi() {
     + `${Math.round(perStem)} MB: son hâl ${Math.round(total)} MB, `
     + `${settings.decodeParallel}'li çözmede tepe ~${Math.round(total + extra)} MB `
     + `(+${Math.round(extra)} MB geçici). Takılma ya da çökme görürsen düşür.`;
+}
+
+// Ses tanısı satırı (diag.js). Bellekteki toplam PCM burada görünüyor: 6 dk'lık
+// bir şarkı Yüksek kipte ~900 MB tutabiliyor, telefonda belleğin gerçekten
+// sorun olup olmadığı ancak buradan okunur.
+function diagText() {
+  const info = engine.diagnostics();
+  info.deviceMemoryGb = navigator.deviceMemory || 0;
+  info.jsHeapBytes = performance.memory ? performance.memory.usedJSHeapSize : 0;
+  return summarize(info, diag);
+}
+
+function refreshAudioDiag() {
+  const node = el("audio-diag");
+  if (!node) return;
+  node.textContent = diagText();
+  const log = el("audio-diag-log");
+  if (log) log.textContent = eventsText(diag);
 }
 
 function refreshOpenStats() {
@@ -2088,6 +2108,48 @@ on("clear-cache", "click", async () => {
 });
 
 // ---------------------------------------------------------------- başlangıç
+
+// Saat örneği her saniye (çalarken), tanı satırı yalnız Ayarlar açıkken.
+setInterval(() => {
+  engine.sampleClock();
+  if (!views.settings.hidden) refreshAudioDiag();
+}, 1000);
+window.addEventListener("error", (event) => diag.note("error", event.message || "?"));
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason;
+  diag.note("rejection", String((reason && reason.message) || reason));
+});
+
+// Çalarken context askıya alınırsa motor kendini duraklatıyor; arayüz de
+// aynı durumu göstermeli, yoksa düğme "çalıyor" der, süre çubuğu donar.
+engine.onInterrupted = (state) => {
+  stopPlayback();
+  showMessage(el("player-message"),
+    `Ses sistem tarafından kesildi (${state}). Devam etmek için oynat'a bas.`, "warn");
+};
+engine.onResumed = () => {
+  showMessage(el("player-message"), "Ses geri geldi. Oynat'a basabilirsin.", "ok");
+  setTimeout(() => hideMessage(el("player-message")), 4000);
+};
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) engine.resumeIfSuspended();
+});
+
+on("copy-diag", "click", async () => {
+  const text = `${diagText()}
+${eventsText(diag)}`;
+  const button = el("copy-diag");
+  try {
+    await navigator.clipboard.writeText(text);
+    button.textContent = "Kopyalandı";
+  } catch {
+    // Pano reddedildi: olay listesini aç, elle seçilsin.
+    const details = el("audio-diag-details");
+    if (details) details.open = true;
+    button.textContent = "Kopyalanamadı, elle seç";
+  }
+  setTimeout(() => { button.textContent = "Tanıyı kopyala"; }, 2500);
+});
 
 mixer = new Mixer(el("channels"), engine, null, downloadStem);
 // İndirme menüsü de bir katman: geri tuşu önce onu kapatıyor. Menü kendi

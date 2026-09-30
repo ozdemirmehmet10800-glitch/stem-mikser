@@ -28,6 +28,7 @@ import {
   supportsFormants, normalizeStretcher,
 } from "./stretch.js";
 import { AUDIO_SAVE, normalizeAudioMode } from "./settings.js";
+import { diag } from "./diag.js";
 
 export const STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"];
 
@@ -136,6 +137,92 @@ export class Engine {
     this.activeStretcher = DEFAULT_STRETCHER;  // gerçekten kurulan
     this.onStretcherFallback = null;           // yedeğe düşünce haber ver
     this.formants = false;  // yalnız destekleyen arka uçta anlamlı
+
+    // --- tanı (diag.js) ve kesinti ---
+    this.gainsCreated = 0;
+    this.gainsReleased = 0;
+    this.clockSamples = [];
+    // Çalarken context askıya alınırsa (ses odağı kaybı, arama...) motor
+    // kendini DURAKLATIYOR ve app.js'i uyarıyor; geri gelince onResumed.
+    this.interrupted = false;
+    this.onInterrupted = null;
+    this.onResumed = null;
+  }
+
+  #newGain() {
+    this.gainsCreated += 1;
+    return this.ctx.createGain();
+  }
+
+  #handleState() {
+    const state = this.ctx ? this.ctx.state : "yok";
+    diag.note("state", state + (this.playing ? " (çalarken)" : ""));
+    if (state === "running") {
+      if (this.interrupted) {
+        this.interrupted = false;
+        if (this.onResumed) this.onResumed();
+      }
+      return;
+    }
+    if (state === "closed" || !this.playing) return;
+    // Saat donduğu için currentTime da donuk; pause() doğru konumu yazıyor.
+    // Duraklatmazsak engine.playing true kalıp süre çubuğu ve düğme yalan
+    // söylerdi, geri gelince de sesler yanlış konumdan sızardı.
+    this.interrupted = true;
+    diag.note("interrupt", `ctx ${state}, çalma duraklatıldı`);
+    this.pause();
+    if (this.onInterrupted) this.onInterrupted(state);
+  }
+
+  /** Sayfa öne gelince: askıda kalmış context'i toparla (çalmayı başlatmaz). */
+  async resumeIfSuspended() {
+    const ctx = this.ctx;
+    if (!ctx || ctx.state === "running" || ctx.state === "closed") return;
+    try {
+      await ctx.resume();
+    } catch (error) {
+      diag.note("state", `resume reddedildi: ${error && error.name}`);
+    }
+  }
+
+  sampleClock() {
+    if (!this.playing || !this.ctx) {
+      this.clockSamples = [];
+      return;
+    }
+    this.clockSamples.push({ c: this.ctx.currentTime, p: performance.now() });
+    if (this.clockSamples.length > 6) this.clockSamples.shift();
+  }
+
+  /** ctx saati / gerçek saat. 1.0 = sağlıklı; altı = ses iş parçacığı yetişemiyor/dondu. */
+  get clockRatio() {
+    const samples = this.clockSamples;
+    if (samples.length < 2) return null;
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    const real = (last.p - first.p) / 1000;
+    return real < 1 ? null : (last.c - first.c) / real;
+  }
+
+  diagnostics() {
+    let pcmBytes = 0;
+    for (const channel of this.channels.values()) {
+      const buffer = channel.buffer;
+      if (buffer) pcmBytes += buffer.length * buffer.numberOfChannels * 4;
+    }
+    return {
+      state: this.ctx ? this.ctx.state : "yok",
+      sampleRate: this.ctx ? this.ctx.sampleRate : 0,
+      baseLatency: this.ctx ? this.ctx.baseLatency : NaN,
+      clockRatio: this.clockRatio,
+      playing: this.playing,
+      songs: this.channels.size ? 1 : 0,
+      stems: this.channels.size,
+      pcmBytes,
+      gainsCreated: this.gainsCreated,
+      gainsReleased: this.gainsReleased,
+      liveGains: this.gainsCreated - this.gainsReleased,
+    };
   }
 
   #forceMobileRate() {
@@ -229,6 +316,7 @@ export class Engine {
           /* bağlı değildi */
         }
         channel.gainNode = null;
+        this.gainsReleased += 1;
       }
     }
     this.channels.clear();
@@ -285,9 +373,13 @@ export class Engine {
       this.master = this.ctx.createGain();
       this.master.gain.value = 1;
       this.master.connect(this.ctx.destination);
+      const created = this.ctx;
+      created.onstatechange = () => {
+        if (created === this.ctx) this.#handleState();
+      };
       // Motor kurulmadan önce yüklenen kanallar varsa şimdi bağla.
       for (const channel of this.channels.values()) {
-        if (!channel.gainNode) channel.gainNode = this.ctx.createGain();
+        if (!channel.gainNode) channel.gainNode = this.#newGain();
       }
       this.#routeChannels();
       this.#applyAllGains(true);
@@ -423,6 +515,10 @@ export class Engine {
       this.bus.gain.value = 1;
     }
     this.stretchNode = await this.#createWithFallback();
+    // Chrome bir işlemci hata verince onu kalıcı susturuyor; sessizce
+    // kaybolmasın, tanı sayacına düşsün.
+    this.stretchNode.onprocessorerror = (event) =>
+      diag.note("processor", (event && event.message) || this.activeStretcher);
     this.bus.connect(this.stretchNode);
     this.stretchNode.connect(this.master);
     this.#routeChannels();
@@ -601,7 +697,13 @@ export class Engine {
         if (!arrayBuffer) continue;
         stats.bytes += arrayBuffer.byteLength || 0;
         const decodeStarted = performance.now();
-        let buffer = await this.ctx.decodeAudioData(arrayBuffer);
+        let buffer;
+        try {
+          buffer = await this.ctx.decodeAudioData(arrayBuffer);
+        } catch (error) {
+          diag.note("decode", `${name}: ${error && error.name}`);
+          throw error;
+        }
         stats.decodeMs += performance.now() - decodeStarted;
         if (this.monoDownmix) {
           const stereo = buffer;
@@ -624,7 +726,7 @@ export class Engine {
       if (!buffer) continue;
       this.channels.set(name, {
         buffer,
-        gainNode: this.ctx.createGain(),
+        gainNode: this.#newGain(),
         fader: 1,
         solo: false,
         mute: false,

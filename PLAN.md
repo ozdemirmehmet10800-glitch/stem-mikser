@@ -262,12 +262,24 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
        * Önbellek/önden indirme: `decodeAudioData` yalnız `engine.loadStems`'te;
          önden indirme çözmüyor, yalnız Cache Storage'a yazıyor. Kesit başına
          ~4 MB, bellek sorunu beklenmez.
-     - **AÇIK (süre çubuğu donması):** motor `ctx.state`'i dinlemiyor
-       (`statechange`/`visibilitychange` yok); çalarken bağlam askıya alınırsa
-       (Android ses odağı) `engine.playing` true kalıp saat donar, çık-gir
-       `ensureContext` ile resume ediyor. Ses iş parçacığının yetişememesi de
-       saati kekeletir. Tek seferlik, bu yüzden DOKUNULMADI; tekrarlarsa
-       `ctx.onstatechange` ile uyarı/yeniden çalma eklenmeli.
+     - **Süre çubuğu donması (hipotez 2) - DÜZELTİLDİ (2026-10-01), telefonda
+       doğrulanmadı.** Motor `ctx.onstatechange` dinliyor: çalarken context
+       askıya alınırsa (`suspended`/`interrupted`) kendini duraklatıyor
+       (konum donuk saatten doğru yazılıyor), `app.js` düğmeyi/süre çubuğunu
+       "duraklatıldı"ya çeviriyor ve uyarı yazıyor; geri gelince ("running")
+       bildiriyor ama KENDİLİĞİNDEN ÇALMIYOR. Sayfa öne gelince
+       (`visibilitychange`) askıdaki context resume ediliyor. Tarayıcıda
+       `ctx.suspend()/resume()` ile sınandı. Test: engine_leak_test.mjs (5).
+     - **Tanı satırı (⚙ > ses):** `diag.js` + `Engine.diagnostics()`. Gösterir:
+       ctx durumu, hız, gecikme, saat oranı (ctx saati / gerçek saat; 1.0 sağlıklı),
+       bellekteki şarkı ve kanal, **toplam PCM MB** (hipotez 5), bağlı/yaratılan/
+       sökülen gain düğümü (hipotez 1'in telefondaki kanıtı), cihaz belleği, JS
+       yığını ve hata sayaçları (durum değişimi, yakalanmamış hata/söz,
+       processorerror, çözme hatası, kesinti). Son 20 olay `localStorage`'da:
+       uygulama kapanıp açılınca "önceki oturum" olarak okunur. "Tanıyı
+       kopyala" düğmesi hepsini panoya verir.
+     - **SW sürümü v25'e çıkarıldı** ve `diag.js` kabuğa eklendi; ilk düzeltme
+       (53d3580) sürümü artırmadığı için telefona ULAŞMAYACAKTI.
      - Yerel tekrar üretim aracı: `python tests\make_clip_songs.py 12` (21 sn,
        chords.json'suz, `-pd<harf>s` kimlikli sentetik kesitler; `out/` altına,
        mock_server gösterir).

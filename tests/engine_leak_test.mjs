@@ -98,6 +98,38 @@ await engine.loadStems(STEMS, provide, { concurrency: 3 });
 const before = [...engine.channels.values()].map((c) => c.gainNode);
 check("kanal gain'leri baglida", before.every((g) => g.targets.size === 1));
 
+// 5) Cal -> context askiya alinir: motor duraklatmali ve haber vermeli.
+{
+  const e2 = new Engine();
+  await e2.loadStems(STEMS, provide, { concurrency: 3 });
+  await e2.play();
+  let told = null;
+  let back = false;
+  e2.onInterrupted = (state) => { told = state; };
+  e2.onResumed = () => { back = true; };
+  e2.ctx.currentTime = 5;           // saat 5 sn'de donuyor
+  e2.ctx.state = "suspended";
+  e2.ctx.onstatechange();
+  check("askida: motor duraklatildi", e2.playing === false);
+  check("askida: arayuze haber verildi", told === "suspended");
+  check("askida: konum donuk saatten hesaplandi", e2.currentTime > 4.5 && e2.currentTime < 5.1,
+    `(${e2.currentTime.toFixed(2)})`);
+  e2.ctx.state = "running";
+  e2.ctx.onstatechange();
+  check("geri gelince onResumed", back === true);
+  check("geri gelince kendiliginden CALMIYOR", e2.playing === false);
+  const info = e2.diagnostics();
+  check("tani: liveGains = 6", info.liveGains === 6, `(${info.liveGains})`);
+  check("tani: PCM baytlari", info.pcmBytes === 6 * 1 * 2 * 4, `(${info.pcmBytes})`);
+  check("tani: bellekte 1 sarki", info.songs === 1);
+  // Durmusken gelen askida olayi duraklatma/uyari uretmez.
+  told = null;
+  e2.ctx.state = "suspended";
+  e2.ctx.onstatechange();
+  check("calmazken askida: uyari yok", told === null);
+  e2.dispose();
+}
+
 engine.dispose();
 check("dispose sonrasi kanal yok", engine.channels.size === 0);
 
