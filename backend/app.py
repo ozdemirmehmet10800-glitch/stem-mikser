@@ -791,6 +791,14 @@ HIFI_YAML = "bs_roformer_sw.yaml"
 HIFI_CKPT_SHA256 = "24e7d35ee9c64415673d3fd33e06a67cac2c103c5df6267ba1576459c775916e"
 HIFI_CKPT_BYTES = 699412152
 HIFI_OVERLAP = 2
+# Boru hattı sürümü (status.json `pipeline`, telefon önbellek anahtarına giriyor).
+#   hifi_v1   vokal SW'den, kalan demucs'ta (2026-09-29 .. 2026-10-01; alan yoksa bu)
+#   hifi_v2   vokal + piyano + davul SW'den, enstrümantal = karışım - üçü, demucs
+#             yalnız bas/gitar/other için; demucs'un aynı isimli artığı other'a
+#             (PLAN.md madde 7, kulak testiyle onaylandı: o yönü)
+PIPELINE_HIFI = "hifi_v2"
+PIPELINE_STANDARD = "standard"
+HIFI_SW_STEMS = ("vocals", "piano", "drums")
 QUALITIES = ("hifi", "standard")
 DEFAULT_QUALITY = "hifi"
 
@@ -920,8 +928,11 @@ def _hifi_demix(model, mix, config: dict, device: str = "cuda"):
     return array
 
 
-def _hifi_vocals(mix, samplerate: int, channels: int) -> tuple:
-    """BS-Roformer SW ile vokal. Dönen: (vokal, saniye, model_yukleme_sn)."""
+def _hifi_stems(mix, samplerate: int, channels: int) -> tuple:
+    """BS-Roformer SW: vokal, piyano ve davul (tek geçiş, altısı zaten üretiliyor).
+
+    Dönen: ({isim: (2, N) float32}, saniye, model_yukleme_sn).
+    """
     import sys
     import time as _time
 
@@ -969,13 +980,55 @@ def _hifi_vocals(mix, samplerate: int, channels: int) -> tuple:
     started = _time.time()
     out = _hifi_demix(model, mix, config)
     names = list(config["training"]["instruments"])
-    vocals = out[names.index("vocals")].copy()
+    absent = [name for name in HIFI_SW_STEMS if name not in names]
+    if absent:
+        raise ValueError(f"Hi-Fi konfiginde stem yok: {absent} (var: {names})")
+    stems = {name: out[names.index(name)].copy() for name in HIFI_SW_STEMS}
     seconds = round(_time.time() - started, 2)
-    print(f"[hifi] vokal cikarimi {seconds} sn (fp32, overlap {HIFI_OVERLAP})")
+    print(f"[hifi] {'/'.join(HIFI_SW_STEMS)} cikarimi {seconds} sn "
+          f"(fp32, overlap {HIFI_OVERLAP}, stem sirasi {names})")
 
     del model, out
     torch.cuda.empty_cache()
-    return vocals, seconds, model_load_seconds
+    return stems, seconds, model_load_seconds
+
+
+def _rms_f64(array) -> float:
+    """numpy ya da (CPU) torch dizisinin RMS'i; test edilebilsin diye saf."""
+    import numpy as np
+
+    if hasattr(array, "detach"):
+        array = array.detach().cpu().numpy()
+    data = np.asarray(array, dtype=np.float64)
+    return float(np.sqrt(np.mean(data ** 2))) if data.size else 0.0
+
+
+def _hifi_v2_compose(stems, sources: list, sw: dict) -> dict:
+    """demucs çıkışını hifi_v2 kuralına göre YERİNDE düzeltir.
+
+    `stems`: demucs'un enstrümantal (karışım - SW stem'leri) üzerindeki çıkışı,
+    (kaynak, 2, N). Enstrümantalden SW'nin aldığı her stem için demucs'un AYNI
+    isimli çıkışı "artık"tır (SW'nin kaçırdığı parça): other'a eklenir, atılmaz,
+    böylece toplam korunur ("o" yönü; kulak testinde "p" yönü piyano stem'ine
+    gitar/ses kalıntısı getirdi). Sonra o stem SW'nin çıkışıyla DEĞİŞTİRİLİR.
+
+    Dönen: {isim: artığın RMS'i}. numpy ve torch dizileriyle çalışır.
+    """
+    other_index = sources.index("other")
+    residues = {}
+    for name in HIFI_SW_STEMS:
+        index = sources.index(name)
+        replacement = sw[name]
+        if tuple(replacement.shape) != tuple(stems[index].shape):
+            raise ValueError(
+                f"Hi-Fi {name} bicimi uyusmuyor: {tuple(replacement.shape)} "
+                f"!= {tuple(stems[index].shape)}"
+            )
+        residue = stems[index]
+        residues[name] = _rms_f64(residue)
+        stems[other_index] = stems[other_index] + residue
+        stems[index] = replacement
+    return residues
 
 
 @app.function(
@@ -1243,8 +1296,8 @@ def _pick_source_song(must_contain: str) -> tuple:
     max_containers=1,             # min_containers YOK: boştayken maliyet sıfır
 )
 def hifi_smoke_run(song_id: str = "", must_contain: str = "HAZBIN",
-                   compare_suffix: str = "cfp32") -> dict:
-    """Üretim Hi-Fi vokal yolunu baştan sona koşturur, ölçüp döner."""
+                   compare_suffix: str = "pdm", extra_suffix: str = "pdt") -> dict:
+    """Üretim Hi-Fi SW yolunu (vokal/piyano/davul) baştan sona koşturur."""
     import sys
 
     import numpy as np
@@ -1273,7 +1326,7 @@ def hifi_smoke_run(song_id: str = "", must_contain: str = "HAZBIN",
     report["title"] = title
 
     # Örnekleme hızı/kanal sayısı Hi-Fi konfiginden. Üretimde bu ikisi demucs
-    # modelinden okunuyor ve `_hifi_vocals` konfigle uyuşmazsa hata veriyor;
+    # modelinden okunuyor ve `_hifi_stems` konfigle uyuşmazsa hata veriyor;
     # burada demucs YÜKLENMİYOR (duman testinin konusu değil, ~10 sn ve ~1 GB
     # VRAM tasarrufu), o yüzden değerler konfigden alınıp üretimde beklenen
     # çiftle (44100/2) karşılaştırılıyor.
@@ -1332,7 +1385,7 @@ def hifi_smoke_run(song_id: str = "", must_contain: str = "HAZBIN",
     try:
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
-        vocals, demix_seconds, model_load_seconds = _hifi_vocals(
+        sw_stems, demix_seconds, model_load_seconds = _hifi_stems(
             audio, samplerate, channels
         )
     finally:
@@ -1343,48 +1396,63 @@ def hifi_smoke_run(song_id: str = "", must_contain: str = "HAZBIN",
     report["model_load_seconds"] = float(model_load_seconds)
     report["demix_seconds"] = float(demix_seconds)
     report["hifi_overlap"] = HIFI_OVERLAP
+    report["pipeline"] = PIPELINE_HIFI
     if torch.cuda.is_available():
         report["vram_allocated_mb"] = round(
             torch.cuda.max_memory_allocated() / 1024**2, 1)
         report["vram_reserved_mb"] = round(
             torch.cuda.max_memory_reserved() / 1024**2, 1)
 
-    ours = vocals.astype(np.float64)
-    report["vocals_shape"] = [int(v) for v in vocals.shape]
-    report["vocals_rms"] = round(float(np.sqrt(np.mean(ours ** 2))), 8)
-    report["vocals_peak"] = round(float(np.abs(vocals).max()), 6)
-    # _hifi_demix zaten NaN/Inf'te hata veriyor; alan raporda dursun ki
-    # "kontrol edildi" görünür olsun.
-    report["nan_or_inf"] = bool(np.isnan(vocals).any() or np.isinf(vocals).any())
+    # Üç SW stem'i (vokal, piyano, davul): şekil, seviye, NaN/Inf. _hifi_demix
+    # zaten NaN/Inf'te hata veriyor; alanlar raporda dursun ki "kontrol
+    # edildi" görünür olsun.
+    report["stems"] = {}
+    for name, array in sw_stems.items():
+        report["stems"][name] = {
+            "shape": [int(v) for v in array.shape],
+            "rms": round(_rms_f64(array), 8),
+            "peak": round(float(np.abs(array).max()), 6),
+            "nan_or_inf": bool(np.isnan(array).any() or np.isinf(array).any()),
+        }
+    report["vocals_shape"] = report["stems"]["vocals"]["shape"]
+    report["vocals_rms"] = report["stems"]["vocals"]["rms"]
+    report["vocals_peak"] = report["stems"]["vocals"]["peak"]
+    report["nan_or_inf"] = bool(any(v["nan_or_inf"] for v in report["stems"].values()))
 
-    # --- deneydeki C-fp32 vokaliyle karşılaştırma -------------------------
-    reference_id = f"{song_id}-{compare_suffix}"
-    reference_path = _song_dir(reference_id) / "master" / "vocals.flac"
-    if reference_path.is_file():
+    # --- deneydeki çıktılarla karşılaştırma -------------------------------
+    def compare_stem(stem_name: str, reference_id: str) -> dict:
+        ours = sw_stems[stem_name].astype(np.float64)
+        reference_path = _song_dir(reference_id) / "master" / f"{stem_name}.flac"
+        if not reference_path.is_file():
+            return {
+                "found": False,
+                "reference": reference_id,
+                "stem": stem_name,
+                "note": (f"deney cikisi ({reference_id}/{stem_name}) Volume'da yok; "
+                         "sekil, RMS ve NaN/Inf kontrolleri yapildi"),
+            }
         data, reference_sr = sf.read(str(reference_path), dtype="float64",
                                      always_2d=True)
         theirs = data.T
         length = min(ours.shape[1], theirs.shape[1])
         first = ours[:, :length]
         second = theirs[:, :length]
-        # Deney stem'leri ortak bir clip_scale'e BÖLÜNMÜŞ kaydedilmiş ve o
-        # ölçek hiçbir yere yazılmamış; en küçük karelerle geri kestiriliyor.
+        # Deney stem'leri ortak bir clip_scale'e BÖLÜNMÜŞ kaydedilmiş; ölçek
+        # en küçük karelerle geri kestiriliyor.
         denominator = float(np.sum(second * second))
         scale = float(np.sum(first * second) / denominator) if denominator > 0 else 0.0
         diff = first - scale * second
         rms_ours = float(np.sqrt(np.mean(first ** 2)))
         rms_diff = float(np.sqrt(np.mean(diff ** 2)))
         max_diff = float(np.abs(diff).max())
-        # FLAC PCM_24: ±1 tam ölçekte adım 2^-23. Ölçek geri uygulandığı için
+        # FLAC PCM_24: ±1 tam ölçekte adım 2^-23; ölçek geri uygulandığı için
         # bizim birimlerimizde adım `scale` katı.
         quant_step = scale * 2.0 ** -23
         snr_db = (round(20.0 * float(np.log10(rms_ours / rms_diff)), 1)
-                  if rms_diff > 0 else 999.0)
+                  if rms_diff > 0 and rms_ours > 0 else 999.0)
 
-        # Kararın ÜÇ kademesi. 24-bit niceleme gürültüsü bu sinyalde ~120 dB
-        # SNR veriyor; 90 dB eşiği GPU'nun koşumlar arası belirlenimsizliğine
-        # de yer bırakıyor. 60-90 dB arası kulakla duyulmaz ama niceleme
-        # düzeyinin üstündedir: gerçek ama küçük bir fark var.
+        # Kararın ÜÇ kademesi: >=90 dB niceleme düzeyinde aynı, 60-90 dB
+        # duyulmaz ama gerçek küçük fark (UYARI), altı HATA.
         verdict_note = ""
         if snr_db >= 90.0:
             verdict = "ayni (FLAC niceleme duzeyinde)"
@@ -1393,8 +1461,8 @@ def hifi_smoke_run(song_id: str = "", must_contain: str = "HAZBIN",
             verdict = ("fark duyulmaz duzeyde; deney GPU'su veya decode "
                        "farkli olabilir")
             verdict_level = "uyari"
-            # Bu bahane BURADA GEÇERSİZ ve bunu biliyoruz: deneydeki C-fp32
-            # da T4'te ve AYNI decode'la koştu (aşağıdaki reference_run).
+            # Bu bahane BURADA GEÇERSİZ ve bunu biliyoruz: deney de T4'te ve
+            # AYNI decode'la koştu (reference_run).
             if (REFERENCE_RUN["gpu"] == "T4"
                     and REFERENCE_RUN["decode_identical"]):
                 verdict_note = (
@@ -1408,9 +1476,8 @@ def hifi_smoke_run(song_id: str = "", must_contain: str = "HAZBIN",
 
         # Kestirilen ölçek = üretim/deney. Deney stem'leri clip_scale >= 1'e
         # BÖLÜNMÜŞ kaydedildiği için deney/üretim oranı 1.0 ya da biraz altı
-        # olmak zorunda. 1.01'in üstü kazanç hatası demek (normalizasyon ya da
-        # ref_mean tarafı); 0.7'nin altı da şüpheli ama clip_scale büyük bir
-        # tepeden gelmiş olabilir.
+        # olmak zorunda. 1.01'in üstü kazanç hatası demek; 0.7'nin altı
+        # şüpheli (clip_scale büyük bir tepeden gelmiş olabilir).
         ratio = round(1.0 / scale, 6) if scale > 0 else -1.0
         scale_note = ""
         if ratio < 0.0:
@@ -1427,8 +1494,9 @@ def hifi_smoke_run(song_id: str = "", must_contain: str = "HAZBIN",
         else:
             scale_level = "ok"
 
-        compare = {
+        return {
             "found": True,
+            "stem": stem_name,
             "reference": reference_id,
             "reference_samplerate": int(reference_sr),
             "reference_samples": int(theirs.shape[1]),
@@ -1448,14 +1516,14 @@ def hifi_smoke_run(song_id: str = "", must_contain: str = "HAZBIN",
             "verdict_level": verdict_level,
             "verdict_note": verdict_note,
         }
-    else:
-        compare = {
-            "found": False,
-            "reference": reference_id,
-            "note": ("deneydeki C-fp32 cikisi Volume'da yok; sekil, RMS ve "
-                     "NaN/Inf kontrolleri yapildi"),
-        }
-    report["compare"] = compare
+
+    # vokal: HER varyantta aynı SW çıktısı (V0 = compare_suffix); piyano ve
+    # davul: V2o (extra_suffix), o yönünde bu iki stem TAM SW çıktısı.
+    report["compare"] = compare_stem("vocals", f"{song_id}-{compare_suffix}")
+    report["compare_extra"] = {
+        name: compare_stem(name, f"{song_id}-{extra_suffix}")
+        for name in ("piano", "drums")
+    }
 
     # --- import yalıtımı: üretim yolu ne yükledi? ------------------------
     # Üretim YALNIZCA bs_roformer'ı kullanıyor. mel_band_roformer (deneyin A
@@ -1483,14 +1551,20 @@ def hifi_smoke_run(song_id: str = "", must_contain: str = "HAZBIN",
 
 @app.local_entrypoint()
 def hifi_smoke(song_id: str = "", must_contain: str = "HAZBIN",
-               compare_suffix: str = "cfp32"):
-    """Hi-Fi vokal yolunun GPU duman testi (Volume'a yazmıyor).
+               compare_suffix: str = "pdm", extra_suffix: str = "pdt"):
+    """Hi-Fi SW yolunun (vokal/piyano/davul) GPU duman testi (Volume'a yazmıyor).
 
         modal run backend/app.py::hifi_smoke
         modal run backend/app.py::hifi_smoke --song-id <id>
+
+    Varsayılan referanslar HAZBIN'in madde 7 deney çıktıları: `pdm` = V0 (vokal
+    her varyantta aynı SW çıktısı), `pdt` = V2o (piyano ve davul tam SW çıktısı).
+    Deney şarkıları silindikten sonra referans bulunamaz: karşılaştırma atlanır,
+    şekil/RMS/NaN kontrolleri yine yapılır (UYARI verir, hata değil).
     """
     report = hifi_smoke_run.remote(song_id=song_id, must_contain=must_contain,
-                                   compare_suffix=compare_suffix)
+                                   compare_suffix=compare_suffix,
+                                   extra_suffix=extra_suffix)
 
     problems = []
     warnings = []
@@ -1501,12 +1575,18 @@ def hifi_smoke(song_id: str = "", must_contain: str = "HAZBIN",
                         f"{report.get('forbidden_modules')}")
     if not report.get("patch_present"):
         problems.append("attend.py'de _sdpa_kernel_compat yok (yama kayip)")
-    compare = report.get("compare") or {}
-    if compare.get("found"):
+    compares = {"vocals": report.get("compare") or {}}
+    compares.update(report.get("compare_extra") or {})
+    for stem_name, compare in compares.items():
+        if not compare.get("found"):
+            warnings.append(f"{stem_name}: karsilastirma yapilamadi: {compare.get('note')}")
+            continue
         if not compare.get("length_match"):
-            problems.append("uzunluklar tutmuyor: parca izgarasi kaymis olabilir")
+            problems.append(f"{stem_name}: uzunluklar tutmuyor: parca izgarasi "
+                            "kaymis olabilir")
         # SNR üç kademeli: >=90 dB sessiz geç, 60-90 dB UYARI, altı HATA.
-        line = (f"C-fp32 ile SNR {compare.get('snr_db')} dB, max fark "
+        line = (f"{stem_name}: {compare.get('reference')} ile SNR "
+                f"{compare.get('snr_db')} dB, max fark "
                 f"{compare.get('max_abs_diff')} -> {compare.get('verdict')}")
         if compare.get("verdict_note"):
             line += f" | {compare.get('verdict_note')}"
@@ -1516,21 +1596,22 @@ def hifi_smoke(song_id: str = "", must_contain: str = "HAZBIN",
             warnings.append(line)
         # Ölçek: >1.01 HATA, <0.7 UYARI.
         if compare.get("scale_note"):
-            scale_line = (f"deney/uretim orani "
+            scale_line = (f"{stem_name}: deney/uretim orani "
                           f"{compare.get('ratio_reference_over_ours')}: "
                           f"{compare.get('scale_note')}")
             if compare.get("scale_level") == "hata":
                 problems.append(scale_line)
             else:
                 warnings.append(scale_line)
-    else:
-        warnings.append(f"karsilastirma yapilamadi: {compare.get('note')}")
+    for stem_name, info in (report.get("stems") or {}).items():
+        if info.get("rms", 0) <= 0:
+            warnings.append(f"{stem_name}: SW stem'i tamamen sessiz (sarki icin normal olabilir)")
     if report.get("sdpa_compat_calls") == 0:
         warnings.append("flash kapali, yamali satir uretimde de calismiyor; "
                         "yama gereksiz ama zararsiz")
     if not report.get("samplerate_channels_match_demucs"):
         warnings.append("konfig 44100/2 demiyor; uretimde uyusmazlik kontrolu "
-                        "_hifi_vocals icinde yapiliyor")
+                        "_hifi_stems icinde yapiliyor")
 
     print("")
     print("=" * 72)
@@ -1547,21 +1628,19 @@ def hifi_smoke(song_id: str = "", must_contain: str = "HAZBIN",
     print(f"yamali satir cagri sayisi: {report.get('sdpa_compat_calls')} "
           f"(set_priority destegi: {report.get('set_priority_supported')})")
     print(f"yuklenen models/utils modulleri: {report.get('loaded_modules')}")
-    if compare.get("found"):
+    print(f"boru hatti: {report.get('pipeline')}; SW stem'leri: "
+          + ", ".join(f"{k} rms {v.get('rms')} tepe {v.get('peak')}"
+                      for k, v in (report.get("stems") or {}).items()))
+    for stem_name, compare in compares.items():
+        if not compare.get("found"):
+            continue
         run = compare.get("reference_run") or {}
-        print(f"referans kosumu: {run.get('entrypoint')} / GPU {run.get('gpu')} "
-              f"/ {run.get('precision')} / overlap {run.get('num_overlap')} / "
-              f"decode {'AYNI' if run.get('decode_identical') else 'FARKLI'}")
-        print(f"C-fp32 karsilastirmasi ({compare.get('reference')}): "
+        print(f"[{stem_name}] referans {compare.get('reference')}: "
               f"SNR {compare.get('snr_db')} dB, max fark "
               f"{compare.get('max_abs_diff')} = "
-              f"{compare.get('max_diff_in_quant_steps')} FLAC niceleme adimi")
-        print(f"deney/uretim orani (en kucuk kareler): "
-              f"{compare.get('ratio_reference_over_ours')} "
-              f"[kestirilen clip_scale {compare.get('clip_scale_estimated')}, "
-              f"beklenen oran 1.0 ya da biraz alti] -> "
-              f"{compare.get('scale_level')}")
-        print(f"karar: {compare.get('verdict')}")
+              f"{compare.get('max_diff_in_quant_steps')} FLAC niceleme adimi; "
+              f"oran {compare.get('ratio_reference_over_ours')} "
+              f"({compare.get('scale_level')}); karar: {compare.get('verdict')}")
         if compare.get("verdict_note"):
             print(f"       {compare.get('verdict_note')}")
     for line in warnings:
@@ -1646,16 +1725,20 @@ def separate(song_id: str, quality: str = DEFAULT_QUALITY,
         # Deney sonucu (PLAN.md): vokalde BS-Roformer SW, kalan beş stemde
         # htdemucs_6s iyi. Çıkarma tanım gereği tam: enstrümantal =
         # karışım - vokal, yani Roformer aşaması toplama hata EKLEMİYOR.
-        hifi_vocals = None
+        hifi_stems = None
         hifi_seconds = 0.0
         hifi_load_seconds = 0.0
         if quality == "hifi":
-            hifi_vocals, hifi_seconds, hifi_load_seconds = _hifi_vocals(
+            hifi_stems, hifi_seconds, hifi_load_seconds = _hifi_stems(
                 audio, samplerate, channels
             )
-            wav = torch.from_numpy(audio - hifi_vocals)
+            instrumental = audio
+            for name in HIFI_SW_STEMS:
+                instrumental = instrumental - hifi_stems[name]
+            wav = torch.from_numpy(instrumental)
             _write_status(song_id, state="separating", progress=35)
-            print(f"[hifi] enstrumantal hazir, demucs'a veriliyor")
+            print(f"[hifi] enstrumantal (karisim - {' - '.join(HIFI_SW_STEMS)}) "
+                  f"hazir, demucs'a veriliyor")
 
         # --- normalizasyon (demucs CLI ile aynı) --------------------------
         ref = wav.mean(0)
@@ -1687,25 +1770,19 @@ def separate(song_id: str, quality: str = DEFAULT_QUALITY,
         stems = stems * ref_std
         stems[0] = stems[0] + ref_mean
 
+        hifi_residues = {}
         if quality == "hifi":
-            # Demucs enstrümantal üzerinde çalıştı; onun "vocals" çıkışı
-            # enstrümantalde KALAN vokal artığı. Roformer'ın vokaliyle
-            # toplamak çift sayma olurdu, atmak toplamı bozardı - "other"a
-            # ekleniyor. Gerçek vokal Roformer'ınki.
-            vocal_index = sources.index("vocals")
-            other_index = sources.index("other")
-            residue = stems[vocal_index]
-            residue_rms = float(torch.sqrt(torch.mean(residue.double() ** 2)))
-            stems[other_index] = stems[other_index] + residue
-            replacement = torch.from_numpy(hifi_vocals)
-            if replacement.shape != stems[vocal_index].shape:
-                raise ValueError(
-                    f"Hi-Fi vokal bicimi uyusmuyor: {tuple(replacement.shape)} "
-                    f"!= {tuple(stems[vocal_index].shape)}"
-                )
-            stems[vocal_index] = replacement
-            print(f"[hifi] demucs vokal artigi rms={residue_rms:.6f} -> other'a")
-            print(f"[hifi] vokal stem'i Roformer ciktisiyla degistirildi")
+            # Demucs enstrümantal (karışım - vokal - piyano - davul) üzerinde
+            # çalıştı; vokal/piyano/davul çıkışları SW'nin KAÇIRDIĞI artık.
+            # Toplamak çift sayma, atmak toplamı bozmak olurdu: other'a
+            # ekleniyor, gerçek stem'ler SW'ninki (_hifi_v2_compose).
+            hifi_residues = _hifi_v2_compose(
+                stems, sources,
+                {name: torch.from_numpy(hifi_stems[name]) for name in HIFI_SW_STEMS},
+            )
+            for name, value in hifi_residues.items():
+                print(f"[hifi] demucs {name} artigi rms={value:.6f} -> other'a; "
+                      f"{name} stem'i Roformer ciktisiyla degistirildi")
 
         _write_status(song_id, state="separating", progress=80)
 
@@ -1771,6 +1848,8 @@ def separate(song_id: str, quality: str = DEFAULT_QUALITY,
             "quality": quality,
             "hifi_seconds": round(hifi_seconds, 2),
             "hifi_load_seconds": round(hifi_load_seconds, 2),
+            "pipeline": PIPELINE_HIFI if quality == "hifi" else PIPELINE_STANDARD,
+            "hifi_residue_rms": {k: round(v, 6) for k, v in hifi_residues.items()},
             "total_seconds": round(time.time() - started, 2),
             # Encode optimizasyonu kararı için ölçüm: GPU konteynerinde
             # geçen sürenin nereye gittiği. CPU'ya taşınabilir olan yalnızca
@@ -1817,6 +1896,7 @@ def separate(song_id: str, quality: str = DEFAULT_QUALITY,
             stem_samplerate=STEM_SAMPLE_RATE, stem_bitrate=AAC_BITRATE,
             gpu_seconds=gpu_seconds,
             timing=result["timing"], quality=quality,
+            pipeline=result["pipeline"],
             stems_version=int(time.time()),
         )
         # Analizi ayrı bir CPU konteynerine devret: T4 burada biter, analiz
@@ -2889,6 +2969,7 @@ def api():
                         "created_at": data.get("created_at"),
                         "quality": data.get("quality"),
                         "stems_version": data.get("stems_version"),
+                        "pipeline": data.get("pipeline"),
                     }
                 )
             return found

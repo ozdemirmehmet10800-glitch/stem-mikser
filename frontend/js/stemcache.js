@@ -39,6 +39,19 @@ function saveIndex(index) {
   }
 }
 
+// Önbellek "sürümü": sayı (stems_version) ya da, boru hattı sürümü biliniyorsa,
+// `<stems_version>.<pipeline>` metni (ör. 1759230000.hifi_v2). Sunucu
+// `status.json`'a pipeline yazıyor; alan yoksa (eski şarkı) düz sayı kalır.
+// stems_version zaten her yeniden işlemede değişiyor - pipeline bunun üstüne
+// anlamsal bir kilit: boru hattı değişince eski ses, sürüm bir şekilde aynı
+// kalsa bile, çalınmasın.
+function cacheTag(version, pipeline) {
+  const number = Number(version) || 0;
+  const name = String(pipeline || "").toLowerCase();
+  if (!number || !/^[a-z0-9_]{1,24}$/.test(name)) return number;
+  return `${number}.${name}`;
+}
+
 function keyFor(songId, name, version = 0) {
   // Sahte ama kararlı bir URL: Cache Storage anahtarları Request olmak
   // zorunda. Bu adrese hiç istek atılmıyor.
@@ -120,7 +133,7 @@ export class StemCache {
     const index = loadIndex();
     const newest = new Map();
     const parsed = Object.keys(index).map((key) => {
-      const match = /^(stems\/.+?\/[^/@]+?)(?:@(\d+))?\.m4a$/.exec(key);
+      const match = /^(stems\/.+?\/[^/@]+?)(?:@(\d+)(?:\.[a-z0-9_]+)?)?\.m4a$/.exec(key);
       if (!match) return null;
       const version = Number(match[2] || 0);
       const base = match[1];
@@ -295,4 +308,4 @@ export class StemCache {
   }
 }
 
-export { CACHE_NAME, MAX_BYTES, keyFor };
+export { CACHE_NAME, MAX_BYTES, keyFor, cacheTag };

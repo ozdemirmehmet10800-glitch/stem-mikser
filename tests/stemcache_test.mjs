@@ -9,7 +9,7 @@
 // tarafi ayni kefeye koymayan bir temizlik ya dosyayi birakir ya iki kez
 // sayar.
 
-import { StemCache, keyFor } from "../frontend/js/stemcache.js";
+import { StemCache, keyFor, cacheTag } from "../frontend/js/stemcache.js";
 
 const ORIGIN = "https://ornek.test/";
 
@@ -117,13 +117,15 @@ async function testRemovesOneSong() {
 async function testVersionedKeys() {
   await reset();
   const stems = new StemCache();
-  // Ayni sarkinin iki surumu (Hi-Fi'a yukseltme sonrasi) da gitmeli.
+  // Yeni surum yazilinca eski surum put'ta zaten supuruluyor (pruneSuperseded),
+  // yani 0 ve 3 birlikte DURMAZ: yalniz en yeni 2 dosya kalir ve ikisi de gitmeli.
   await stems.put(A, "vocals", buffer(100), 0);
   await stems.put(A, "vocals", buffer(100), 3);
   await stems.put(A, "drums", buffer(100), 3);
+  check("put eski surumu supurdu", indexKeys().length === 2, String(indexKeys().length));
   const report = await stems.removeSongs([A]);
-  check("surumlu ve surumsuz anahtarlar birlikte silindi",
-        report.removed === 3 && indexKeys().length === 0, String(report.removed));
+  check("surumlu anahtarlar silindi",
+        report.removed === 2 && indexKeys().length === 0, String(report.removed));
   check("cache bosaldi", (await cacheKeys()).length === 0);
 }
 
@@ -201,9 +203,37 @@ async function testIndexHas() {
   check("silindikten sonra false", stems.indexHas(A, names, 5) === false);
 }
 
+// Boru hatti surumu (hifi_v2) anahtara giriyor; eski surum ve eski boru hatti
+// birlikte, yalniz en yenisi kalir.
+async function testPipelineTag() {
+  await reset();
+  const stems = new StemCache();
+  check("cacheTag: pipeline yoksa duz sayi", cacheTag(7, undefined) === 7 && cacheTag(7, "") === 7);
+  check("cacheTag: pipeline varsa metin", cacheTag(7, "hifi_v2") === "7.hifi_v2");
+  check("cacheTag: surum yoksa pipeline yok sayilir", cacheTag(0, "hifi_v2") === 0);
+  check("cacheTag: gecersiz ad yok sayilir", cacheTag(7, "../x") === 7);
+  check("anahtar: pipeline anahtarda",
+    keyFor(A, "piano", cacheTag(7, "hifi_v2")) === `stems/${A}/piano@7.hifi_v2.m4a`);
+  check("anahtar: pipeline farkli -> farkli anahtar",
+    keyFor(A, "piano", cacheTag(7, "hifi_v2")) !== keyFor(A, "piano", cacheTag(7, undefined)));
+
+  const cache = await caches.open("stem-mikser-stems-v1");
+  for (const tag of [cacheTag(5), cacheTag(9, "hifi_v2")]) {
+    await stems.put(A, "drums", buffer(10), tag);
+  }
+  check("eski surum yazimda silinir, yeni kalir",
+    indexKeys().length === 1 && indexKeys()[0] === keyFor(A, "drums", "9.hifi_v2"),
+    JSON.stringify(indexKeys()));
+  check("indexHas: ayni pipeline true",
+    stems.indexHas(A, ["drums"], cacheTag(9, "hifi_v2")) === true);
+  check("indexHas: pipeline yoksa (eski anahtar) false",
+    stems.indexHas(A, ["drums"], cacheTag(9)) === false);
+  void cache;
+}
+
 for (const test of [testRemovesOneSong, testVersionedKeys, testOnlyInCacheStorage,
                     testOnlyInIndex, testNoopCases, testMultipleSongs,
-                    testIndexHas]) {
+                    testIndexHas, testPipelineTag]) {
   console.log(`\n--- ${test.name} ---`);
   await test();
 }

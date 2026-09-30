@@ -13,7 +13,7 @@ import { Mixer } from "./mixer.js";
 import { ChordStrip, formatTime } from "./chords.js";
 import { MediaBridge } from "./media.js";
 import { WakeLock } from "./wakelock.js";
-import { StemCache } from "./stemcache.js";
+import { StemCache, cacheTag } from "./stemcache.js";
 import { Metronome, SUBDIVISIONS } from "./metronome.js";
 import {
   measureLatency, estimateLatency, MIN_RATE, MAX_RATE, MAX_SEMITONES,
@@ -769,7 +769,8 @@ function isOfflineReady(song, index = null) {
   const stems = meta && meta.status && meta.status.stems;
   if (!stems || !stems.length) return false;
   const version = Number(song.stems_version || (meta.status.stems_version || 0));
-  return stemCache.indexHas(song.id, stems, version, index);
+  const tag = cacheTag(version, song.pipeline || meta.status.pipeline);
+  return stemCache.indexHas(song.id, stems, tag, index);
 }
 
 /** Ağ gerektiren bir işlemden önce: çevrimdışıysak tek cümleyle söyle. */
@@ -906,7 +907,8 @@ async function prefetchSong(item) {
     }
     const stems = (meta && meta.status && meta.status.stems) || STEM_ORDER;
     const version = Number((meta && meta.status && meta.status.stems_version) || item.version);
-    if (stemCache.indexHas(item.id, stems, version)) return true;  // zaten var
+    const tag = cacheTag(version, meta && meta.status && meta.status.pipeline);
+    if (stemCache.indexHas(item.id, stems, tag)) return true;  // zaten var
 
     prefetchProgress.set(item.id, { done: 0, total: stems.length, ratio: 0 });
     updatePrefetchRow(item.id);
@@ -914,7 +916,7 @@ async function prefetchSong(item) {
     for (let i = 0; i < stems.length; i += 1) {
       const name = stems[i];
       if (prefetchPaused || isOffline()) return false;
-      if (await stemCache.get(item.id, name, version)) {
+      if (await stemCache.get(item.id, name, tag)) {
         // Zaten cihazda: okuduğumuzu geri yazmıyoruz, sadece sayacı ilerlet.
         prefetchProgress.set(item.id, { done: i + 1, total: stems.length, ratio: 0 });
         updatePrefetchRow(item.id);
@@ -929,7 +931,7 @@ async function prefetchSong(item) {
             updatePrefetchRow(item.id);
           }
         }, prefetchAbort.signal);
-        await stemCache.put(item.id, name, buffer, version);
+        await stemCache.put(item.id, name, buffer, tag);
       } finally {
         prefetchAbort = null;
       }
@@ -1141,6 +1143,8 @@ async function openSong(song) {
     // Yeniden işlemede stem dosyaları değişiyor; sürüm önbellek anahtarına
     // giriyor, yoksa cihaz eski sesi çalmaya devam eder.
     const stemsVersion = Number((detail.status && detail.status.stems_version) || 0);
+    // Önbellek anahtarı: stems_version + boru hattı sürümü (hifi_v2 gibi).
+    const cacheKeyTag = cacheTag(stemsVersion, detail.status && detail.status.pipeline);
 
     // AudioContext'i ilk kullanıcı hareketinde kurmak gerekiyor; şarkıya
     // tıklamak bir hareket sayıldığı için burada güvenle açabiliriz.
@@ -1171,7 +1175,7 @@ async function openSong(song) {
     const duration = await engine.loadStems(stems, async (name) => {
       const fill = fills.get(name);
       // Önce cihazdaki kopya: ikinci açılışta ağa hiç çıkılmıyor.
-      let arrayBuffer = await stemCache.get(song.id, name, stemsVersion);
+      let arrayBuffer = await stemCache.get(song.id, name, cacheKeyTag);
       if (arrayBuffer) {
         fromCache += 1;
         if (fill) fill.style.width = "100%";
@@ -1182,7 +1186,7 @@ async function openSong(song) {
         if (fill) fill.style.width = "100%";
         // Kopyası saklanıyor; decodeAudioData ArrayBuffer'ı tükettiği için
         // ÖNCE yazıp sonra çözüyoruz.
-        await stemCache.put(song.id, name, arrayBuffer.slice(0), stemsVersion);
+        await stemCache.put(song.id, name, arrayBuffer.slice(0), cacheKeyTag);
       }
       return arrayBuffer;
     }, {
