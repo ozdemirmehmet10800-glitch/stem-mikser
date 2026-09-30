@@ -160,7 +160,7 @@ export class Engine {
    */
   async rebuildContext() {
     this.stop();
-    this.channels.clear();
+    this.#disposeChannels();
     this.duration = 0;
     this.offset = 0;
     this.bus = null;
@@ -188,10 +188,50 @@ export class Engine {
    */
   releaseStems() {
     this.stop();
-    this.channels.clear();
+    this.#disposeChannels();
     this.duration = 0;
     this.offset = 0;
     this.channelLayout = 1;
+  }
+
+  /**
+   * Kanalları bırakır VE gain düğümlerini graftan söker.
+   *
+   * `channels.clear()` yetmiyordu: context uygulama ömrü boyunca açık kalıyor
+   * ve eski şarkının altı gain düğümü master'a bağlı kalıyordu. JS yığını
+   * küçük kaldığı için çöp toplayıcının onları topladığı görülmedi (40 açılış,
+   * 240 düğüm, 0 toplanma). Hiç beslenmemiş - yani şarkı açılıp ÇALINMADAN
+   * çıkılmış - bir gain düğümü her render bloğunda işlenmeye devam ediyor:
+   * OfflineAudioContext'te düğüm başına ~85 µs / ses saniyesi ölçüldü
+   * (masaüstü; 1000 düğümde %8.5 çekirdek). Telefondaki çarpan ölçülmedi.
+   * Çalınmış düğümler kaynakları sökülünce devre dışı kalıyor ve bedelsiz.
+   */
+  #disposeChannels() {
+    for (const channel of this.channels.values()) {
+      if (channel.source) {
+        try {
+          channel.source.onended = null;
+          channel.source.stop();
+        } catch {
+          /* zaten durmuş olabilir */
+        }
+        try {
+          channel.source.disconnect();
+        } catch {
+          /* bağlı değildi */
+        }
+        channel.source = null;
+      }
+      if (channel.gainNode) {
+        try {
+          channel.gainNode.disconnect();
+        } catch {
+          /* bağlı değildi */
+        }
+        channel.gainNode = null;
+      }
+    }
+    this.channels.clear();
   }
 
   /** Ayarlar ekranı için: şu an gerçekten ne kullanılıyor? */
@@ -539,7 +579,7 @@ export class Engine {
   async loadStems(names, provide, options = {}) {
     await this.ensureContext();
     this.stop();
-    this.channels.clear();
+    this.#disposeChannels();
     this.duration = 0;
     this.channelLayout = 1;
 
@@ -748,7 +788,7 @@ export class Engine {
 
   dispose() {
     this.stop();
-    this.channels.clear();
+    this.#disposeChannels();
     this.bus = null;
     if (this.ctx) {
       this.ctx.close().catch(() => {});

@@ -223,10 +223,54 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      tutarlı örüntüye güvenildi.
    - **Sıradaki aday (CPU, GPU'suz, kararını bekliyor):** V3 = vokal SW, piyano SW (o),
      davul V0'dan, bas/gitar/other V2'den; mevcut FLAC'lerden birleştirilir.
-   - **AYRI İŞ: uygulamada S/M cızırtısı.** Kesitlerde solo/mute yaparken bazen
-     cızırtı başlıyor, şarkıdan çıkıp girmek düzeltmiyor, uygulamayı kapatıp açmak
-     gerekiyor; bir kez süre çubuğu dondu. Üçünde de davul kanalına dokunulduktan
-     sonra. Bellek/önbellek ya da mute/solo geçişi şüpheli. Henüz incelenmedi.
+   - **AYRI İŞ: uygulamada S/M cızırtısı - KÖK NEDEN ADAYI BULUNDU VE DÜZELTİLDİ
+     (2026-10-01), telefonda DOĞRULANMADI.** Belirti: kesitlerde S/M sırasında
+     cızırtı, şarkıdan çık-gir düzeltmiyor, uygulamayı kapatmak düzeltiyor; bir
+     kez süre çubuğu dondu.
+     - **Bulgu:** `Engine` tek `AudioContext`'i uygulama ömrü boyunca tutuyor;
+       `loadStems`/`releaseStems` yalnız `channels.clear()` yapıyordu, eski
+       şarkının 6 gain düğümü master'a BAĞLI kalıyordu. Yerelde 40 şarkı
+       açıp kapatınca 240 düğüm yaratıldı, 0'ı çöp toplandı (JS yığını ~8 MB,
+       GC tetiklenmiyor). Hiç beslenmemiş gain düğümü her render bloğunda
+       işleniyor: OfflineAudioContext'te düğüm başına ~85 µs / ses saniyesi
+       (300 düğüm 25 ms, 1000 düğüm 86 ms / sn). Çalınıp kaynakları sökülmüş
+       düğümler devre dışı kalıyor ve bedelsiz (600 düğümde taban çizgisi
+       0.4 ms/sn), yani yük özellikle şarkıyı AÇIP ÇALMADAN çıkmaktan doğuyor.
+       Yük yalnız uygulama kapanınca (context ölünce) gidiyor: belirtiyle uyuyor.
+       S/M'in kendisi tetikleyici değil, yük altında fark edilen ilk etkileşim.
+       "Davul" tesadüf sayıldı (S/M davulu diğer 5 kanaldan farklı işlemiyor).
+     - **Düzeltme:** `Engine.#disposeChannels()` kaynakları durdurup gain'leri
+       `disconnect()` ediyor; `releaseStems`, `loadStems`, `rebuildContext` ve
+       `dispose` bunu kullanıyor. Tarayıcıda doğrulandı: 20 açılış sonrası
+       bağlı gain 7 (master + 6), düzeltmeden önce 121. Test:
+       `node tests\engine_leak_test.mjs` (düzeltme yokken 180/360 ile kırmızı).
+     - **Telefondaki çarpan ÖLÇÜLMEDİ.** Masaüstündeki rakamla 100 açılış
+       (600 düğüm) ~%5 çekirdek eder; telefonda 5-10 kat fazla olabilir, bu
+       bir tahmin. Kesin kapanış için: telefonda ~50 şarkıyı çalmadan aç-kapa,
+       S/M dene. Cızırtı yine çıkarsa bu tek neden değil.
+     - **ELENEN hipotezler (yerelde, Chrome 152 masaüstü):**
+       * `setTargetAtTime` kalıcı üstel geçişi: 6 kanal değere sabitlenmiş
+         1.6 ms/sn, setTarget ile 1.7-1.9 ms/sn; fark ihmal edilebilir.
+         Olay birikimi de budanıyor. Denormal: ses iş parçacığı FTZ kullanıyor.
+       * AudioContext yaşam döngüsü: 24 + 40 şarkı aç-kapa-çal-S/M döngüsünde
+         tek context, durum hep `running`, saat düzgün ilerliyor.
+       * Metronom: kesit şarkılarda chords.json yok, ızgara boş; tık düğümleri
+         `onended`'da sökülüyor.
+       * Esnetici (signalsmith/soundtouch): bypass'ta düğüm hiç yaratılmıyor,
+         worklet yüklenmiyor; kesit şarkılarda hız/ton dokunulmadığı için
+         dışarıda. `processorerror` dinleyicisi YOK, telefonda gözlenemedi.
+       * Önbellek/önden indirme: `decodeAudioData` yalnız `engine.loadStems`'te;
+         önden indirme çözmüyor, yalnız Cache Storage'a yazıyor. Kesit başına
+         ~4 MB, bellek sorunu beklenmez.
+     - **AÇIK (süre çubuğu donması):** motor `ctx.state`'i dinlemiyor
+       (`statechange`/`visibilitychange` yok); çalarken bağlam askıya alınırsa
+       (Android ses odağı) `engine.playing` true kalıp saat donar, çık-gir
+       `ensureContext` ile resume ediyor. Ses iş parçacığının yetişememesi de
+       saati kekeletir. Tek seferlik, bu yüzden DOKUNULMADI; tekrarlarsa
+       `ctx.onstatechange` ile uyarı/yeniden çalma eklenmeli.
+     - Yerel tekrar üretim aracı: `python tests\make_clip_songs.py 12` (21 sn,
+       chords.json'suz, `-pd<harf>s` kimlikli sentetik kesitler; `out/` altına,
+       mock_server gösterir).
 
    **V3 turu (2026-10-01, GPU YOK, CPU birleştirme; dinleme mute/solo hatası
    düzelince):** V3 = V2 stem'leri, yalnız davul V0'dan. Kör test: V0, V2o, V3

@@ -166,6 +166,15 @@ Asıl incelik: Cache Storage anahtarları mutlak URL'e dönüşüyor, indeks
 anahtarları göreli kalıyor; iki tarafı aynı kefeye koymayan bir temizlik ya
 dosyayı bırakır ya iki kez sayar.
 
+**Motor düğüm sızıntısı testi (şarkı değişince eski gain'ler graftan sökülsün):**
+
+```powershell
+node tests\engine_leak_test.mjs
+```
+
+Sahte AudioContext bağlı düğümleri sayıyor: 30 açılıştan sonra yalnız güncel
+şarkının 6 gain'i bağlı kalmalı. Düzeltme yokken 180/360 kalıyordu.
+
 **Akor mantığının yerel testi (Modal'a bağlanmaz, ücretsiz, saniyeler):**
 
 ```powershell
