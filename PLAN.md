@@ -427,7 +427,7 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      önce bak: esnetici parametre değişikliğini belirli bir ses saati anına
      zamanlayabiliyor mu? Kaynak hızı giriş dikişinde, ton düzeltmesi çıkış
      dikişinde (dikiş + D) değişirse geçiş bölgesi tamamen kalkabilir.
-8. [~] **Aşama 10 - alt parçalar (vokal KAPANDI; davul canlıda, telefon testi ve tom uyarı eşiğinin kulakla doğrulanması bekliyor).**
+8. [x] **Aşama 10 - alt parçalar KAPANDI (2026-10-01): vokal (ana/arka) ve davul (kick/snare/tom/hi-hat/zil) canlıda, telefonda doğrulandı.**
    PLAN ONAYLANDI (2026-10-01). Kararlar: önce vokal, sonra davul; davulda ride+crash
    SUNUCUDA tek "cymbals"; becruily karaoke ve MDX23C DrumSep ağırlıkları (lisansı
    belirsiz) NOTICE.md'ye kişisel kullanım notu ve kaynak alıntısıyla yazılır;
@@ -604,8 +604,8 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
          %14/0.98 yakalanır, diğerleri değil: Usseewa 0.2%, Zeus 0.07%, Ado 3%, HAZBIN 1.5%)
          + kör kulak testi (BTS, HAZBIN, NEM-slowed) sonrası kesinleştir.
          **ONAYLANDI (oturum 5): sert kapı YOK, yumuşak uyarı VAR, kör kesit YOK; eşik
-         (toms >= %8 ve tonal >= 0.9) KULAKLA DOĞRULANACAK (kullanıcı BTS'yi telefonda
-         dinleyecek). Uyarı metni: "Tom kanalına başka enstrüman sızmış olabilir".**
+         (toms >= %8 ve tonal >= 0.9) KULAKLA KABUL EDİLDİ (2026-10-01, BTS'de telefonda
+         dinlendi). Uyarı metni: "Tom kanalına başka enstrüman sızmış olabilir".**
        * **Vokal + davul birlikte (CANLI Zeus'un KLONUNDA, klon sonda silindi):** davul
          üretim yolu koştu (172 sn, $0.029 soğuk), vokal parça dosyaları (4, sha256) ve
          `status.sub` BİREBİR aynı, `stems_version`/`pipeline` aynı, davul 6 parça yazıldı.
@@ -620,8 +620,8 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
          arayüz adları Kick, Snare, Tom, Hi-hat, Zil. `drumsother` artık geçersiz ad (400).
        * **Yumuşak uyarı** (`_sub_drum_gate`): toms güç payı >= %8 VE toms tonal pay >= 0.9
          -> `status.sub_drums.reliability = "warn"` (dosyalar yine yazılır, sert kapı yok).
-         Rozet: "Tom kanalına başka enstrüman sızmış olabilir". **Eşik 6 şarkıdan türedi,
-         KULAKLA DOĞRULANACAK.**
+         Rozet: "Tom kanalına başka enstrüman sızmış olabilir". **Eşik 6 şarkıdan türedi;
+         KULAKLA KABUL EDİLDİ (2026-10-01, BTS'de Tom solo dinlendi).**
        * Arayüz: davul kanalının altında KENDİ "Alt parçaları ayır" (`~1 dk, ~$0.011`
          tahmini), yoklama, ok; `sub.js` iki grup (`SUB_GROUPS`, `SUB_KEYS`: vokal `sub`,
          davul `sub_drums`), grup başına mesajlar ("Bu şarkıda davul yok"). Tek yoklama
@@ -645,6 +645,10 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
          cymbals 4 697 447 bayt) 200 audio/mp4 `ftyp`, Range 206, aralık dışı 416; drumsother
          400; vokal alt ayrımı ve `stems_version`/`pipeline` DEĞİŞMEDİ; tekrar POST `existing`.
          BTS'ye dokunulmadı (kullanıcı telefondan başlatacak).
+     - **OTURUM 5 TELEFONDA DOĞRULANDI (2026-10-01, SW v32):** Zeus'ta vokal↔davul geçişi,
+       BTS'de düğmeyle davul ayırma ve Tom solo, Final Duet'te "davul yok", en uzun şarkıda
+       davul açıkken bellek: sorunsuz. **Tom uyarı eşiği (toms >= %8 ve tonal >= 0.9) kulakla
+       KABUL EDİLDİ.** Aşama 10 kapandı.
      - **Kulak testi:** kör kesitler kitaplıkta `[X kisa]` (HAZBIN g/q, Below The
        Surface c/w, Zeus a/n), kanallar lead/backing/other; kağıtlar
        `backend/sub_out/sheets/`, anahtar `backend/sub_out/key.json` (gitignore'lı).
@@ -1543,9 +1547,9 @@ başlığında (davulu/piyanoyu da B'den almak, enstrümanlar için ensemble).
 | DrumSep (htdemucs, inagoy) | aynı | aynı belirsizlik | |
 | LarsNet | kick / snare / toms / hihat / cymbals | Ağırlıklar **CC BY-NC 4.0** | Kişisel kullanım uygun; ağırlıklar YENİDEN DAĞITILAMAZ, ticari kullanım yok |
 
-### YAPILAMAZ: açık model yok
+### (tarihsel) YAPILAMAZ: açık model yok — ana/arka vokal ve davul alt parçaları sonradan YAPILDI (yukarıya bak); gitar/nefesli/yaylı hâlâ model yok
 Araştırma sonucu açıkça olumsuz:
-- **Ana vokal / arka vokal ayrımı:** UVR topluluğunun karaoke modeli
+- **[KAPANDI 2026-10-01: becruily karaoke ile YAPILDI, canlıda, lisans notu NOTICE.md'de; aşağıdaki tespit tarihsel] Ana vokal / arka vokal ayrımı:** UVR topluluğunun karaoke modeli
   (`mel_band_roformer_karaoke_aufr33_viperx`) bu işi YAPIYOR ve ağırlıkları
   yaygın dağıtılıyor - ama **LİSANSI YOK**. Temmuz 2026'da UVR deposunda
   açılan soru (issue #2295) tam bunu soruyor ve **yanıtsız**: soran kişi
