@@ -2329,6 +2329,119 @@ def _print_sub_result(result: dict):
               f"arka >-20 dB pencere {m['backing_windows_over_m20db']}/{m['windows']}")
 
 
+@app.function(image=sub_cpu_image, volumes={DATA_DIR: volume}, timeout=900, memory=8192)
+def sub_levels() -> list:
+    """Her KAYNAK şarkının SW vokal stem'inin seviyesi (GPU yok, model yok).
+
+    `vokal yok` kapısının eşiğini canlı kitaplıktan türetmek için. Dönen her
+    kayıt: kimlik, başlık, süre, RMS ve tepe (dBFS), 2 sn pencerelerin %95'lik
+    dilimi ve -50 dBFS üstü pencere oranı.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    volume.reload()
+    root = pathlib.Path(DATA_DIR) / "songs"
+    found = []
+    for entry in sorted(root.iterdir()) if root.is_dir() else []:
+        status_path = entry / "status.json"
+        vocal_path = entry / "master" / "vocals.flac"
+        if not status_path.is_file() or not vocal_path.is_file():
+            continue
+        try:
+            data = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if data.get("state") != "done" or data.get("source_song"):
+            continue
+        audio, rate = sf.read(str(vocal_path), dtype="float32", always_2d=True)
+        audio = audio.T
+        rms = _sub_rms(audio)
+        size = int(SUB_WINDOW_SEC * rate)
+        count = audio.shape[1] // size
+        windows = sorted(_sub_db(float(np.sqrt(np.mean(
+            audio[:, i * size:(i + 1) * size].astype(np.float64) ** 2))), 1.0)
+            for i in range(count))
+        found.append({
+            "id": str(data.get("id", entry.name)),
+            "title": str(data.get("title") or entry.name[:12]),
+            "pipeline": str(data.get("pipeline") or "hifi_v1"),
+            "duration": round(audio.shape[1] / float(rate), 1),
+            "rms_dbfs": _sub_db(rms, 1.0),
+            "peak_dbfs": _sub_db(float(abs(audio).max()), 1.0),
+            "p95_window_dbfs": windows[int(0.95 * (len(windows) - 1))] if windows else -200.0,
+            "windows_over_m50": int(sum(1 for v in windows if v > -50.0)),
+            "windows": len(windows),
+        })
+    return _assert_plain(found)
+
+
+@app.local_entrypoint()
+def sub_validate(silent_below: float = -70.0, min_seconds: float = 10.0,
+                 skip: str = "", dry: bool = False):
+    """Eşik doğrulaması: kesitsiz, yalnız stem yolu, yalnız metrik.
+
+        modal run backend/app.py::sub_validate --dry      # yalnız seviyeler (CPU)
+        modal run backend/app.py::sub_validate
+
+    Vokal RMS'i `silent_below` dBFS altındaysa (ya da şarkı `min_seconds`'tan
+    kısaysa) model ÇALIŞTIRILMAZ, GPU harcanmaz. `skip`: virgüllü başlık
+    iğneleri (zaten ölçülmüş şarkılar). Sonuç: backend/sub_out/validate.json.
+    """
+    import math
+
+    levels = sub_levels.remote()
+    skips = [item.strip().lower() for item in skip.split(",") if item.strip()]
+    print(f"{'baslik':44} {'sure':>6} {'RMS':>8} {'tepe':>7} {'p95':>7} {'>-50':>9}")
+    for item in levels:
+        print(f"{item['title'][:44]:44} {item['duration']:6.1f} {item['rms_dbfs']:8.1f} "
+              f"{item['peak_dbfs']:7.1f} {item['p95_window_dbfs']:7.1f} "
+              f"{item['windows_over_m50']:4}/{item['windows']:<4}")
+    out_dir = pathlib.Path(__file__).resolve().parent / "sub_out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results = {"levels": levels, "runs": {}, "skipped_silent": [], "skipped_other": []}
+    if dry:
+        (out_dir / "validate.json").write_text(
+            json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+        return
+
+    total_cost = 0.0
+    for item in levels:
+        title = item["title"]
+        if any(needle in title.lower() for needle in skips):
+            results["skipped_other"].append(title)
+            continue
+        if item["rms_dbfs"] < silent_below or item["duration"] < min_seconds:
+            print(f"[atla] {title[:40]}: vokal RMS {item['rms_dbfs']} dBFS / "
+                  f"{item['duration']} sn -> model calistirilmadi")
+            results["skipped_silent"].append(title)
+            continue
+        print(f"\n--- {title} ---")
+        run = separate_sub.remote(item["id"], "stem", SUB_OVERLAP, False)
+        metrics = run["paths"]["stem"]
+        lead_power = 10.0 ** (metrics["lead_rel_db"] / 10.0)
+        back_power = 10.0 ** (metrics["backing_rel_db"] / 10.0)
+        share = lead_power / (lead_power + back_power)
+        results["runs"][item["id"]] = {
+            "title": title, "lead_rel_db": metrics["lead_rel_db"],
+            "backing_rel_db": metrics["backing_rel_db"], "lead_share": round(share, 4),
+            "backing_windows_over_m20db": metrics["backing_windows_over_m20db"],
+            "windows": metrics["windows"], "infer_s": metrics["infer_s"],
+            "cost_usd_estimate": run["cost_usd_estimate"],
+            "cold_start": run["cold_start"],
+        }
+        total_cost += run["cost_usd_estimate"]
+        print(f"  ana {metrics['lead_rel_db']} dB, arka {metrics['backing_rel_db']} dB, "
+              f"LEAD PAYI {share:.3f}, arka >-20 dB pencere "
+              f"{metrics['backing_windows_over_m20db']}/{metrics['windows']}, "
+              f"~${run['cost_usd_estimate']}")
+        (out_dir / "validate.json").write_text(
+            json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"\nToplam maliyet tahmini: ${total_cost:.3f}")
+    (out_dir / "validate.json").write_text(
+        json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 @app.function(image=sub_cpu_image, volumes={DATA_DIR: volume}, timeout=300)
 def sub_cleanup_run(dry_run: bool = True, only: str = "") -> dict:
     """`<id>-sb<harf>s` kesit şarkılarını ve /data/sub-exp'i siler.

@@ -475,6 +475,25 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      - **Karışım yolunun yapısal riski:** arka = SW vokal − ana(karışımdan) olduğu için
        model vokal olmayan içeriği "ana" sayarsa arka kanalda onun NEGATİFİ çıkar
        (korelasyon -1.0 örneği). Stem yolunda bu olmaz (ana, SW vokalin içinden).
+     - **KULAK TESTİ SONUCU (2026-10-01, key açıldı):** HAZBIN g = stem (konuşma
+       sesi backing'e gidiyor, tercih bu), Below The Surface w = karışım (fark az, İKİSİ
+       DE bozuk: solist backing'de, lead neredeyse boş), Zeus a = stem (temiz). **KARAR:
+       girdi = SW vokal stem'i** (karışım yolu elendi: 2/3 net + yapısal negatif-sızıntı
+       riski + tek yol yarı maliyet). Kesitler silindi (`sub_cleanup --yes`).
+     - **Kapılar (onaylı ilke, eşik doğrulandı):**
+       * **"Vokal yok":** SW vokal RMS < **-50 dBFS** => model ÇALIŞMAZ, GPU yok,
+         `status.sub` "vokal yok". Ölçüm: 6 gerçek vokal -17.5…-25.1 dBFS (p95
+         pencere -14.7…-22.1, pencerelerin %48-80'i > -50), Final Duet -118.7 dBFS
+         (0 pencere). Boşluk 65 dB; eşik en sessiz gerçek vokalin 25 dB altında.
+       * **Lead payı** = ana güç / (ana + arka güç), stem yolu: Zeus 0.98, Usseewa
+         (Minachu) 0.96, HAZBIN 0.76, NEM slowed+reverb 0.37, Ado 8D 0.249 (!),
+         Below The Surface 0.02. **%25 eşiği Ado'yu 0.001 farkla keser** (8D ses
+         işlenmiş, kulakla bakılmadı); NEM-slowed 0.37 geçer. Net kopuş yok: gri bölge
+         0.25-0.4, işlenmiş sesler. Öneri: < 0.10 güvenilmez (dosya yazılmaz), 0.10-0.50
+         yazılır + arayüzde "ayrım güvenilmez olabilir" rozeti, >= 0.50 temiz. Onay bekliyor.
+       * Doğrulama araçları: `sub_levels`, `sub_validate` (kesitsiz, metrik), sonuç
+         `backend/sub_out/validate.json` (gitignore'lı). Tek yol maliyeti ölçüldü:
+         ~$0.013-0.026 / şarkı (3.5-7 dk).
      - **Kulak testi:** kör kesitler kitaplıkta `[X kisa]` (HAZBIN g/q, Below The
        Surface c/w, Zeus a/n), kanallar lead/backing/other; kağıtlar
        `backend/sub_out/sheets/`, anahtar `backend/sub_out/key.json` (gitignore'lı).
