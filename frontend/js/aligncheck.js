@@ -44,6 +44,18 @@ export const PASS_MS = 10;     // |fark| bu değerin altındaysa geçti
 const SKIP_BEATS = 3;          // başlangıç geçici rejimi
 const WINDOW_MS = 9000;        // her durum için kayıt süresi
 
+// A-B döngü satırları. Uçlar vuruş ızgarasının ~12 ms ÖNÜNDE: gerçek
+// şarkıda ızgara davuldan 8-15 ms erken olduğu için uç atağın hemen öncesine
+// düşüyor; test aynı durumu kuruyor (tık A + 12 ms'de başlıyor).
+const LOOP_A = 1.988;
+const LOOP_B = 3.988;                 // 2 sn = 4 vuruş
+const LOOP_WINDOW_MS = 8500;
+const CAPTURE_SEC = 9.5;
+const SEAM_PASS_MS = 4;               // çukur merkezi gerçek dikişten en çok bu kadar
+const MARKER_LEVEL = 0.5;
+const CARRIER_LEVEL = 0.1;            // tap eşiğinin (0.15) ALTINDA: sürekli taşıyıcı
+const MARKER_GAP = 0.1;               // işaret dikişin bu kadar öncesi/sonrası
+
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // --------------------------------------------------------------- test sesi
@@ -108,7 +120,99 @@ function buildStems(sampleRate) {
   return { stems, beats, downbeats };
 }
 
+// Dikiş çukuru ölçümü için stem'ler: sürekli taşıyıcı (çukuru gösterir) ve
+// dikişin iki yanında, çukurun DIŞINDA iki işaret tıkı (gerçek dikiş anını
+// verir: esneticiden geçmiş çıkışta ikisi de aynı gecikmeyi taşıyor).
+function buildSeamStems(sampleRate) {
+  const frames = Math.floor(LENGTH * sampleRate);
+  const carrier = new Float32Array(frames);
+  for (let i = 0; i < frames; i += 1) {
+    carrier[i] = CARRIER_LEVEL * Math.sin((2 * Math.PI * 1000 * i) / sampleRate);
+  }
+  const clickFrames = Math.floor(CLICK_SECONDS * sampleRate);
+  for (const at of [LOOP_B - MARKER_GAP, LOOP_A + MARKER_GAP]) {
+    const start = Math.floor(at * sampleRate);
+    for (let i = 0; i < clickFrames && start + i < frames; i += 1) {
+      const t = i / sampleRate;
+      carrier[start + i] += MARKER_LEVEL * Math.cos(2 * Math.PI * 1200 * t) * Math.exp(-t / 0.006);
+    }
+  }
+  const stems = [{ name: STEM_ORDER[0], arrayBuffer: encodeWav(carrier, sampleRate) }];
+  BED_FREQS.forEach((freq, index) => {
+    const bed = new Float32Array(frames);
+    for (let i = 0; i < frames; i += 1) {
+      bed[i] = BED_LEVEL * Math.sin((2 * Math.PI * freq * i) / sampleRate);
+    }
+    stems.push({ name: STEM_ORDER[index + 1], arrayBuffer: encodeWav(bed, sampleRate) });
+  });
+  return stems;
+}
+
 // ----------------------------------------------------------------- analiz
+
+// Kaydedilmiş çıkıştan her dikişte: çukurun merkezi, gerçek dikiş anı (iki
+// işaretin ortası) ve motorun tahmini. predicted: motorun songToCtx(a, k)
+// değerleri (ctx saniyesi). minTime: bundan önceki dikişler atlanır.
+function analyseSeams(capture, predicted, rate, minTime = 0) {
+  const sr = capture.sampleRate;
+  const data = capture.data;
+  const t0 = capture.start;
+  const at = (t) => Math.round((t - t0) * sr);
+  const median = (list) => {
+    const sorted = [...list].sort((x, y) => x - y);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+  // 1 ms hareketli ortalama zarfı
+  const win = Math.max(1, Math.round(sr * 0.001));
+  const envelope = (index) => {
+    let sum = 0;
+    for (let i = 0; i < win; i += 1) sum += Math.abs(data[index + i] || 0);
+    return sum / win;
+  };
+  const firstAbove = (from, to, level) => {
+    for (let i = at(from); i <= at(to); i += 1) {
+      if (Math.abs(data[i]) > level) return t0 + i / sr;
+    }
+    return null;
+  };
+  const found = [];
+  for (const seam of predicted) {
+    if (seam < minTime || at(seam - 0.35) < 0 || at(seam + 0.35) >= data.length) continue;
+    const m1 = firstAbove(seam - MARKER_GAP / rate - 0.05, seam - MARKER_GAP / rate + 0.05, 0.3);
+    const m2 = firstAbove(seam + MARKER_GAP / rate - 0.05, seam + MARKER_GAP / rate + 0.05, 0.3);
+    if (m1 === null || m2 === null) continue;
+    const truth = ((m1 + MARKER_GAP / rate) + (m2 - MARKER_GAP / rate)) / 2;
+    const base = [];
+    for (let t = seam - 0.06; t <= seam - 0.03; t += 0.001) base.push(envelope(at(t)));
+    for (let t = seam + 0.03; t <= seam + 0.06; t += 0.001) base.push(envelope(at(t)));
+    const baseline = median(base);
+    if (!(baseline > 0)) continue;
+    let first = null;
+    let last = null;
+    let lowest = Infinity;
+    for (let t = seam - 0.02; t <= seam + 0.02; t += 0.0005) {
+      const level = envelope(at(t));
+      lowest = Math.min(lowest, level);
+      if (level < 0.4 * baseline) {
+        if (first === null) first = t;
+        last = t;
+      }
+    }
+    if (first === null) {
+      found.push({ missing: true });
+      continue;
+    }
+    const center = (first + last) / 2;
+    found.push({
+      vsTruth: (center - truth) * 1000,
+      vsPredicted: (center - seam) * 1000,
+      truthVsPredicted: (truth - seam) * 1000,
+      depth: 1 - lowest / baseline,
+      width: (last - first) * 1000,
+    });
+  }
+  return found;
+}
 
 function analyse(stemOnsets, metroOnsets) {
   // Her metronom tıkını en yakın stem tıkıyla eşle. Fark = metronom - stem:
@@ -230,9 +334,15 @@ export async function runAlignmentCheck(report = () => {}, options = {}) {
     sink.connect(ctx.destination);
 
     const onsets = [[], []];
+    let captureResolve = null;
     tap.port.onmessage = (event) => {
       const data = event.data;
-      if (data && data.type === "onset") onsets[data.input].push(data.time);
+      if (!data) return;
+      if (data.type === "onset") onsets[data.input].push(data.time);
+      else if (data.type === "capture" && captureResolve) {
+        captureResolve({ start: data.start, data: data.data, sampleRate });
+        captureResolve = null;
+      }
     };
     const clear = () => {
       onsets[0].length = 0;
@@ -243,7 +353,8 @@ export async function runAlignmentCheck(report = () => {}, options = {}) {
     report("test sesi üretiliyor…");
     const { stems, beats, downbeats } = buildStems(sampleRate);
     await engine.setStems(stems);
-    engine.master.connect(tap, 0, 0);
+    // Dikiş çukurundan SONRAKİ çıkış: ölçülen şey kulağa giden ses.
+    engine.output.connect(tap, 0, 0);
 
     metronome.setGrid(beats, downbeats);
     metronome.setVolume(1);
@@ -361,6 +472,104 @@ export async function runAlignmentCheck(report = () => {}, options = {}) {
           `boşluk sonrası ${deltas.length} tıkın medyanı, beklenen ana göre`
         )
       );
+    }
+
+    // --- 5b: A-B döngü hizası (dikişten geçerken metronom) --------------
+    const loopConfigs = [
+      { label: "1.0x", rate: 1 },
+      { label: "0.8x", rate: 0.8 },
+      { label: "canlı 0.8x → 1.1x", rate: 0.8, liveTo: 1.1 },
+    ];
+    for (const config of loopConfigs) {
+      report(`döngü hizası · ${config.label} ölçülüyor…`);
+      await applyRate(config.rate);
+      await engine.seek(0);
+      await engine.setLoop(LOOP_A, LOOP_B);
+      clear();
+      listen(true);
+      await engine.play();
+      metronome.resync();
+      metronome.start();
+      if (config.liveTo) {
+        await wait(3500);
+        await applyRate(config.liveTo);
+        await wait(500);
+        clear();
+      }
+      await wait(LOOP_WINDOW_MS);
+      halt();
+      listen(false);
+      engine.clearLoop();
+      const result = analyse(onsets[0], onsets[1]);
+      rows.push(
+        describe(
+          `Döngü hizası · ${config.label}`,
+          result,
+          config.liveTo ? "dikişlerden geçerek, yalnız değişim sonrası" : "dikişlerden geçerek"
+        )
+      );
+      // Dikişte tık düşmedi/çiftlenmedi: iki taraftaki tık sayıları aynı olmalı.
+      const diff = Math.abs(onsets[0].length - onsets[1].length);
+      rows.push(
+        row(
+          `Döngü tık sayısı · ${config.label}`,
+          `stem ${onsets[0].length}, metronom ${onsets[1].length}`,
+          diff <= 1,
+          "dikişte düşen ya da çiftlenen metronom tıkı olmamalı (fark ≤ 1)"
+        )
+      );
+      await wait(200);
+    }
+
+    // --- 5c: dikiş çukuru gerçek dikişe denk geliyor mu? ----------------
+    await engine.setStems(buildSeamStems(sampleRate));
+    for (const config of loopConfigs) {
+      report(`dikiş çukuru · ${config.label} ölçülüyor…`);
+      await applyRate(config.rate);
+      await engine.seek(0);
+      await engine.setLoop(LOOP_A, LOOP_B);
+      const captured = new Promise((resolve) => { captureResolve = resolve; });
+      tap.port.postMessage({ type: "capture", frames: Math.round(CAPTURE_SEC * sampleRate) });
+      const wallStart = performance.now();
+      await engine.play();
+      let minTime = 0;
+      let finalRate = config.rate;
+      if (config.liveTo) {
+        await wait(3500);
+        await applyRate(config.liveTo);
+        finalRate = config.liveTo;
+        minTime = ctx.currentTime + 0.6;   // değişimden sonraki dikişler
+      }
+      await wait(Math.max(0, (CAPTURE_SEC - 0.4) * 1000 - (performance.now() - wallStart)));
+      // Tahminler HALT'TAN ÖNCE: songToCtx motorun değişken durumuna bağlı.
+      const predicted = [];
+      for (let k = 1; k <= 40; k += 1) predicted.push(engine.songToCtx(LOOP_A, k));
+      const capture = await captured;
+      halt();
+      engine.clearLoop();
+      const seams = analyseSeams(capture, predicted, finalRate, minTime);
+      const hits = seams.filter((s) => !s.missing);
+      if (!hits.length) {
+        rows.push(row(`Dikiş çukuru yeri · ${config.label}`, "ölçülemedi", false,
+          `${seams.length} dikişte çukur/işaret bulunamadı`));
+      } else {
+        const sorted = (key) => hits.map((s) => s[key]).sort((x, y) => x - y);
+        const mid = (key) => sorted(key)[Math.floor(hits.length / 2)];
+        const offset = mid("vsTruth");
+        const depth = mid("depth");
+        rows.push(
+          row(
+            `Dikiş çukuru yeri · ${config.label}`,
+            `${offset > 0 ? "+" : ""}${offset.toFixed(1)} ms`,
+            Math.abs(offset) < SEAM_PASS_MS && depth >= 0.6 && hits.length === seams.length,
+            `${hits.length}/${seams.length} dikiş, derinlik %${(depth * 100).toFixed(0)}, ` +
+              `genişlik ${mid("width").toFixed(1)} ms · motor tahmini gerçek dikişten ` +
+              `${mid("truthVsPredicted") > 0 ? "+" : ""}${mid("truthVsPredicted").toFixed(1)} ms ` +
+              `(çukur − gerçek dikiş; eşik ±${SEAM_PASS_MS} ms)`
+          )
+        );
+      }
+      await wait(200);
     }
 
     // --- 6: ölçülen esnetici gecikmesi ---------------------------------

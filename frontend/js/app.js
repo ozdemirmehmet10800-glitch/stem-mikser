@@ -11,6 +11,9 @@ import {
 } from "./engine.js";
 import { Mixer } from "./mixer.js";
 import {
+  snapPoint, barLoop, hasBars, BAR_CHOICES, MIN_LOOP,
+} from "./loop.js";
+import {
   PRESETS, applyPreset, cleanStates, snapshot, planRestore, readMix, writeMix,
   removeMix,
 } from "./mixmemory.js";
@@ -1124,6 +1127,7 @@ async function openSong(song) {
   loadedState = null;
   flushMixSave();           // önceki şarkının bekleyen ayarı ANINDA yazılsın
   mixSongId = null;
+  resetLoopState();         // motor döngüyü releaseStems'te bıraktı
 
   setOverlay(true, "Şarkı bilgileri alınıyor…");
   try {
@@ -1231,6 +1235,7 @@ async function openSong(song) {
     el("play").disabled = false;
     // Metronom ızgarası: beat_this vuruşları + downbeat'ler.
     metronome.setGrid(chords ? chords.beats : [], chords ? chords.downbeats : []);
+    setLoopGrid(chords);
     el("metro-toggle").disabled = !(chords && chords.beats && chords.beats.length);
 
     media.setMetadata({
@@ -1694,6 +1699,151 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pagehide", flushMixSave);
 
+// ----------------------------------------------------- A-B döngü (Madde 1)
+// Mantık loop.js'te, ses motorda (native döngü + dikiş çukuru). Burası yalnız
+// işaretleri tutuyor ve motora iletiyor. Uçlar vuruşa (ya da ölçü başına)
+// yapışır; ızgara telafisi YOK (PLAN.md Madde 9). Izgarasız şarkıda yapışma
+// kapalı, uçlar serbest saniye.
+
+let loopA = null;
+let loopB = null;
+let loopOn = false;
+let loopGrid = null;        // {beats, downbeats} ya da null
+let loopSnap = "beat";      // "beat" | "bar"
+let loopNoticeTimer = 0;
+
+function setLoopGrid(chords) {
+  const beats = chords && chords.beats ? chords.beats.map(Number).filter(Number.isFinite) : [];
+  const downbeats = chords && chords.downbeats
+    ? chords.downbeats.map(Number).filter(Number.isFinite) : [];
+  loopGrid = beats.length >= 2 ? { beats, downbeats } : null;
+  if (!hasBars(loopGrid)) loopSnap = "beat";
+  refreshLoopUi();
+}
+
+function resetLoopState() {
+  loopA = null;
+  loopB = null;
+  loopOn = false;
+  loopGrid = null;
+  clearTimeout(loopNoticeTimer);
+  refreshLoopUi();
+}
+
+function loopNotice(text) {
+  const node = el("player-message");
+  showMessage(node, text, "warn");
+  clearTimeout(loopNoticeTimer);
+  loopNoticeTimer = setTimeout(() => {
+    if (node.textContent === text) hideMessage(node);
+  }, 3500);
+}
+
+function formatPoint(t) {
+  const minutes = Math.floor(t / 60);
+  const seconds = (t - minutes * 60).toFixed(1).padStart(4, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function snapTime(t) {
+  return snapPoint(loopGrid, t, loopGrid ? loopSnap : "free");
+}
+
+function refreshLoopUi() {
+  if (!el("loop-bar")) return;
+  const ready = engine.channels.size > 0;
+  const full = loopA !== null && loopB !== null;
+  el("loop-a").disabled = !ready;
+  el("loop-b").disabled = !ready;
+  el("loop-toggle").disabled = !ready || !full;
+  el("loop-toggle").setAttribute("aria-pressed", String(loopOn && full));
+  el("loop-snap").disabled = !ready || !hasBars(loopGrid);
+  el("loop-snap").textContent = !loopGrid ? "Yapış: yok"
+    : loopSnap === "bar" ? "Yapış: ölçü" : "Yapış: vuruş";
+  for (const button of el("loop-bars").children) {
+    button.disabled = !ready || !hasBars(loopGrid);
+  }
+  el("loop-range").textContent =
+    `A ${loopA === null ? "—" : formatPoint(loopA)} · B ${loopB === null ? "—" : formatPoint(loopB)}`;
+}
+
+// İşaretleri motora iletir. Konum döngü dışındaysa motor A'ya alır.
+async function applyLoop() {
+  if (loopOn && loopA !== null && loopB !== null) {
+    const result = await engine.setLoop(loopA, loopB);
+    if (result === null) {
+      loopOn = false;
+      loopNotice("Döngü çok kısa.");
+    }
+  } else {
+    engine.clearLoop();
+  }
+  refreshLoopUi();
+}
+
+function buildLoopButtons() {
+  for (const bars of BAR_CHOICES) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chip";
+    button.textContent = String(bars);
+    button.setAttribute("aria-label", `${bars} ölçü`);
+    button.addEventListener("click", async () => {
+      // A işaretliyse oradan, değilse çalan konumdan; en yakın ölçü başına yapışır.
+      const from = loopA !== null ? loopA : engine.visualTime;
+      const found = barLoop(loopGrid, from, bars, engine.duration);
+      if (!found) {
+        loopNotice("Bu şarkıda ölçü bilgisi yok.");
+        return;
+      }
+      loopA = found.a;
+      loopB = found.b;
+      loopOn = true;
+      await applyLoop();
+      if (found.clipped) loopNotice("Döngü şarkı sonuna kırpıldı.");
+    });
+    el("loop-bars").append(button);
+  }
+}
+
+on("loop-a", "click", async () => {
+  loopA = snapTime(engine.visualTime);
+  if (loopB !== null && loopB - loopA < MIN_LOOP) {
+    loopB = null;
+    loopOn = false;
+  }
+  await applyLoop();
+});
+
+on("loop-b", "click", async () => {
+  if (loopA === null) {
+    loopNotice("Önce A'yı işaretle.");
+    return;
+  }
+  const point = snapTime(engine.visualTime);
+  if (point - loopA < MIN_LOOP) {
+    loopNotice("B, A'dan sonra olmalı.");
+    return;
+  }
+  loopB = point;
+  loopOn = true;      // B işaretlenince döngü başlar
+  await applyLoop();
+});
+
+on("loop-toggle", "click", async () => {
+  if (loopA === null || loopB === null) {
+    loopNotice("Önce A ve B'yi işaretle.");
+    return;
+  }
+  loopOn = !loopOn;
+  await applyLoop();
+});
+
+on("loop-snap", "click", () => {
+  loopSnap = loopSnap === "bar" ? "beat" : "bar";
+  refreshLoopUi();
+});
+
 // ---------------------------------------------------------------- olaylar
 
 on("open-settings", "click", () => {
@@ -1817,7 +1967,13 @@ on("reprocess", "click", async () => {
 });
 
 on("rewind", "click", async () => {
-  await engine.seek(0);
+  // Döngü açıkken "başa dön" döngünün A'sına döner (döngü kapanmaz).
+  if (engine.loop) {
+    await engine.seek(engine.loop.a, { keepLoop: true });
+    metronome.resync();
+  } else {
+    await engine.seek(0);
+  }
 });
 
 on("seek", "input", () => {
@@ -2272,6 +2428,12 @@ ${eventsText(diag)}`;
 
 mixer = new Mixer(el("channels"), engine, scheduleMixSave, downloadStem);
 buildPresetButtons();
+buildLoopButtons();
+engine.onLoopCleared = () => {
+  loopOn = false;
+  refreshLoopUi();
+  loopNotice("Döngü kapandı: döngü dışına atladın.");
+};
 // İndirme menüsü de bir katman: geri tuşu önce onu kapatıyor. Menü kendi
 // içinde de kapanabiliyor (dışarı dokunma, bir biçim seçme) - o zaman
 // katmanı history üzerinden düşürüyoruz ki iki yığın ayrışmasın.

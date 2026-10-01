@@ -349,6 +349,47 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      kayıt silinir; `loop` alanı yeniden yazımda korunur (Madde 1 ekleyecek;
      geri yüklenince döngü KAPALI, A-B işaretleri görünür, tek dokunuşla açılır).
      SW v27.
+   - **Madde 1, ilk yarı (A-B döngü ÇEKİRDEĞİ) YAPILDI (2026-10-01), telefonda
+     doğrulanmadı.** Sürüklemeli tutamaçlar, mikser kaydına `loop` alanı ve
+     arayüz cilası SONRAKİ tur. SW v28.
+     - `loop.js` (saf, `tests/loop_test.mjs`): vuruşa/ölçü başına yapışma, 1/2/4/8
+       ölçü (şarkı sonuna kırpılır), sarmal zaman eşlemesi. Model: motor HAM
+       (sarılmamış) zamanı tutuyor; konum = `r < b ? r : a + (r - a) mod (b - a)`.
+       Tur sayısı ham zamandan türüyor, yani hız değişiminde yeniden çıpalama
+       tur sayısını kaybetmiyor. Izgara telafisi YOK.
+     - Motor: altı kaynakta native `loop/loopStart/loopEnd`; `currentTime`,
+       `visualTime`, `songToCtx(t, tur)`, `currentTurn`; `setLoop` (çalmıyorsa
+       "set", kaynak B'ye >0.15 sn uzaksa kesintisiz "live", değilse A'ya
+       "restart"), `clearLoop`, `epoch` (metronom yeniden hizalansın diye).
+       Döngü dışına `seek` döngüyü kapatır ve `onLoopCleared` çağırır;
+       `seek(t, {keepLoop:true})` döngünün kendi atlaması. Döngüdeyken
+       `checkEnded` hep false. "Başa sar" döngüde A'ya döner.
+     - **Dikiş çukuru** `master → seamGain → destination` zincirinde, yani
+       esneticiden SONRA; `songToCtx(a, k)` ile ÇIKIŞTAKİ dikiş anına zamanlanıyor
+       (D dahil, bypass'ta 0), 2.5 sn önceden yazılıyor (arka planda timer kısılsa
+       da). Üçgen, ±6 ms. Hız/gecikme değişince iptal edilip yeniden yazılıyor.
+       `engine.output` ölçüm araçlarının dinlediği düğüm (çukurdan sonra).
+     - Metronom: tur/indeks tutuyor, dönem değişince (`epoch`) motordan yeniden
+       hizalanıyor, `lastAt` ile çift tık engelli. Metronom çukurun DIŞINDA.
+     - **Hiza testi (masaüstü, Signalsmith, geçti):** döngü hizası 1.0x 0.0 / 0.8x
+       −0.0 / canlı 0.8→1.1x +0.0 ms; tık sayısı dikişte düşmüyor/çiftlenmiyor
+       (fark ≤ 1); **çukurun gerçek dikişe uzaklığı** 1.0x −0.2, 0.8x −0.5, canlı
+       −0.5 ms (eşik ±4), derinlik %96, genişlik ~4 ms. "Gerçek dikiş" iki işaret
+       tıkının ortasından bulunuyor (dikişin ±0.1 sn'sinde, çukurun dışında).
+       Uçlar ızgaranın 12 ms önünde (gerçek durumu taklit için).
+     - **Bulunan eski hata (düzeltildi):** `stretch.js::measureLatency` önbellek
+       isabetinde `{seconds, measured}` NESNESİ döndürüyordu (sayı değil).
+       `setTempoAndPitch(…, nesne)` bunu geçersiz sayıp gecikmeyi SESSİZCE
+       değiştirmiyordu: bir hız önceden ölçülmüşse ikinci kez ölçüm sonucu
+       uygulanmıyordu (uygulamada kaydırıcı bırakılınca; hiza testinde döngü
+       satırlarını 120 ms bozdu). Eski hiza satırları şans eseri geçiyordu.
+     - Eski hata değil ama bilinen: `leak` testinde `seamGain` kanal gain
+       sayacına girmiyor (diagnostics `liveGains` 6 kalır).
+     - **Açık/riskli:** arka plandaki sekmede `setInterval` kısılırsa dikiş
+       çukurları ufuk (2.5 sn) dışına çıkınca yazılamaz, dikişte tık çıkabilir
+       (native döngü yine kesintisiz). Telefonda Bluetooth çıkışında çukur,
+       `outputLatency` Android'de 0 raporlandığı için etkilenmez (çukur motor
+       çıkışında, kulakta değil: iki tarafı aynı gecikiyor).
    - **NOT (Madde 1):** dikiş gain çukuru esneticiden SONRA olduğu için girişteki
      dikiş anına değil, ÇIKIŞTAKİ dikiş anına (`songToCtx` ile, D dahil) zamanlanmalı.
      Bypass'ta D = 0. Hiza testinde çukurun gerçek dikişe denk geldiği ölçülsün.

@@ -22,8 +22,11 @@ function check(name, ok, detail = "") {
 }
 
 class FakeParam {
-  constructor() { this.value = 1; }
+  constructor() { this.value = 1; this.events = []; }
   setTargetAtTime() {}
+  cancelScheduledValues() { this.events = []; }
+  setValueAtTime(value, time) { this.events.push(["set", value, time]); }
+  linearRampToValueAtTime(value, time) { this.events.push(["ramp", value, time]); }
 }
 
 class FakeNode {
@@ -35,8 +38,8 @@ class FakeNode {
   }
   connect(target) { this.targets.add(target); return target; }
   disconnect() { this.targets.clear(); }
-  start() {}
-  stop() {}
+  start() { this.started = true; }
+  stop() { this.stopped = true; }
 }
 
 class FakeContext {
@@ -48,7 +51,12 @@ class FakeContext {
     this.destination = new FakeNode(this);
   }
   createGain() { const n = new FakeNode(this); this.nodes.push(n); return n; }
-  createBufferSource() { return new FakeNode(this); }
+  createBufferSource() {
+    const node = new FakeNode(this);
+    this.sources = this.sources || [];
+    this.sources.push(node);
+    return node;
+  }
   async resume() {}
   async close() {}
   async decodeAudioData() {
@@ -63,7 +71,9 @@ const provide = async () => new ArrayBuffer(8);
 
 // Master'a (dolayli) bagli gain dugumu sayisi.
 function liveGains(engine) {
-  return engine.ctx.nodes.filter((n) => n !== engine.master && n.targets.size > 0).length;
+  return engine.ctx.nodes.filter(
+    (n) => n !== engine.master && n !== engine.seamGain && n.targets.size > 0
+  ).length;
 }
 
 const engine = new Engine();
@@ -132,6 +142,119 @@ check("kanal gain'leri baglida", before.every((g) => g.targets.size === 1));
 
 engine.dispose();
 check("dispose sonrasi kanal yok", engine.channels.size === 0);
+
+// ---------------------------------------------------------------- A-B dongu
+const liveSources = (e) =>
+  (e.ctx.sources || []).filter((n) => n.targets.size > 0 && !n.stopped).length;
+const near = (x, y, eps = 1e-6) => Math.abs(x - y) <= eps;
+
+{
+  const e = new Engine();
+  await e.loadStems(STEMS, provide, { concurrency: 3 });
+  const cleared = [];
+  e.onLoopCleared = (why) => cleared.push(why);
+
+  // Cal degilken kurulum: konum A'ya alinir.
+  check("setLoop (calmiyor) 'set'", (await e.setLoop(2, 6)) === "set");
+  check("setLoop: konum A'ya alindi", e.currentTime === 2);
+
+  await e.play();
+  const sources = [...e.channels.values()].map((c) => c.source);
+  check("6 kaynakta native dongu", sources.length === 6 && sources.every(
+    (s) => s.loop === true && s.loopStart === 2 && s.loopEnd === 6));
+
+  // Saat: elapsed 5 sn, rate 1, D = 0 -> ham 7 -> konum 3
+  e.ctx.currentTime = e.startedAt + 5;
+  check("currentTime sarmali: ham 7 -> 3", near(e.currentTime, 3), String(e.currentTime));
+  check("visualTime de sarmali", e.visualTime >= 2 && e.visualTime < 6);
+  check("currentTurn = 1", e.currentTurn === 1);
+  check("songToCtx(a, tur)", near(e.songToCtx(2, 1), e.startedAt + 4) &&
+    near(e.songToCtx(2, 2), e.startedAt + 8) && near(e.songToCtx(3, 0), e.startedAt + 1));
+
+  // Dikis cukuru: cikistaki dikis ani (D dahil). Dongu 1 sn: ufuk (2.5 sn)
+  // icinde birden cok dikis var.
+  e.ctx.currentTime = e.startedAt + 0.5;
+  e.stop();
+  await e.setLoop(2, 3);
+  await e.play();
+  const gainEvents = e.seamGain.gain.events;
+  const dipAt = e.songToCtx(2, 1);
+  check("dikis cukuru yazildi (0'a iniyor)", gainEvents.some(
+    (ev) => ev[0] === "ramp" && ev[1] === 0 && near(ev[2], dipAt)), JSON.stringify(gainEvents.slice(0, 4)));
+  check("cukur 1 -> 0 -> 1 ve dikisi ortalar", gainEvents.some(
+    (ev) => ev[0] === "set" && ev[1] === 1 && ev[2] < dipAt) && gainEvents.some(
+    (ev) => ev[0] === "ramp" && ev[1] === 1 && ev[2] > dipAt));
+  check("ufuk icinde birden cok dikis onceden yazildi",
+    gainEvents.filter((ev) => ev[0] === "ramp" && ev[1] === 0).length >= 2);
+
+  // Esnetici gecikmesi dikis zamanina eklenir (D dahil); degisince yeniden yazilir.
+  e.latency = 0.12;
+  check("songToCtx D dahil", near(e.songToCtx(2, 1), e.startedAt + 0.12 + 1));
+  e.latency = 0;
+
+  e.stop();
+  await e.setLoop(2, 6);
+  await e.play();
+
+  // Canli degisim: dongu icinde, B'ye uzak -> kesintisiz.
+  e.ctx.currentTime = e.startedAt + 1;
+  const before = e.epoch;
+  check("setLoop calarken icerde -> 'live'", (await e.setLoop(1.5, 7)) === "live");
+  check("live: epoch artti, kaynaklar yeni sinirlarda", e.epoch > before &&
+    [...e.channels.values()].every((c) => c.source.loopStart === 1.5 && c.source.loopEnd === 7));
+  check("live: konum surekli (kaymadi)", near(e.currentTime, 3, 0.011), String(e.currentTime));
+
+  // B'ye cok yakin / disarida -> A'ya yeniden baslatma
+  e.ctx.currentTime = e.startedAt + 3.0;
+  const pos = e.currentTime;
+  check("setLoop B'nin disinda -> 'restart'", (await e.setLoop(1, pos - 0.5)) === "restart");
+  check("restart: A'dan basladi", e.offset === 1 && e.playing);
+
+  // Disari seek dongu kapatir, bildirim gelir; icerdeki kapatmaz.
+  await e.seek(3);
+  check("icerdeki seek dongu kapatmaz", e.loop !== null && cleared.length === 0);
+  await e.seek(0);
+  check("disardaki seek dongu kapatir + bildirir", e.loop === null && cleared.join() === "seek");
+  check("kapaninca dikis zamanlayicisi durdu", e.seamTimer === null);
+
+  // keepLoop: dongunun kendi atlamasi
+  await e.setLoop(2, 6);
+  await e.seek(2, { keepLoop: true });
+  check("keepLoop: dongu kapanmaz", e.loop !== null);
+
+  // clearLoop calarken: kaynaklar dongusuz, konum surekli
+  e.ctx.currentTime = e.startedAt + 1;
+  const at = e.currentTime;
+  e.clearLoop();
+  check("clearLoop: kaynaklar dongusuz", [...e.channels.values()].every((c) => c.source.loop === false));
+  check("clearLoop: konum surekli", near(e.currentTime, at, 0.011), `${e.currentTime} vs ${at}`);
+
+  // Dongu varken sarki bitmez (b = sarki sonu bile olsa)
+  await e.setLoop(10, e.duration);
+  e.ctx.currentTime = e.startedAt + 100;
+  check("dongu varken checkEnded false", e.checkEnded() === false && e.playing);
+
+  // Sizinti: dongu + cal + durdur 30 kez
+  for (let i = 0; i < 30; i += 1) {
+    e.releaseStems();
+    await e.loadStems(STEMS, provide, { concurrency: 3 });
+    await e.setLoop(2, 6);
+    await e.play();
+    e.toggleSolo("drums");
+    await e.setLoop(3, 7);
+    e.pause();
+  }
+  check("dongu + cal/durdur 30 kez: bagli gain = 6", liveGains(e) === 6, `(${liveGains(e)})`);
+  check("dongu + cal/durdur 30 kez: canli kaynak yok", liveSources(e) === 0, `(${liveSources(e)})`);
+  check("durdurunca dikis zamanlayicisi yok", e.seamTimer === null);
+
+  await e.play();
+  check("calarken canli kaynak = 6", liveSources(e) === 6);
+  e.releaseStems();
+  check("releaseStems: dongu sifirlandi, kaynak ve gain yok",
+    e.loop === null && liveSources(e) === 0 && liveGains(e) === 0 && e.seamTimer === null);
+  e.dispose();
+}
 
 if (failed) {
   console.log(`\n${failed} test BASARISIZ`);

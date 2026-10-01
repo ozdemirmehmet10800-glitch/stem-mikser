@@ -33,6 +33,12 @@ export class Metronome {
     this.downbeats = new Set();
     this.ticks = [];        // {time, accent}
     this.nextIndex = 0;
+    // A-B döngüde: hangi turdayız (0 = ilk geçiş) ve motorun hangi çıpa
+    // dönemini (engine.epoch) gördük. Dönem değişince (başlatma, döngü
+    // kurma/kapama) tur ve indeks motordan yeniden alınıyor.
+    this.turn = 0;
+    this.epoch = -1;
+    this.lastAt = -Infinity;   // en son zamanlanan tıkın ctx anı (çift tık engeli)
     this.timer = null;
     this.gain = null;
     this.panner = null;
@@ -136,10 +142,28 @@ export class Metronome {
   // bir indeks ve motor konumu sürekli tutuyor; değişen tek şey songToCtx
   // eşlemesi. resync burada çağrılsa tam o anda düşen tık atlanabilir.
   resync() {
-    const now = this.engine.currentTime;
-    let index = 0;
-    while (index < this.ticks.length && this.ticks[index].time < now) index += 1;
-    this.nextIndex = index;
+    this.lastAt = -Infinity;
+    this.#align();
+  }
+
+  // Konumdan sonraki ilk tık + motorun tur numarası. lastAt'a DOKUNMAZ: döngü
+  // canlı kurulunca ileriye zamanlanmış tıklar yeniden yazılmasın.
+  #align() {
+    const engine = this.engine;
+    this.epoch = engine.epoch;
+    this.turn = engine.loop ? engine.currentTurn : 0;
+    this.nextIndex = this.#firstIndexAtOrAfter(engine.currentTime);
+  }
+
+  #firstIndexAtOrAfter(time) {
+    let lo = 0;
+    let hi = this.ticks.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.ticks[mid].time < time) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
   }
 
   start() {
@@ -168,13 +192,28 @@ export class Metronome {
     // ctx.outputLatency'yi EKLEMİYORUZ: tıklar da stem'lerle aynı çıkıştan
     // geçtiği için o gecikmeyi ikisi birlikte yiyor.
     const horizon = ctx.currentTime + LOOKAHEAD;
+    if (this.epoch !== engine.epoch) this.#align();
+    const loop = engine.loop;
 
-    while (this.nextIndex < this.ticks.length) {
+    for (;;) {
       const tick = this.ticks[this.nextIndex];
-      const at = engine.songToCtx(tick.time);
+      if (loop && (!tick || tick.time >= loop.b)) {
+        // Döngü sonu: sonraki tur, döngünün ilk tıkından. Döngüde hiç tık
+        // yoksa (çok kısa/ızgarasız) sonsuz dönmesin.
+        const first = this.#firstIndexAtOrAfter(loop.a);
+        const head = this.ticks[first];
+        if (!head || head.time >= loop.b) break;
+        this.turn += 1;
+        this.nextIndex = first;
+        continue;
+      }
+      if (!tick) break;
+      const at = engine.songToCtx(tick.time, loop ? this.turn : 0);
       if (at > horizon) break;
-      if (at >= ctx.currentTime) this.#click(at, tick.accent);
       this.nextIndex += 1;
+      if (at <= this.lastAt + 0.0015) continue;
+      this.lastAt = at;
+      if (at >= ctx.currentTime) this.#click(at, tick.accent);
     }
   }
 

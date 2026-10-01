@@ -205,7 +205,7 @@ export async function measureLatency(
   const id = normalizeStretcher(stretcher);
   const key = probeKey(sampleRate, rate, semitones, id);
   const hit = latencyCache.get(key);
-  if (hit !== undefined) return hit;
+  if (hit !== undefined) return hit.seconds;   // önbellek {seconds, measured} tutuyor
 
   let value = FALLBACK_LATENCY;
   let measured = false;

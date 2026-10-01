@@ -30,6 +30,7 @@ import {
 import { AUDIO_SAVE, normalizeAudioMode } from "./settings.js";
 import { diag } from "./diag.js";
 import { audible } from "./mixmemory.js";
+import { mapLoop, turnAt, normalizeLoop, seekClosesLoop } from "./loop.js";
 
 export const STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"];
 
@@ -111,6 +112,19 @@ function clamp(value, min, max) {
   return value < min ? min : value > max ? max : value;
 }
 
+// A-B döngü dikiş çukuru: çıkıştaki dikiş anının iki yanında SEAM_HALF sn'de
+// 1 -> 0 -> 1 (üçgen, toplam ~12 ms). Esnetici gecikmesi ölçümü birkaç ms
+// oynadığı için çukur dar tutulursa dikişi kaçırır; ızgara davuldan ~10 ms önde
+// olduğundan çukur atağın başlangıcını yemiyor. Zamanlayıcı arka planda
+// kısılabildiği için dikişler SEAM_HORIZON sn önceden yazılıyor.
+const SEAM_HALF = 0.006;
+const SEAM_HORIZON = 2.5;
+const SEAM_EVERY = 100;
+// Çalarken döngü kurulurken kaynak b'ye bu kadar (ses saniyesi) yakınsa canlı
+// uygulanmaz (kaynak b'yi çoktan geçmiş olabilir, geçince döngüye girmez):
+// A'ya yeniden başlatılır.
+const LIVE_MARGIN = 0.15;
+
 export class Engine {
   constructor() {
     this.ctx = null;
@@ -121,6 +135,15 @@ export class Engine {
     this.startedAt = 0;    // ctx.currentTime cinsinden başlangıç anı
     this.duration = 0;
     this.onEnded = null;
+    // --- A-B döngü ---
+    // loop: {a, b} ya da null. offset döngüde "ham" (sarılmamış) olabilir,
+    // bkz. loop.js; konum her zaman currentTime'dan okunur.
+    this.loop = null;
+    this.epoch = 0;            // yeniden çıpalamada (başlatma, döngü kurma) artar
+    this.onLoopCleared = null; // döngü dışına seek -> (neden)
+    this.seamGain = null;      // master'dan SONRA: dikiş çukuru buradan
+    this.seamTimer = null;
+    this.nextSeam = 0;
     this.mobile = isMobile();
     // Ayar motora app.js'ten geliyor; ilk değer settings.js'teki varsayılan
     // (Yüksek), yoksa kip hiç verilmeyen bir Engine eski davranışa düşerdi.
@@ -257,6 +280,8 @@ export class Engine {
     const old = this.ctx;
     this.ctx = null;
     this.master = null;
+    this.seamGain = null;
+    this.loop = null;
     if (old) {
       try {
         await old.close();
@@ -276,6 +301,7 @@ export class Engine {
    */
   releaseStems() {
     this.stop();
+    this.loop = null;
     this.#disposeChannels();
     this.duration = 0;
     this.offset = 0;
@@ -373,7 +399,12 @@ export class Engine {
       }
       this.master = this.ctx.createGain();
       this.master.gain.value = 1;
-      this.master.connect(this.ctx.destination);
+      // master -> seamGain -> destination. seamGain yalnız dikiş çukuru için;
+      // gain sayacına (diagnostics) girmiyor, kanal gain'i değil.
+      this.seamGain = this.ctx.createGain();
+      this.seamGain.gain.value = 1;
+      this.master.connect(this.seamGain);
+      this.seamGain.connect(this.ctx.destination);
       const created = this.ctx;
       created.onstatechange = () => {
         if (created === this.ctx) this.#handleState();
@@ -404,23 +435,43 @@ export class Engine {
     return Number.isFinite(value) ? value : 0;
   }
 
+  // Çıkıştaki HAM zaman (döngü açılmamış gibi doğrusal), bkz. loop.js.
+  get rawTime() {
+    if (!this.playing || !this.ctx) return this.offset;
+    return this.offset + (this.ctx.currentTime - this.startedAt - this.latency) * this.rate;
+  }
+
   get currentTime() {
     if (!this.playing || !this.ctx) return this.offset;
     // Esneticiden çıkan, girişe göre this.latency saniye geride; şarkı
-    // zamanı da gerçek zamana göre rate katı hızla akıyor.
-    const elapsed = this.ctx.currentTime - this.startedAt - this.latency;
-    return clamp(this.offset + elapsed * this.rate, 0, this.duration);
+    // zamanı da gerçek zamana göre rate katı hızla akıyor. Döngü varsa ham
+    // zaman döngüye SARILIYOR (çıkış tarafı: dikiş D sonra duyuluyor).
+    return clamp(mapLoop(this.rawTime, this.loop), 0, this.duration);
   }
 
   get visualTime() {
     if (!this.playing || !this.ctx) return this.offset;
-    return clamp(this.currentTime - this.outputLatency * this.rate, 0, this.duration);
+    const raw = this.rawTime - this.outputLatency * this.rate;
+    return clamp(mapLoop(raw, this.loop), 0, this.duration);
+  }
+
+  // Çıkıştaki tur numarası (0 = döngüye ilk geçiş, dikişten önce).
+  get currentTurn() {
+    return turnAt(this.rawTime, this.loop);
   }
 
   // Şarkı zamanı -> ctx saati. currentTime'ın tersi; metronom bunu kullanıyor.
-  songToCtx(songTime) {
+  // turn: döngüdeyken hangi tur (0 = ilk geçiş); songTime o turun içindeki
+  // şarkı konumu. Döngü yoksa turn yok sayılır.
+  songToCtx(songTime, turn = 0) {
     if (!this.ctx) return 0;
-    return this.startedAt + this.latency + (songTime - this.offset) / this.rate;
+    const length = this.loop ? this.loop.b - this.loop.a : 0;
+    return this.startedAt + this.latency + (songTime + turn * length - this.offset) / this.rate;
+  }
+
+  // Motorun ÇIKIŞI (dikiş çukurundan sonra); ölçüm araçları buradan dinler.
+  get output() {
+    return this.seamGain || this.master;
   }
 
   // -------------------------------------------------------- esnetici zinciri
@@ -615,7 +666,9 @@ export class Engine {
     // D_eski*hız_eski - D_yeni*hız_yeni kadar oluyordu ve hiza testi
     // 0.8x -> 1.1x geçişinde tam bunu gösterdi: 0.11*(1.1-0.8) = 33 ms,
     // ölçülen -34 ms.
-    const entering = this.currentTime + this.latency * this.rate;
+    // Döngüde HAM (sarılmamış) giriş zamanı: tur sayısı kaybolmasın diye
+    // sarmıyoruz; formül currentTime + latency*rate ile aynı (döngüsüz).
+    const entering = this.offset + (this.ctx.currentTime - this.startedAt) * this.rate;
 
     this.rate = nextRate;
     this.semitones = nextSemis;
@@ -629,6 +682,8 @@ export class Engine {
     }
     this.offset = entering;
     this.startedAt = this.ctx.currentTime;
+    // Hız ve gecikme değişti: dikiş zamanları yeniden hesaplanmalı.
+    this.#startSeams();
   }
 
   resetTempoAndPitch() {
@@ -830,6 +885,7 @@ export class Engine {
     await this.ensureContext();
 
     if (this.offset >= this.duration - 0.01) this.offset = 0;
+    if (this.loop && this.offset >= this.loop.b - 0.001) this.offset = this.loop.a;
 
     await this.#rebuildStretch();
 
@@ -843,6 +899,11 @@ export class Engine {
       // Tempo KAYNAKTAN geliyor, altısı da aynı oranda; esnetici düğümü
       // perdeyi telafi ediyor.
       source.playbackRate.value = this.rate;
+      if (this.loop) {
+        source.loop = true;
+        source.loopStart = this.loop.a;
+        source.loopEnd = Math.min(this.loop.b, channel.buffer.duration);
+      }
       source.connect(channel.gainNode);
       // Altısı da AYNI startAt ile başlıyor -> aralarında sürüklenme yok.
       source.start(startAt, Math.min(this.offset, channel.buffer.duration));
@@ -850,9 +911,12 @@ export class Engine {
     }
     this.startedAt = startAt;
     this.playing = true;
+    this.epoch += 1;
+    this.#startSeams();
   }
 
   stop() {
+    this.#stopSeams();
     for (const channel of this.channels.values()) {
       if (channel.source) {
         try {
@@ -877,8 +941,14 @@ export class Engine {
     this.stop();
   }
 
-  async seek(time) {
+  // keepLoop: döngünün kendi atlamaları (A'ya dön); dışarıya seek döngüyü kapatır.
+  async seek(time, { keepLoop = false } = {}) {
     const target = clamp(time, 0, this.duration);
+    if (!keepLoop && seekClosesLoop(target, this.loop)) {
+      this.loop = null;
+      this.#stopSeams();
+      if (this.onLoopCleared) this.onLoopCleared("seek");
+    }
     if (this.playing) {
       this.stop();
       this.offset = target;
@@ -892,6 +962,7 @@ export class Engine {
   // tetiklendiği için daha güvenilir.
   checkEnded() {
     if (!this.playing) return false;
+    if (this.loop) return false;   // döngü bitmez; b şarkı sonu olsa bile
     if (this.currentTime < this.duration - 0.02) return false;
     this.stop();
     this.offset = 0; // bitince başa sar
@@ -901,12 +972,125 @@ export class Engine {
 
   dispose() {
     this.stop();
+    this.loop = null;
     this.#disposeChannels();
     this.bus = null;
     if (this.ctx) {
       this.ctx.close().catch(() => {});
       this.ctx = null;
       this.master = null;
+      this.seamGain = null;
+    }
+  }
+
+  // ------------------------------------------------------------ A-B döngü
+
+  #eachSource(fn) {
+    for (const channel of this.channels.values()) {
+      if (channel.source) fn(channel.source, channel);
+    }
+  }
+
+  // Giriş tarafındaki konum (esneticiye GİREN, döngüye sarılmış).
+  #inputPosition() {
+    return mapLoop(this.offset + (this.ctx.currentTime - this.startedAt) * this.rate, this.loop);
+  }
+
+  /**
+   * Döngüyü kurar/değiştirir. Dönüş: "set" (çalmıyordu), "live" (kesintisiz),
+   * "restart" (A'ya yeniden başlatıldı), null (geçersiz: döngü kapatıldı).
+   * Çalmıyorsa ve konum dışardaysa konum A'ya alınır.
+   */
+  async setLoop(a, b) {
+    const next = normalizeLoop(a, b, this.duration);
+    if (!next) {
+      this.clearLoop();
+      return null;
+    }
+    if (!this.playing) {
+      this.loop = next;
+      if (this.offset < next.a || this.offset >= next.b) this.offset = next.a;
+      this.epoch += 1;
+      return "set";
+    }
+    const input = this.#inputPosition();
+    const outAfter = input - this.latency * this.rate;   // yeni çıpada çıkış konumu
+    if (input >= next.a && input < next.b - LIVE_MARGIN * this.rate && outAfter >= next.a) {
+      this.loop = next;
+      this.#eachSource((source, channel) => {
+        source.loop = true;
+        source.loopStart = next.a;
+        source.loopEnd = Math.min(next.b, channel.buffer.duration);
+      });
+      this.offset = input;
+      this.startedAt = this.ctx.currentTime;
+      this.epoch += 1;
+      this.#startSeams();
+      return "live";
+    }
+    this.stop();
+    this.loop = next;
+    this.offset = next.a;
+    await this.play();
+    return "restart";
+  }
+
+  clearLoop() {
+    if (!this.loop) return;
+    if (this.playing) {
+      const input = this.#inputPosition();
+      this.#eachSource((source) => { source.loop = false; });
+      this.loop = null;
+      this.offset = input;
+      this.startedAt = this.ctx.currentTime;
+      this.epoch += 1;
+    } else {
+      this.loop = null;
+    }
+    this.#stopSeams();
+  }
+
+  // Dikiş çukurları: çıkıştaki k. dikiş = songToCtx(a, k) (D dahil, bypass'ta
+  // D = 0). Zamanlayıcı gecikse de SEAM_HORIZON sn önceden yazılı.
+  #startSeams() {
+    if (!this.playing || !this.loop || !this.ctx || !this.seamGain) return;
+    this.#clearSeamAutomation();
+    this.nextSeam = 0;
+    if (!this.seamTimer) {
+      this.seamTimer = setInterval(() => this.#scheduleSeams(), SEAM_EVERY);
+    }
+    this.#scheduleSeams();
+  }
+
+  #clearSeamAutomation() {
+    if (!this.ctx || !this.seamGain) return;
+    const gain = this.seamGain.gain;
+    gain.cancelScheduledValues(this.ctx.currentTime);
+    gain.setTargetAtTime(1, this.ctx.currentTime, 0.001);
+  }
+
+  #stopSeams() {
+    if (this.seamTimer) {
+      clearInterval(this.seamTimer);
+      this.seamTimer = null;
+    }
+    this.#clearSeamAutomation();
+  }
+
+  #scheduleSeams() {
+    if (!this.playing || !this.loop || !this.ctx || !this.seamGain) return;
+    const now = this.ctx.currentTime;
+    const horizon = now + SEAM_HORIZON;
+    const gain = this.seamGain.gain;
+    let k = Math.max(this.nextSeam, this.currentTurn + 1);
+    for (;; k += 1) {
+      const at = this.songToCtx(this.loop.a, k);
+      if (at > horizon) break;
+      this.nextSeam = k + 1;
+      if (at - SEAM_HALF < now) continue;   // geçmişte ya da çukurun ortasında
+      gain.setValueAtTime(1, at - SEAM_HALF);
+      gain.linearRampToValueAtTime(0, at);
+      gain.linearRampToValueAtTime(1, at + SEAM_HALF);
     }
   }
 }

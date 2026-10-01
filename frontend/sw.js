@@ -9,7 +9,7 @@
 // yeni worker beklemeden devralıyor (skipWaiting + clients.claim), yoksa
 // GitHub Pages'e atılan bir düzeltme kullanıcıya günlerce ulaşmayabiliyor.
 
-const VERSION = "v27";
+const VERSION = "v28";
 const CACHE = `stem-mikser-${VERSION}`;
 
 // Göreli yollar: site /stem-mikser/ alt yolunda yayınlanıyor, kökte değil.
@@ -23,6 +23,7 @@ const SHELL = [
   "./js/engine.js",
   "./js/mixer.js",
   "./js/mixmemory.js",
+  "./js/loop.js",
   "./js/fader.js",
   "./js/media.js",
   "./js/wakelock.js",

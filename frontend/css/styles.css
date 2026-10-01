@@ -278,7 +278,7 @@ html, body {
 .mix-bar { display: flex; align-items: center; gap: 8px; padding: 4px 0 6px; }
 .mix-presets { display: flex; gap: 8px; overflow-x: auto; flex: 1; scrollbar-width: none; }
 .mix-presets::-webkit-scrollbar { display: none; }
-.mix-bar .chip {
+.mix-bar .chip, .loop-bar .chip {
   flex: 0 0 auto;
   white-space: nowrap;
   padding: 7px 12px;
@@ -290,7 +290,16 @@ html, body {
   font: inherit;
   font-size: 13px;
 }
-.mix-bar .chip:disabled { opacity: 0.35; }
+.mix-bar .chip:disabled, .loop-bar .chip:disabled { opacity: 0.35; }
+.loop-bar .chip[aria-pressed="true"] { background: var(--accent-dim); border-color: var(--accent); }
+
+/* ---------- A-B döngü ---------- */
+
+.loop-bar { padding: 4px 0 6px; }
+.loop-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 2px 0; }
+.loop-range { font-size: 13px; color: var(--text-dim); font-variant-numeric: tabular-nums; flex: 1 1 auto; }
+.loop-bars { display: flex; gap: 6px; }
+.loop-bars .chip { padding: 7px 12px; min-width: 40px; }
 .mix-notice {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 4px 4px 6px; font-size: 13px; color: var(--text-dim);

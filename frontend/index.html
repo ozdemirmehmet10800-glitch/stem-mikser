@@ -95,6 +95,20 @@
     </div>
     <div class="channels" id="channels"></div>
 
+    <!-- A-B döngü -->
+    <div class="loop-bar" id="loop-bar">
+      <div class="loop-row">
+        <button type="button" class="chip" id="loop-a" disabled>A burada</button>
+        <button type="button" class="chip" id="loop-b" disabled>B burada</button>
+        <button type="button" class="chip" id="loop-toggle" aria-pressed="false" disabled>Döngü</button>
+        <button type="button" class="chip" id="loop-snap" disabled>Yapış: vuruş</button>
+      </div>
+      <div class="loop-row">
+        <span class="loop-range" id="loop-range">A — · B —</span>
+        <div class="loop-bars" id="loop-bars" role="group" aria-label="Hazır döngü uzunluğu"></div>
+      </div>
+    </div>
+
     <div id="player-message" class="message" hidden></div>
 
     <!-- alt çubuk -->

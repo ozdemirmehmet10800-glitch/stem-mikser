@@ -23,9 +23,19 @@ class TapProcessor extends AudioWorkletProcessor {
     this.holdoff = config.holdoffSec > 0 ? config.holdoffSec : 0.15;
     this.running = false;
     this.last = new Float64Array(MAX_INPUTS).fill(-1e9);
+    // Dalga kaydı (dikiş çukuru ölçümü): giriş 0'ın ilk `frames` örneği.
+    this.capture = null;
+    this.captureAt = 0;
+    this.captureStart = 0;
     this.port.onmessage = (event) => {
       const message = event.data;
       if (!message) return;
+      if (message.type === "capture") {
+        this.capture = new Float32Array(Math.max(1, message.frames | 0));
+        this.captureAt = 0;
+        this.captureStart = -1;
+        return;
+      }
       if (message.type === "start") {
         this.running = true;
         this.last.fill(-1e9);
@@ -41,6 +51,25 @@ class TapProcessor extends AudioWorkletProcessor {
     if (output) {
       for (const channel of output) channel.fill(0);
     }
+    if (this.capture) {
+      const input = inputs[0] && inputs[0][0];
+      if (this.captureStart < 0) this.captureStart = currentFrame;
+      const room = this.capture.length - this.captureAt;
+      const count = Math.min(room, 128);
+      for (let i = 0; i < count; i += 1) {
+        this.capture[this.captureAt + i] = input ? input[i] : 0;
+      }
+      this.captureAt += count;
+      if (this.captureAt >= this.capture.length) {
+        const data = this.capture;
+        this.capture = null;
+        this.port.postMessage(
+          { type: "capture", start: this.captureStart / sampleRate, data },
+          [data.buffer]
+        );
+      }
+    }
+
     if (!this.running) return true;
 
     for (let index = 0; index < MAX_INPUTS; index += 1) {
