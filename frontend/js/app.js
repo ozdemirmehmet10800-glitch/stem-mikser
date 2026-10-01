@@ -10,6 +10,10 @@ import {
   nativeSampleRate,
 } from "./engine.js";
 import { Mixer } from "./mixer.js";
+import {
+  PRESETS, applyPreset, cleanStates, snapshot, planRestore, readMix, writeMix,
+  removeMix,
+} from "./mixmemory.js";
 import { ChordStrip, formatTime } from "./chords.js";
 import { MediaBridge } from "./media.js";
 import { WakeLock } from "./wakelock.js";
@@ -566,6 +570,7 @@ async function deleteSelected() {
     if (gone.length) {
       freed = await stemCache.removeSongs(gone);
       dropMeta(gone);            // cihazdaki durum/akor kopyası da gitsin
+      if (mixStorage()) removeMix(mixStorage(), gone);
     }
 
     if (currentSong && gone.includes(currentSong.id)) closeCurrentSong();
@@ -1117,6 +1122,8 @@ async function openSong(song) {
   // Tamponlar gitti: hızlı yolun kapısı kapansın. Yükleme başarısız bitse
   // bile burada null kalıyor, yoksa boş motorla "bellekte" denirdi.
   loadedState = null;
+  flushMixSave();           // önceki şarkının bekleyen ayarı ANINDA yazılsın
+  mixSongId = null;
 
   setOverlay(true, "Şarkı bilgileri alınıyor…");
   try {
@@ -1198,6 +1205,7 @@ async function openSong(song) {
     measureAacDelta(detail.status, duration);
 
     mixer.render(stems.filter((name) => engine.channels.has(name)));
+    restoreMix(song.id);
     strip.build(detail.chords, duration);
 
     const chords = detail.chords;
@@ -1580,6 +1588,112 @@ function stopLoop() {
   rafHandle = 0;
 }
 
+
+// ------------------------------------------------- mikser hafızası (Madde 4)
+// Şarkı KİMLİĞİNE bağlı (stems_version'a değil); biçim ve kurallar mixmemory.js'te.
+
+const MIX_SAVE_DELAY = 500;
+let mixSongId = null;       // restoreMix'ten sonra dolu; yüklenirken null = kayıt yok
+let mixTimer = 0;
+let mixPending = null;      // {id, states, master}: ANLIK görüntü, şarkı değişse de doğru şarkıya yazılır
+
+function mixStorage() {
+  try { return localStorage; } catch { return null; }
+}
+
+function masterPercent() {
+  return Math.round(Number(el("master").value)) || 0;
+}
+
+function scheduleMixSave() {
+  if (!mixSongId) return;
+  mixPending = { id: mixSongId, states: snapshot(engine.channels), master: masterPercent() };
+  hideMixNotice();
+  clearTimeout(mixTimer);
+  mixTimer = setTimeout(flushMixSave, MIX_SAVE_DELAY);
+}
+
+function flushMixSave() {
+  clearTimeout(mixTimer);
+  mixTimer = 0;
+  const pending = mixPending;
+  mixPending = null;
+  const storage = mixStorage();
+  if (pending && storage) writeMix(storage, pending.id, pending.states, pending.master);
+}
+
+function hideMixNotice() {
+  const notice = el("mix-notice");
+  if (notice) notice.hidden = true;
+}
+
+function setMasterPercent(percent) {
+  el("master").value = String(percent);
+  const gain = percent / 100;
+  engine.setMaster(gain);
+  el("master-value").textContent = `${gainToDb(gain)} dB`;
+}
+
+// Kanallar kurulduktan SONRA çağrılır. Kayıt yoksa hiçbir şeye dokunmaz.
+function restoreMix(songId) {
+  mixSongId = null;                 // geri yükleme kendi kaydını tetiklemesin
+  mixPending = null;
+  hideMixNotice();
+  const storage = mixStorage();
+  const record = storage ? readMix(storage, songId) : null;
+  const names = [...engine.channels.keys()];
+  updatePresetButtons(names);
+  if (record) {
+    engine.applyMix(planRestore(record, names));
+    setMasterPercent(record.master);
+    mixer.syncFromEngine();
+    el("mix-notice").hidden = false;
+  }
+  mixSongId = songId;
+}
+
+function updatePresetButtons(names) {
+  for (const button of document.querySelectorAll("#mix-presets [data-preset]")) {
+    const preset = PRESETS.find((item) => item.id === button.dataset.preset);
+    button.disabled = !preset || !applyPreset(preset, names);
+  }
+}
+
+function applyMixStates(states) {
+  engine.applyMix(states);
+  mixer.syncFromEngine();
+  scheduleMixSave();
+}
+
+function buildPresetButtons() {
+  const box = el("mix-presets");
+  for (const preset of PRESETS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chip";
+    button.dataset.preset = preset.id;
+    button.textContent = preset.label;
+    button.addEventListener("click", () => {
+      const states = applyPreset(preset, [...engine.channels.keys()]);
+      if (states) applyMixStates(states);
+    });
+    box.append(button);
+  }
+}
+
+on("mix-reset", "click", () => {
+  applyMixStates(cleanStates([...engine.channels.keys()]));
+});
+
+on("mix-notice-reset", "click", () => {
+  applyMixStates(cleanStates([...engine.channels.keys()]));
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushMixSave();
+});
+window.addEventListener("pagehide", flushMixSave);
+
 // ---------------------------------------------------------------- olaylar
 
 on("open-settings", "click", () => {
@@ -1724,6 +1838,7 @@ on("master", "input", () => {
   const gain = Number(el("master").value) / 100;
   engine.setMaster(gain);
   el("master-value").textContent = `${gainToDb(gain)} dB`;
+  scheduleMixSave();
 });
 
 // --------------------------------------------------------- esnetici seçimi
@@ -2155,7 +2270,8 @@ ${eventsText(diag)}`;
   setTimeout(() => { button.textContent = "Tanıyı kopyala"; }, 2500);
 });
 
-mixer = new Mixer(el("channels"), engine, null, downloadStem);
+mixer = new Mixer(el("channels"), engine, scheduleMixSave, downloadStem);
+buildPresetButtons();
 // İndirme menüsü de bir katman: geri tuşu önce onu kapatıyor. Menü kendi
 // içinde de kapanabiliyor (dışarı dokunma, bir biçim seçme) - o zaman
 // katmanı history üzerinden düşürüyoruz ki iki yığın ayrışmasın.

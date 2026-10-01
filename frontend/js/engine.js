@@ -29,6 +29,7 @@ import {
 } from "./stretch.js";
 import { AUDIO_SAVE, normalizeAudioMode } from "./settings.js";
 import { diag } from "./diag.js";
+import { audible } from "./mixmemory.js";
 
 export const STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"];
 
@@ -756,12 +757,22 @@ export class Engine {
   }
 
   // Mute HER ZAMAN öncelikli; solo varsa yalnızca solo kanallar duyulur.
+  // Kural mixmemory.audible'da (testli), burası yalnız ona devrediyor.
   isAudible(name) {
-    const channel = this.channels.get(name);
-    if (!channel) return false;
-    if (channel.mute) return false;
-    if (this.anySolo && !channel.solo) return false;
-    return true;
+    return audible(this.channels, name);
+  }
+
+  // Kayıtlı mikser durumunu uygular: Map ad -> {fader (yüzde), mute, solo}.
+  // Olmayan adlar atlanır. Çalmadan önce de çağrılabilir: kazançlar anında.
+  applyMix(states) {
+    for (const [name, state] of states) {
+      const channel = this.channels.get(name);
+      if (!channel) continue;
+      channel.fader = state.fader / 100;
+      channel.mute = !!state.mute;
+      channel.solo = !!state.solo;
+    }
+    this.#applyAllGains(true);
   }
 
   #effectiveGain(name) {

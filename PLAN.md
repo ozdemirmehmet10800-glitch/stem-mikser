@@ -335,6 +335,28 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      cihazdaki her şey bir kez yeniden iner, `pruneSuperseded` regex'i de buna
      uyarlanmalı.
    - Mevcut şarkıları `reprocess` ile yenilemek ~şarkı başı $0.04.
+9. [ ] **Pratik paketi (yalnız arayüz, GPU yok).** Sıra: 4 → 1 → 3 → 2. Onaylı
+   kararlar: dikişte gain çukuru (~5 ms) varsayılan; döngü uçlarına ızgara telafisi
+   YOK (ızgara 8-15 ms erken, uç atak öncesine düşüyor; telafi gerekirse yalnız
+   tık/sayım için tek sabit); sayım o anki hızla atar; antrenör %70→%100, %5'lik
+   adımlar (hep 5'in katı: gecikme ölçüm önbelleğiyle birebir), adım başına 2 tekrar.
+   - **Madde 4 (mikser ön ayarları + hafıza) YAPILDI (2026-10-01), telefonda
+     doğrulanmadı.** `mixmemory.js` (saf, `tests/mixmemory_test.mjs`). Anahtar
+     `stem-mikser.mix.<songId>` (stems_version'a BAĞLI DEĞİL), biçim
+     `{v:1, master, stems:{ad:{fader,mute,solo}}}`; bilinmeyen ad atlanır, eksik ad
+     varsayılan (Aşama 10 alt kanalları eski kaydı bozmaz). Solo+mute aynı kanalda:
+     mute kazanır, solo yine sayılır (tek solo ise hepsi susar). Varsayılana dönünce
+     kayıt silinir; `loop` alanı yeniden yazımda korunur (Madde 1 ekleyecek;
+     geri yüklenince döngü KAPALI, A-B işaretleri görünür, tek dokunuşla açılır).
+     SW v27.
+   - **NOT (Madde 1):** dikiş gain çukuru esneticiden SONRA olduğu için girişteki
+     dikiş anına değil, ÇIKIŞTAKİ dikiş anına (`songToCtx` ile, D dahil) zamanlanmalı.
+     Bypass'ta D = 0. Hiza testinde çukurun gerçek dikişe denk geldiği ölçülsün.
+   - **NOT (Madde 2):** dikiş + hız değişimindeki ≤D'lik geçiş bölgesi kulakta kötü
+     çıkarsa, "hızı yalnız yeniden başlatma kipinde değiştir" çözümüne geçmeden
+     önce bak: esnetici parametre değişikliğini belirli bir ses saati anına
+     zamanlayabiliyor mu? Kaynak hızı giriş dikişinde, ton düzeltmesi çıkış
+     dikişinde (dikiş + D) değişirse geçiş bölgesi tamamen kalkabilir.
 8. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
 
 ### Sonra (şimdilik gerek yok)

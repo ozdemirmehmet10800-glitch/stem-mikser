@@ -273,6 +273,33 @@ html, body {
 }
 .chord-cell.none { color: var(--text-faint); font-weight: 500; }
 
+/* ---------- mikser ön ayarları ---------- */
+
+.mix-bar { display: flex; align-items: center; gap: 8px; padding: 4px 0 6px; }
+.mix-presets { display: flex; gap: 8px; overflow-x: auto; flex: 1; scrollbar-width: none; }
+.mix-presets::-webkit-scrollbar { display: none; }
+.mix-bar .chip {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding: 7px 12px;
+  min-height: 36px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.mix-bar .chip:disabled { opacity: 0.35; }
+.mix-notice {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 4px 6px; font-size: 13px; color: var(--text-dim);
+}
+.mix-notice[hidden] { display: none; }
+.mix-notice button {
+  background: none; border: 0; color: var(--accent); font: inherit; padding: 6px 4px;
+}
+
 /* ---------- kanallar ---------- */
 
 .channels {

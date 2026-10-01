@@ -149,7 +149,23 @@ export class Mixer {
     this.refresh();
   }
 
-  refresh() {
+  // Motor durumunu (fader, solo, mute) arayüze yansıtır. Fader ve dB metni
+  // yalnız kullanıcı sürüklerken yazılıyordu; kayıttan/ön ayardan gelen durum
+  // için buradan. onChange'i ÇAĞIRMAZ (geri yükleme kayıt tetiklemesin).
+  syncFromEngine() {
+    for (const [name, parts] of this.rows) {
+      const channel = this.engine.channels.get(name);
+      if (!channel) continue;
+      const percent = Math.round(channel.fader * 100);
+      const text = `${gainToDb(channel.fader)} dB`;
+      parts.fader.set(percent, false);
+      parts.db.textContent = text;
+      parts.fader.setValueText(`%${percent}, ${text}`);
+    }
+    this.refresh(false);
+  }
+
+  refresh(notify = true) {
     for (const [name, parts] of this.rows) {
       const channel = this.engine.channels.get(name);
       if (!channel) continue;
@@ -157,6 +173,6 @@ export class Mixer {
       parts.mute.classList.toggle("on-mute", channel.mute);
       parts.row.classList.toggle("audible", this.engine.isAudible(name));
     }
-    if (this.onChange) this.onChange();
+    if (notify && this.onChange) this.onChange();
   }
 }
