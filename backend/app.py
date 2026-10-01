@@ -887,7 +887,12 @@ def _hifi_demix(model, mix, config: dict, device: str = "cuda",
         mix = F.pad(mix, (border, border), mode="reflect")
 
     window_template = _hifi_window(chunk_size, fade_size, device)
-    num_stems = int(config["model"].get("num_stems", 1))
+    # roformer: model.num_stems; MDX23C: model'de yok, çıkış sayısı instruments'ın
+    # uzunluğu (Aşama 10 davul). Hi-Fi/karaoke config'leri num_stems veriyor:
+    # davranışları DEĞİŞMEDİ.
+    model_cfg = config["model"]
+    num_stems = int(model_cfg.get("num_stems")
+                    or len((config.get("training") or {}).get("instruments") or [1]))
     result = torch.zeros((num_stems,) + tuple(mix.shape), dtype=torch.float32,
                          device=device)
     counter = torch.zeros(mix.shape[-1], dtype=torch.float32, device=device)
@@ -1697,6 +1702,7 @@ SUB_EXCERPT_SECONDS = 10.0
 SUB_EXCERPT_GAP = 1.0
 SUB_EXCERPT_FADE = 0.020
 SUB_PATHS = ("stem", "mix")
+SUB_DRUM_OVERLAP = 4     # MDX23C config inference.num_overlap (config değeri)
 
 # --- Üretim kapıları (PLAN.md Aşama 10, ölçümle onaylı) ---------------------
 # 1) "Vokal yok": SW vokal RMS < -50 dBFS => model ÇALIŞMAZ, GPU açılmaz. Bu
@@ -1711,6 +1717,42 @@ SUB_LEAD_UNRELIABLE = 0.10
 SUB_LEAD_WARN = 0.50
 SUB_RUNNING_STALE_SECONDS = 2400     # bundan uzun "running" = takılmış, yeniden denenebilir
 SUB_PART_NAMES = ("lead", "backing")
+
+# --- Gruplar (Aşama 10): her ana kanalın KENDİ durumu, KENDİ dosyaları ---------
+# vocals: durum `status.sub` (eski ad, canlıdaki istemciler bunu okuyor; DEĞİŞMEDİ)
+# drums : durum `status.sub_drums`
+# Dosyalar ortak dizinde (`master/sub`, `stems/sub`), adları farklı: bir grubun
+# yazımı/yeniden koşumu ötekinin dosyasına ve durumuna DOKUNMAZ.
+SUB_DRUM_PARTS = ("kick", "snare", "toms", "hihat", "cymbals", "drumsother")
+SUB_GROUP_CFG = {
+    "vocals": {"stem": "vocals", "key": "sub", "parts": SUB_PART_NAMES},
+    "drums": {"stem": "drums", "key": "sub_drums", "parts": SUB_DRUM_PARTS},
+}
+SUB_ALL_PARTS = tuple(name for cfg in SUB_GROUP_CFG.values() for name in cfg["parts"])
+# "Davul yok" kapısı (CPU, GPU açılmaz). Eşik canlı şarkıların davul
+# seviyelerinden türetildi (bkz. PLAN.md Aşama 10, oturum 4).
+SUB_DRUMS_SILENT_DBFS = -50.0
+
+# --- DrumSep MDX23C (aufr33 & jarredou), 6 çıkış: kick snare toms hh ride crash.
+# Orijinal kaynak (jarredou GitHub/HF) SİLİNMİŞ (404, 2026-10-01). İki BAĞIMSIZ
+# aynada checkpoint sha256'sı BİREBİR aynı (Sucial/MSST-WebUI, lainlives/audio-
+# separator-models), SW modelindekiyle aynı mantık: aynı hash = orijinal dosya.
+# Lisans BELİRSİZ, kişisel kullanım: NOTICE.md.
+SUB_DRUM_CKPT = "drumsep_mdx23c_aufr33_jarredou.ckpt"
+SUB_DRUM_CKPT_URL = ("https://huggingface.co/Sucial/MSST-WebUI/resolve/"
+                     "90b617b15bd0dc0b784f3d361faca1b51173fe44/All_Models/multi_stem_models/"
+                     "aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.ckpt")
+SUB_DRUM_CKPT_SHA256 = "d2a4aa53eb584d21eead358a4e66d1882ad182911be018f052b5da73be9096d0"
+SUB_DRUM_CKPT_BYTES = 437652699
+SUB_DRUM_YAML = "drumsep_mdx23c_aufr33_jarredou.yaml"
+SUB_DRUM_YAML_URL = ("https://huggingface.co/lainlives/audio-separator-models/resolve/"
+                     "3b39120409f3c2d50e9cc4c391f4169131e9d643/"
+                     "aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.yaml")
+SUB_DRUM_YAML_SHA256 = "440a13f67461b2cdad2bb1cb86c08ff27a8ec53093c4a24d4d7fc2c19cb9f5f5"
+SUB_DRUM_YAML_BYTES = 2417
+# Model çıkışları (config.training.instruments, küçük harf) -> parça adları.
+# ride + crash SUNUCUDA tek "cymbals"; drumsother = davul - (hepsinin toplamı).
+SUB_DRUM_MODEL_OUTPUTS = ("kick", "snare", "toms", "hh", "ride", "crash")
 
 
 def _sub_lead_share(lead_rel_db: float, backing_rel_db: float) -> float:
@@ -1770,13 +1812,18 @@ def _sub_vocal_level(path: pathlib.Path) -> float:
     return _parse_astats_rms(proc.stderr.decode("utf-8", "replace"))
 
 
-def _sub_is_running(status) -> bool:
-    """Alt ayrım sürüyor mu? Çok uzun süredir 'running' ise TAKILMIŞ sayılır."""
-    sub = (status or {}).get("sub") or {}
-    if sub.get("state") != "running":
-        return False
-    started = float(sub.get("started") or 0)
-    return (time.time() - started) < SUB_RUNNING_STALE_SECONDS
+def _sub_is_running(status, group=None) -> bool:
+    """Alt ayrım sürüyor mu? (group verilmezse HERHANGİ bir grup.) Çok uzun
+    süredir 'running' ise TAKILMIŞ sayılır."""
+    groups = [group] if group else list(SUB_GROUP_CFG)
+    for name in groups:
+        sub = (status or {}).get(SUB_GROUP_CFG[name]["key"]) or {}
+        if sub.get("state") != "running":
+            continue
+        started = float(sub.get("started") or 0)
+        if (time.time() - started) < SUB_RUNNING_STALE_SECONDS:
+            return True
+    return False
 
 
 def _sub_drop(song_id: str) -> bool:
@@ -1794,14 +1841,26 @@ def _sub_drop(song_id: str) -> bool:
     status_path = song_dir / "status.json"
     if status_path.is_file():
         data = json.loads(status_path.read_text(encoding="utf-8"))
-        if "sub" in data:
-            data.pop("sub")
+        dropped = False
+        for cfg in SUB_GROUP_CFG.values():          # TÜM gruplar (vokal + davul)
+            if cfg["key"] in data:
+                data.pop(cfg["key"])
+                dropped = True
+        if dropped:
             status_path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
                                    encoding="utf-8")
             removed = True
     if removed:
         volume.commit()
     return removed
+
+
+def _sub_remove_part_files(song_id: str, parts) -> None:
+    """YALNIZ verilen parçaların dosyaları (öteki grubun dosyalarına dokunma)."""
+    song_dir = _song_dir(song_id)
+    for name in parts:
+        (song_dir / "master" / "sub" / f"{name}.flac").unlink(missing_ok=True)
+        (song_dir / "stems" / "sub" / f"{name}.m4a").unlink(missing_ok=True)
 
 # GPU imajı. Hi-Fi `separate_image`ından AYRI: Mel-Band Roformer'ın mel filtre
 # bankası librosa istiyor ve canlı imaja (demucs ağırlığını build'de gömen,
@@ -1818,10 +1877,13 @@ sub_image = (
         "einops==0.8.2",
         "rotary-embedding-torch==0.9.1",
         "beartype==0.19.0",
-        "librosa==0.11.0",         # yalnız mel filtre bankası için (filters)
+        "librosa==0.11.0",         # mel filtre bankası + davul metriği (HPSS)
         "numba==0.62.1",
         "PyYAML==6.0.2",
         "tqdm==4.67.1",
+        # MDX23C (davul): utils.model_utils import ediyor ve config'i ConfigDict
+        # (öznitelik erişimi) olarak bekliyor. experiment.py imajıyla AYNI sürüm.
+        "ml-collections==1.0.0",
     )
     .add_local_dir(MSST_LOCAL, MSST_DIR)
 )
@@ -2046,8 +2108,9 @@ def _sub_produce(song_id: str, status: dict, vocal, lead, backing, metrics: dict
         "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     song_dir = _song_dir(song_id)
-    for part in (song_dir / "master" / "sub", song_dir / "stems" / "sub"):
-        shutil.rmtree(part, ignore_errors=True)       # yeniden koşumda eski dosyalar kalmasın
+    # Yeniden koşumda eski dosyalar kalmasın; YALNIZ vokal parçaları (davul
+    # grubunun dosyaları ve durumu korunur).
+    _sub_remove_part_files(song_id, SUB_PART_NAMES)
 
     if gate == "unreliable":
         sub = {**base, "state": "unreliable", "parts": {}}
@@ -2083,7 +2146,8 @@ def _sub_produce(song_id: str, status: dict, vocal, lead, backing, metrics: dict
     max_containers=1,       # min_containers YOK: boştayken maliyet sıfır
 )
 def separate_sub(song_id: str, paths: str = "stem", overlap: int = SUB_OVERLAP,
-                 experiment: bool = False, production: bool = False) -> dict:
+                 experiment: bool = False, production: bool = False,
+                 group: str = "vocals") -> dict:
     """Vokali ana / arka vokale böler.
 
     paths: "stem" (SW vokal stem'i girdi), "mix" (tam karışım girdi) ya da
@@ -2105,17 +2169,23 @@ def separate_sub(song_id: str, paths: str = "stem", overlap: int = SUB_OVERLAP,
     """
     global _SUB_FIRST_CALL
 
+    if group not in SUB_GROUP_CFG:
+        raise ValueError(f"bilinmeyen grup: {group!r}")
+    key = SUB_GROUP_CFG[group]["key"]
     if production:
         try:
+            if group == "drums":
+                return _separate_sub_drums_impl(song_id, overlap, True)
             return _separate_sub_impl(song_id, "stem", overlap, False, True)
         except Exception as error:     # durumu "çalışıyor"da bırakma
             with contextlib.suppress(Exception):
                 volume.reload()
-                _write_status(song_id, sub={"state": "error",
-                                            "error": str(error)[:300],
-                                            "finished_at": time.strftime(
-                                                "%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+                _write_status(song_id, **{key: {
+                    "state": "error", "error": str(error)[:300],
+                    "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}})
             raise
+    if group == "drums":
+        return _separate_sub_drums_impl(song_id, overlap, False)
     return _separate_sub_impl(song_id, paths, overlap, experiment, False)
 
 
@@ -2212,6 +2282,323 @@ def _separate_sub_impl(song_id: str, paths: str, overlap: int, experiment: bool,
         "peak_vram_mb": round(float(torch.cuda.max_memory_allocated()) / 1024 ** 2, 1),
         "torch": str(torch.__version__).split("+")[0],
         "paths": out,
+    })
+
+
+# --------------------------------------------------------------------------
+# Davul alt ayrımı (Aşama 10, oturum 4): SW davul stem'i -> kick, snare, toms,
+# hihat, cymbals (ride + crash), drumsother (artık). CANLIYA BAĞLI DEĞİL.
+# --------------------------------------------------------------------------
+
+
+@app.function(
+    image=light_image,
+    volumes={DATA_DIR: volume},
+    timeout=3600,
+)
+def fetch_drum_weights() -> dict:
+    """DrumSep MDX23C ağırlığını Volume'a indirir ve sha256 doğrular.
+
+        modal run backend/app.py::drum_fetch
+
+    Geçici adla iner, doğrulanınca yerine konur; 438 MB parça parça yazılır.
+    """
+    import urllib.request
+
+    volume.reload()
+    target_dir = _sub_weights_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    report = {}
+    for name, url, sha, size in (
+        (SUB_DRUM_CKPT, SUB_DRUM_CKPT_URL, SUB_DRUM_CKPT_SHA256, SUB_DRUM_CKPT_BYTES),
+        (SUB_DRUM_YAML, SUB_DRUM_YAML_URL, SUB_DRUM_YAML_SHA256, SUB_DRUM_YAML_BYTES),
+    ):
+        target = target_dir / name
+        if target.exists():
+            try:
+                _verify_sha256(target, sha, size)
+                print(f"[atla] {name} zaten var ve dogrulandi")
+                report[name] = {"downloaded": False, "sha256": sha}
+                continue
+            except ValueError:
+                print(f"[yeniden] {name} dogrulanamadi, tekrar iniyor")
+        partial = target_dir / (name + ".part")
+        print(f"[indir] {name} <- {url}")
+        started = time.time()
+        with urllib.request.urlopen(url, timeout=600) as response, \
+                partial.open("wb") as handle:
+            while True:
+                block = response.read(8 * 1024 * 1024)
+                if not block:
+                    break
+                handle.write(block)
+        try:
+            _verify_sha256(partial, sha, size)
+        except ValueError:
+            partial.unlink(missing_ok=True)
+            raise
+        partial.replace(target)
+        print(f"[dogrulandi] {name} {round(time.time() - started, 1)} sn, sha256={sha}")
+        report[name] = {"downloaded": True, "bytes": int(target.stat().st_size)}
+    volume.commit()
+    return _assert_plain(report)
+
+
+@app.local_entrypoint()
+def drum_fetch():
+    print(json.dumps(fetch_drum_weights.remote(), ensure_ascii=False, indent=2))
+
+
+def _sub_load_drumsep():
+    """DrumSep MDX23C'yi yükler (cuda). Dönen: (model, config sözlüğü, çıkış adları, sn).
+
+    Config dönüşümü: MDX23C `config.audio.n_fft` gibi ÖZNİTELİK erişimi istiyor
+    (MSST ml_collections.ConfigDict veriyor); yükleyici dict döndürüyor, o yüzden
+    `ConfigDict`'e sarılıyor. `!!python/tuple` _load_hifi_config'te güvenli çözülüyor.
+    Yükleme STRICT: eksik/fazla anahtar hata verir.
+    """
+    import sys
+
+    import torch
+
+    weights = _sub_weights_dir()
+    ckpt = weights / SUB_DRUM_CKPT
+    config_path = weights / SUB_DRUM_YAML
+    if not ckpt.is_file() or not config_path.is_file():
+        raise FileNotFoundError(
+            f"DrumSep agirliklari yok: {ckpt}. "
+            f"'modal run backend/app.py::drum_fetch' calistirilmali."
+        )
+    started = time.time()
+    _verify_sha256(ckpt, SUB_DRUM_CKPT_SHA256, SUB_DRUM_CKPT_BYTES)
+    _verify_sha256(config_path, SUB_DRUM_YAML_SHA256, SUB_DRUM_YAML_BYTES)
+    config = _load_hifi_config(config_path)
+    if int(config["audio"]["sample_rate"]) != 44100:
+        raise ValueError(f"beklenmeyen ornekleme hizi: {config['audio']['sample_rate']}")
+    outputs = [str(item).lower() for item in config["training"]["instruments"]]
+    if tuple(outputs) != SUB_DRUM_MODEL_OUTPUTS:
+        raise ValueError(f"DrumSep cikislari beklenenden farkli: {outputs}")
+
+    if MSST_DIR not in sys.path:
+        sys.path.insert(0, MSST_DIR)
+    from ml_collections import ConfigDict
+    from models.mdx23c_tfc_tdf_v3 import TFC_TDF_net
+
+    model = TFC_TDF_net(ConfigDict(config))
+    state = torch.load(str(ckpt), map_location="cpu", weights_only=False)
+    if isinstance(state, dict):
+        for key in ("state_dict", "model", "model_state_dict"):
+            if key in state and isinstance(state[key], dict):
+                state = state[key]
+                break
+    if any(name.startswith("module.") for name in state):
+        state = {name.removeprefix("module."): value for name, value in state.items()}
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing or unexpected:
+        raise ValueError(f"DrumSep ckpt uyusmuyor: eksik={len(missing)} fazla={len(unexpected)} "
+                         f"(ilk eksikler: {missing[:3]})")
+    model.to("cuda")
+    model.eval()
+    seconds = round(time.time() - started, 2)
+    print(f"[sub] DrumSep modeli {seconds} sn'de hazir; ciktilar={outputs}")
+    return model, config, outputs, seconds
+
+
+def _sub_harmonic_shares(signals: dict, samplerate: int) -> dict:
+    """Her sinyalin HARMONİK (tonal) enerji payı (HPSS), 0-1.
+
+    Sızıntı göstergesi: davul stem'ine sızan piyano/müzik tonal olduğu için
+    harmonik payı yüksek. Hangi parçanın (kick/snare/.../drumsother) tonal
+    içerik taşıdığı buradan okunuyor. Aynı 8 parça (8 sn, eşit aralıklı) tüm
+    sinyallerde kullanılır; bir sinyalin enerjisi ihmal edilebilirse None.
+    """
+    import librosa
+    import numpy as np
+
+    length = min(array.shape[1] for array in signals.values())
+    segment = int(8 * samplerate)
+    count = 8
+    if length <= segment * 2:
+        starts = [0]
+        segment = length
+    else:
+        starts = [int(i * (length - segment) / (count - 1)) for i in range(count)]
+    out = {}
+    for name, array in signals.items():
+        mono = array.mean(axis=0)
+        harmonic = percussive = 0.0
+        for begin in starts:
+            piece = mono[begin:begin + segment].astype(np.float32)
+            magnitude = np.abs(librosa.stft(piece, n_fft=2048, hop_length=512))
+            h, p = librosa.decompose.hpss(magnitude, kernel_size=31, margin=1.0)
+            harmonic += float(np.sum(h.astype(np.float64) ** 2))
+            percussive += float(np.sum(p.astype(np.float64) ** 2))
+        total = harmonic + percussive
+        out[name] = round(harmonic / total, 4) if total > 1e-9 else None
+    return out
+
+
+def _sub_drum_metrics(drums, parts: dict, other, samplerate: int) -> dict:
+    """Parçaların davula göre seviyeleri, artık payı, toplam hatası, tonal pay."""
+    import numpy as np
+
+    drums_rms = _sub_rms(drums)
+    drums_power = drums_rms ** 2
+    levels = {}
+    for name, array in {**parts, "drumsother": other}.items():
+        rms = _sub_rms(array)
+        levels[name] = {
+            "rel_db": _sub_db(rms, drums_rms),
+            "power_share": round(float(rms ** 2 / drums_power), 4) if drums_power > 0 else 0.0,
+            "peak": round(float(abs(array).max()), 4),
+        }
+    total = sum(parts.values()) + other
+    err = total.astype(np.float64) - drums.astype(np.float64)
+    peak = max(float(abs(drums).max()), *(float(abs(a).max()) for a in parts.values()),
+               float(abs(other).max()))
+    scale = 1.0 / max(1.0, 1.01 * peak)
+
+    def quantize(x):
+        return np.round(x.astype(np.float64) * scale * 8388607.0) / 8388607.0
+
+    err_q = sum(quantize(a) for a in parts.values()) + quantize(other) - quantize(drums)
+    assigned = sum(v["power_share"] for k, v in levels.items() if k != "drumsother")
+    signals = {"drums": drums, **parts, "drumsother": other}
+    return {
+        "drums_rms_db": _sub_db(drums_rms, 1.0),
+        "levels": levels,
+        "assigned_power_share": round(assigned, 4),
+        "other_power_share": levels["drumsother"]["power_share"],
+        "sum_err_db": _sub_db(_sub_rms(err), drums_rms),
+        "sum_err_flac24_db": _sub_db(_sub_rms(err_q), drums_rms),
+        "harmonic_share": _sub_harmonic_shares(signals, samplerate),
+        "peak": round(peak, 4),
+    }
+
+
+def _sub_drum_gate(metrics: dict) -> str:
+    """Davul güvenilirlik kapısı. 'ok' (ŞİMDİLİK her zaman): eşik oturum 4 ölçümlerinden
+    sonra belirlenecek, bkz. PLAN.md."""
+    return "ok"
+
+
+def _sub_produce_drums(song_id: str, status: dict, drums, parts: dict, other, metrics: dict,
+                       seconds: dict) -> dict:
+    """Davul parçalarını yazar (yalnız davul dosyaları ve `status.sub_drums`)."""
+    import numpy as np
+    import soundfile as sf
+
+    gate = _sub_drum_gate(metrics)
+    base = {
+        "other_power_share": metrics["other_power_share"],
+        "sum_err_db": metrics["sum_err_db"],
+        "sum_err_flac24_db": metrics["sum_err_flac24_db"],
+        "levels": {k: v["rel_db"] for k, v in metrics["levels"].items()},
+        "parent_stems_version": status.get("stems_version"),
+        "parent_pipeline": status.get("pipeline"),
+        "model": {"name": "aufr33-jarredou DrumSep MDX23C", "ckpt_sha256": SUB_DRUM_CKPT_SHA256,
+                  "input": "stem", "overlap": SUB_DRUM_OVERLAP, "cymbals": "ride+crash"},
+        "seconds": seconds,
+        "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    song_dir = _song_dir(song_id)
+    _sub_remove_part_files(song_id, SUB_DRUM_PARTS)       # yalnız davul dosyaları
+    everything = {**parts, "drumsother": other}
+    peak = max(float(abs(a).max()) for a in everything.values())
+    scale = 1.0 if peak <= 1.0 else 1.0 / (1.01 * peak)
+    master_dir = song_dir / "master" / "sub"
+    stems_dir = song_dir / "stems" / "sub"
+    master_dir.mkdir(parents=True, exist_ok=True)
+    stems_dir.mkdir(parents=True, exist_ok=True)
+    for name in SUB_DRUM_PARTS:
+        flac_path = master_dir / f"{name}.flac"
+        sf.write(str(flac_path), (everything[name] * np.float32(scale)).T, 44100,
+                 subtype=FLAC_SUBTYPE, format="FLAC")
+        _encode_stem_m4a(flac_path, stems_dir / f"{name}.m4a", 2)
+    sub = {**base, "state": "done", "reliability": gate, "version": int(time.time()),
+           "clip_scale": round(scale, 6), "parts": {"drums": list(SUB_DRUM_PARTS)}}
+    _write_status(song_id, sub_drums=sub)
+    print(f"[sub] davul yazildi: artik payi {metrics['other_power_share']}, surum {sub['version']}")
+    return sub
+
+
+def _separate_sub_drums_impl(song_id: str, overlap: int, production: bool) -> dict:
+    """SW davul stem'ini alt parçalara böler. production=False: yalnız ölçüm,
+    HİÇBİR ŞEY yazılmaz."""
+    global _SUB_FIRST_CALL
+
+    import numpy as np
+    import soundfile as sf
+    import torch
+
+    call_started = time.time()
+    cold = _SUB_FIRST_CALL
+    boot_seconds = round(call_started - _SUB_CONTAINER_START, 2) if cold else 0.0
+    _SUB_FIRST_CALL = False
+    overlap = int(overlap)
+    if overlap < 1:
+        raise ValueError("overlap >= 1 olmali")
+
+    volume.reload()
+    status = json.loads((_song_dir(song_id) / "status.json").read_text(encoding="utf-8"))
+    drums_path = _song_dir(song_id) / "master" / "drums.flac"
+    if not drums_path.is_file():
+        raise FileNotFoundError(f"master/drums.flac yok: {song_id}")
+    data, rate = sf.read(str(drums_path), dtype="float32", always_2d=True)
+    if int(rate) != 44100:
+        raise ValueError(f"SW davul 44100 Hz bekleniyordu: {rate}")
+    drums = np.ascontiguousarray(data.T)
+    duration = drums.shape[1] / 44100.0
+
+    model, config, outputs, load_seconds = _sub_load_drumsep()
+    torch.cuda.reset_peak_memory_stats()
+    infer_started = time.time()
+    estimated = _hifi_demix(model, drums, config, overlap=overlap)
+    infer_seconds = round(time.time() - infer_started, 2)
+    del model
+    torch.cuda.empty_cache()
+
+    by_output = {name: estimated[index].astype(np.float32) for index, name in enumerate(outputs)}
+    length = min(drums.shape[1], *(a.shape[1] for a in by_output.values()))
+    drums = drums[:, :length]
+    parts = {
+        "kick": by_output["kick"][:, :length],
+        "snare": by_output["snare"][:, :length],
+        "toms": by_output["toms"][:, :length],
+        "hihat": by_output["hh"][:, :length],
+        # ride + crash SUNUCUDA tek kanal
+        "cymbals": (by_output["ride"][:, :length] + by_output["crash"][:, :length]),
+    }
+    other = (drums - sum(parts.values())).astype(np.float32)
+    del estimated, by_output
+
+    metrics = _sub_drum_metrics(drums, parts, other, 44100)
+    metrics["infer_s"] = infer_seconds
+    metrics["realtime_x"] = round(duration / infer_seconds, 2) if infer_seconds else 0.0
+    print(f"[sub] davul: {infer_seconds} sn (gercek zamanin {metrics['realtime_x']}x), "
+          f"artik payi {metrics['other_power_share']}, toplam hata {metrics['sum_err_db']} dB")
+    if production:
+        metrics["production"] = _sub_produce_drums(
+            song_id, status, drums, parts, other, metrics,
+            {"model_load": load_seconds, "infer": infer_seconds})
+
+    wall = round(time.time() - call_started, 2)
+    billed = round(wall + boot_seconds, 2)
+    return _assert_plain({
+        "song_id": song_id,
+        "title": str(status.get("title") or song_id[:12]),
+        "group": "drums",
+        "duration": round(duration, 2),
+        "overlap": overlap,
+        "cold_start": bool(cold),
+        "boot_s": boot_seconds,
+        "model_load_s": load_seconds,
+        "wall_s": wall,
+        "billed_estimate_s": billed,
+        "cost_usd_estimate": round(billed * SUB_USD_PER_SECOND, 4),
+        "peak_vram_mb": round(float(torch.cuda.max_memory_allocated()) / 1024 ** 2, 1),
+        "torch": str(torch.__version__).split("+")[0],
+        "metrics": metrics,
     })
 
 
@@ -2523,8 +2910,8 @@ def _print_sub_result(result: dict):
 
 
 @app.function(image=sub_cpu_image, volumes={DATA_DIR: volume}, timeout=900, memory=8192)
-def sub_levels() -> list:
-    """Her KAYNAK şarkının SW vokal stem'inin seviyesi (GPU yok, model yok).
+def sub_levels(stem: str = "vocals") -> list:
+    """Her KAYNAK şarkının SW `stem` ("vocals" | "drums") seviyesi (GPU yok, model yok).
 
     `vokal yok` kapısının eşiğini canlı kitaplıktan türetmek için. Dönen her
     kayıt: kimlik, başlık, süre, RMS ve tepe (dBFS), 2 sn pencerelerin %95'lik
@@ -2538,7 +2925,7 @@ def sub_levels() -> list:
     found = []
     for entry in sorted(root.iterdir()) if root.is_dir() else []:
         status_path = entry / "status.json"
-        vocal_path = entry / "master" / "vocals.flac"
+        vocal_path = entry / "master" / f"{stem}.flac"
         if not status_path.is_file() or not vocal_path.is_file():
             continue
         try:
@@ -2698,6 +3085,150 @@ def sub_files(song: str = "Zeus"):
         print(needle, json.dumps(sub_files_check.remote(song_id), ensure_ascii=False, indent=1))
 
 
+@app.local_entrypoint()
+def drum_validate(skip: str = "", silent_below: float = -70.0, min_seconds: float = 10.0,
+                  overlap: int = SUB_DRUM_OVERLAP, dry: bool = False):
+    """Davul alt ayrımı ölçümü: kesitsiz, yalnız metrik, HİÇBİR ŞEY yazılmaz.
+
+        modal run backend/app.py::drum_validate --dry      # yalnız davul seviyeleri (CPU)
+        modal run backend/app.py::drum_validate
+
+    Davul RMS'i `silent_below` dBFS altındaysa (ya da şarkı `min_seconds`'tan
+    kısaysa) model ÇALIŞTIRILMAZ. Sonuç: backend/sub_out/drum_validate.json.
+    """
+    levels = sub_levels.remote("drums")
+    skips = [item.strip().lower() for item in skip.split(",") if item.strip()]
+    print(f"{'baslik':44} {'sure':>6} {'RMS':>8} {'tepe':>7} {'p95':>7} {'>-50':>9}")
+    for item in levels:
+        print(f"{item['title'][:44]:44} {item['duration']:6.1f} {item['rms_dbfs']:8.1f} "
+              f"{item['peak_dbfs']:7.1f} {item['p95_window_dbfs']:7.1f} "
+              f"{item['windows_over_m50']:4}/{item['windows']:<4}")
+    out_dir = pathlib.Path(__file__).resolve().parent / "sub_out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results = {"levels": levels, "runs": {}, "skipped_silent": [], "skipped_other": []}
+    path = out_dir / "drum_validate.json"
+    if dry:
+        path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+        return
+
+    total_cost = 0.0
+    for item in levels:
+        title = item["title"]
+        if any(needle in title.lower() for needle in skips):
+            results["skipped_other"].append(title)
+            continue
+        if item["rms_dbfs"] < silent_below or item["duration"] < min_seconds:
+            print(f"[atla] {title[:40]}: davul RMS {item['rms_dbfs']} dBFS / "
+                  f"{item['duration']} sn -> model calistirilmadi")
+            results["skipped_silent"].append(title)
+            continue
+        print(f"\n--- {title} ---")
+        run = separate_sub.remote(item["id"], "stem", overlap, False, False, "drums")
+        m = run["metrics"]
+        results["runs"][item["id"]] = {"title": title, "drums_rms_dbfs": item["rms_dbfs"], **{
+            k: run[k] for k in ("duration", "overlap", "cold_start", "model_load_s", "wall_s",
+                                "billed_estimate_s", "cost_usd_estimate", "peak_vram_mb")},
+            "infer_s": m["infer_s"], "realtime_x": m["realtime_x"], "levels": m["levels"],
+            "other_power_share": m["other_power_share"], "assigned_power_share": m["assigned_power_share"],
+            "sum_err_db": m["sum_err_db"], "sum_err_flac24_db": m["sum_err_flac24_db"],
+            "harmonic_share": m["harmonic_share"]}
+        total_cost += run["cost_usd_estimate"]
+        levels_text = ", ".join(f"{k} {v['rel_db']}" for k, v in m["levels"].items())
+        print(f"  {run['duration']} sn, overlap {run['overlap']}, "
+              f"{'SOGUK' if run['cold_start'] else 'sicak'}, model {run['model_load_s']} sn, "
+              f"cikarim {m['infer_s']} sn ({m['realtime_x']}x), toplam {run['wall_s']} sn, "
+              f"VRAM {run['peak_vram_mb']} MB, ~${run['cost_usd_estimate']}")
+        print(f"  davula gore dB: {levels_text}")
+        print(f"  ARTIK (drumsother) guc payi {m['other_power_share']}, atanan toplam {m['assigned_power_share']}, "
+              f"toplam hata {m['sum_err_db']} dB (FLAC24 {m['sum_err_flac24_db']} dB)")
+        print(f"  tonal (harmonik) pay: {m['harmonic_share']}")
+        path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"\nToplam maliyet tahmini: ${total_cost:.3f}")
+    path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+@app.function(image=light_image, volumes={DATA_DIR: volume}, timeout=600)
+def sub_probe_clone(song_id: str) -> dict:
+    """Bir şarkının KLONU (`<id>-dpt`): master vokal/davul + alt parçalar + status.
+
+    Davul üretim yolunun vokal alt ayrımını bozmadığını CANLI şarkıya dokunmadan
+    denemek için. Klon `source_song` taşır; `sub_cleanup` siler.
+    """
+    volume.reload()
+    source = _song_dir(song_id)
+    clone_id = song_id + "-dpt"
+    target = _song_dir(clone_id)
+    shutil.rmtree(target, ignore_errors=True)
+    (target / "master").mkdir(parents=True)
+    for name in ("vocals.flac", "drums.flac"):
+        shutil.copyfile(source / "master" / name, target / "master" / name)
+    for sub_dir in (("master", "sub"), ("stems", "sub")):
+        if (source.joinpath(*sub_dir)).is_dir():
+            shutil.copytree(source.joinpath(*sub_dir), target.joinpath(*sub_dir))
+    data = json.loads((source / "status.json").read_text(encoding="utf-8"))
+    data.update({"id": clone_id, "source_song": song_id,
+                 "title": "[dpt] " + str(data.get("title") or "")})
+    (target / "status.json").write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                                        encoding="utf-8")
+    volume.commit()
+    return _assert_plain({"clone": clone_id})
+
+
+@app.function(image=light_image, volumes={DATA_DIR: volume}, timeout=300)
+def sub_probe_state(song_id: str) -> dict:
+    """Alt parça dosyalarının sha256'sı ve iki grubun durumu (okuma)."""
+    volume.reload()
+    base = _song_dir(song_id)
+    files = {}
+    for sub_dir in (("master", "sub"), ("stems", "sub")):
+        folder = base.joinpath(*sub_dir)
+        if folder.is_dir():
+            for path in sorted(folder.iterdir()):
+                files["/".join(sub_dir) + "/" + path.name] = hashlib.sha256(
+                    path.read_bytes()).hexdigest()[:16]
+    status = json.loads((base / "status.json").read_text(encoding="utf-8"))
+    brief = lambda sub: None if not sub else {  # noqa: E731
+        k: sub.get(k) for k in ("state", "version", "reliability", "lead_share",
+                                "other_power_share", "parent_stems_version")}
+    return _assert_plain({"files": files, "sub": brief(status.get("sub")),
+                          "sub_drums": brief(status.get("sub_drums")),
+                          "stems_version": status.get("stems_version"),
+                          "pipeline": status.get("pipeline")})
+
+
+@app.local_entrypoint()
+def drum_coexist(song: str = "Zeus"):
+    """Davul üretim yolu, VOKAL alt ayrımı yapılmış bir şarkının KLONUNDA: vokal
+    dosyaları ve durumu birebir kalmalı. Klon sonda silinir."""
+    found = sub_find.remote([song])
+    if song not in found:
+        raise SystemExit(f"'{song}' bulunamadi")
+    source_id, title = found[song]
+    print(f"kaynak: {title}")
+    clone = sub_probe_clone.remote(source_id)["clone"]
+    try:
+        before = sub_probe_state.remote(clone)
+        print("once :", json.dumps(before, ensure_ascii=False))
+        run = separate_sub.remote(clone, "stem", SUB_DRUM_OVERLAP, False, True, "drums")
+        print(f"davul koştu: {run['wall_s']} sn, ~${run['cost_usd_estimate']}, "
+              f"durum {run['metrics']['production']['state']}")
+        after = sub_probe_state.remote(clone)
+        print("sonra:", json.dumps(after, ensure_ascii=False))
+        vocal_files = [k for k in before["files"] if any(
+            k.endswith(f"/{name}.flac") or k.endswith(f"/{name}.m4a") for name in SUB_PART_NAMES)]
+        same_files = all(after["files"].get(k) == before["files"][k] for k in vocal_files)
+        print(f"vokal dosyalari ({len(vocal_files)}) ayni: {same_files}")
+        print(f"vokal durumu (status.sub) ayni: {after['sub'] == before['sub']}")
+        print(f"stems_version/pipeline ayni: "
+              f"{after['stems_version'] == before['stems_version'] and after['pipeline'] == before['pipeline']}")
+        print(f"davul parcalari yazildi: "
+              f"{sorted(k for k in after['files'] if k.endswith('.m4a') and not any(k.endswith('/' + n + '.m4a') for n in SUB_PART_NAMES))}")
+        print(f"davul durumu: {after['sub_drums']}")
+        # Tersi: vokal yeniden yazımı davul dosyalarını bozmaz (parça dosyaları ayrı silinir).
+    finally:
+        print(json.dumps(sub_cleanup_run.remote(dry_run=False, only=source_id), ensure_ascii=False))
+
+
 @app.function(image=sub_cpu_image, volumes={DATA_DIR: volume}, timeout=300)
 def sub_cleanup_run(dry_run: bool = True, only: str = "") -> dict:
     """`<id>-sb<harf>s` kesit şarkılarını ve /data/sub-exp'i siler.
@@ -2707,7 +3238,7 @@ def sub_cleanup_run(dry_run: bool = True, only: str = "") -> dict:
     """
     volume.reload()
     root = pathlib.Path(DATA_DIR) / "songs"
-    pattern = re.compile(r"^[0-9a-f]{64}-sb[a-z]s$")
+    pattern = re.compile(r"^[0-9a-f]{64}-(sb[a-z]s|dpt)$")   # kesitler + davul probe klonu
     removed = []
     for entry in sorted(root.iterdir()) if root.is_dir() else []:
         if not pattern.match(entry.name):
@@ -4070,6 +4601,8 @@ def api():
                         "pipeline": data.get("pipeline"),
                         "sub_state": (data.get("sub") or {}).get("state"),
                         "sub_version": (data.get("sub") or {}).get("version"),
+                        "sub_drums_state": (data.get("sub_drums") or {}).get("state"),
+                        "sub_drums_version": (data.get("sub_drums") or {}).get("version"),
                     }
                 )
             return found
@@ -4138,50 +4671,60 @@ def api():
         """Alt parça (Aşama 10). Yalnız bilinen adlar: yol dışarı çıkamaz."""
         if not _is_valid_song_id(song_id):
             raise HTTPException(status_code=400, detail="Gecersiz sarki kimligi")
-        if name not in SUB_PART_NAMES:
+        if name not in SUB_ALL_PARTS:
             raise HTTPException(status_code=400, detail="Gecersiz alt parca adi")
         return await serve_m4a(_song_dir(song_id) / "stems" / "sub" / f"{name}.m4a", request)
 
     @web.post("/songs/{song_id}/sub")
-    async def start_sub(song_id: str, _=auth):
-        """Vokali ana/arka olarak böler (istek üzerine).
+    async def start_sub(song_id: str, group: str = "vocals", _=auth):
+        """Bir ana kanalı alt parçalara böler (istek üzerine): group=vocals|drums.
 
-        Sıra: CPU'da "vokal yok" kontrolü (GPU AÇILMAZ), sonra GPU işi. Sonuç
-        `status.sub`'da; mevcut durum yoklaması onu okur.
+        Sıra: CPU'da "vokal/davul yok" kontrolü (GPU AÇILMAZ), sonra GPU işi. Her
+        grubun durumu AYRI: vokal `status.sub`, davul `status.sub_drums`; biri
+        ötekinin durumuna ve dosyalarına dokunmaz. Mevcut durum yoklaması okur.
         """
+        if group not in SUB_GROUP_CFG:
+            raise HTTPException(status_code=400, detail="Gecersiz grup")
+        cfg = SUB_GROUP_CFG[group]
         await gate.refresh(force=True)
         status = await require_status(song_id)
         if status.get("state") != "done" or not status.get("stems"):
             raise HTTPException(status_code=409, detail="Sarki henuz hazir degil")
-        sub = status.get("sub") or {}
-        if _sub_is_running(status):
-            return {"id": song_id, "state": "running", "existing": True}
-        if sub.get("state") in ("done", "unreliable", "no_vocals"):
-            return {"id": song_id, "state": sub["state"], "existing": True}
+        sub = status.get(cfg["key"]) or {}
+        if _sub_is_running(status, group):
+            return {"id": song_id, "group": group, "state": "running", "existing": True}
+        if sub.get("state") in ("done", "unreliable", "no_vocals", "no_drums"):
+            return {"id": song_id, "group": group, "state": sub["state"], "existing": True}
 
-        vocal_path = _song_dir(song_id) / "master" / "vocals.flac"
-        if not await asyncio.to_thread(vocal_path.exists):
-            raise HTTPException(status_code=409, detail="Vokal stem'i yok")
+        stem_path = _song_dir(song_id) / "master" / f"{cfg['stem']}.flac"
+        if not await asyncio.to_thread(stem_path.exists):
+            raise HTTPException(status_code=409, detail=f"{cfg['stem']} stem'i yok")
         async with gate.reading():
-            level = await asyncio.to_thread(_sub_vocal_level, vocal_path)
+            level = await asyncio.to_thread(_sub_vocal_level, stem_path)
         level = round(level, 2)
 
-        if _sub_vocal_gate(level) == "no_vocals":
-            record = {"state": "no_vocals", "vocal_rms_dbfs": level,
+        silent_state = "no_vocals" if group == "vocals" else "no_drums"
+        silent_floor = SUB_SILENT_DBFS if group == "vocals" else SUB_DRUMS_SILENT_DBFS
+        if level < silent_floor:
+            record = {"state": silent_state, "rms_dbfs": level,
                       "parent_stems_version": status.get("stems_version"),
                       "parent_pipeline": status.get("pipeline"),
-                      "thresholds": {"silent_dbfs": SUB_SILENT_DBFS},
+                      "thresholds": {"silent_dbfs": silent_floor},
                       "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-            await asyncio.to_thread(_write_status, song_id, sub=record)
-            return {"id": song_id, "state": "no_vocals", "vocal_rms_dbfs": level}
+            if group == "vocals":
+                record["vocal_rms_dbfs"] = level           # eski alan adı (istemci uyumu)
+            await asyncio.to_thread(_write_status, song_id, **{cfg["key"]: record})
+            return {"id": song_id, "group": group, "state": silent_state, "rms_dbfs": level,
+                    **({"vocal_rms_dbfs": level} if group == "vocals" else {})}
 
         await asyncio.to_thread(
             _write_status, song_id,
-            sub={"state": "running", "started": int(time.time()), "vocal_rms_dbfs": level},
+            **{cfg["key"]: {"state": "running", "started": int(time.time()), "rms_dbfs": level}},
         )
-        call = separate_sub.spawn(song_id, "stem", SUB_OVERLAP, False, True)
-        return {"id": song_id, "state": "running", "call_id": str(call.object_id),
-                "vocal_rms_dbfs": level}
+        call = separate_sub.spawn(song_id, "stem", SUB_OVERLAP, False, True, group)
+        return {"id": song_id, "group": group, "state": "running",
+                "call_id": str(call.object_id), "rms_dbfs": level,
+                **({"vocal_rms_dbfs": level} if group == "vocals" else {})}
 
     # ---------------- imzalı indirme ----------------------------------------
 

@@ -66,7 +66,7 @@ class FakeVolume:
         self.reload = AioCallable()
 
 
-LEVELS = {}     # kimlik -> sahte vokal RMS (dBFS)
+LEVELS = {}     # (kimlik, stem) -> sahte RMS (dBFS)
 
 
 def make_wav_flac(path: pathlib.Path, amplitude: float):
@@ -75,10 +75,13 @@ def make_wav_flac(path: pathlib.Path, amplitude: float):
     path.write_bytes(b"fLaC-yer-tutucu")
 
 
-def make_song(root, song_id, amplitude, state="done", sub=None):
+def make_song(root, song_id, amplitude, state="done", sub=None, drums_amplitude=None, extra=None):
     base = pathlib.Path(root) / "songs" / song_id
-    LEVELS[song_id] = -200.0 if amplitude == 0 else -20.0
+    LEVELS[(song_id, "vocals")] = -200.0 if amplitude == 0 else -20.0
+    drums_amp = amplitude if drums_amplitude is None else drums_amplitude
+    LEVELS[(song_id, "drums")] = -200.0 if drums_amp == 0 else -20.0
     make_wav_flac(base / "master" / "vocals.flac", amplitude)
+    make_wav_flac(base / "master" / "drums.flac", drums_amp)
     (base / "stems").mkdir(parents=True, exist_ok=True)
     (base / "stems" / "vocals.m4a").write_bytes(b"ana")
     status = {"id": song_id, "title": "Test " + song_id[:4], "state": state,
@@ -86,6 +89,7 @@ def make_song(root, song_id, amplitude, state="done", sub=None):
               "created_at": "2026-10-01T00:00:00Z", "duration": 2.0}
     if sub is not None:
         status["sub"] = sub
+    status.update(extra or {})
     (base / "status.json").write_text(json.dumps(status), encoding="utf-8")
     return base
 
@@ -108,7 +112,7 @@ def main():
     reprocess_spawner = FakeSpawner()
     app.separate_sub = spawner
     app.separate = reprocess_spawner
-    app._sub_vocal_level = lambda path: LEVELS[path.parent.parent.name]
+    app._sub_vocal_level = lambda path: LEVELS[(path.parent.parent.name, path.stem)]
 
     web = app.api.get_raw_f()()
     client = TestClient(web)
@@ -160,7 +164,7 @@ def main():
     check("vokal var: 200 + running", response.status_code == 200 and body["state"] == "running", str(body))
     check("vokal var: seviye makul (> -50)", body.get("vocal_rms_dbfs", -200) > -50, str(body.get("vocal_rms_dbfs")))
     check("vokal var: separate_sub 1 kez, uretim modunda",
-          len(spawner.calls) == 1 and spawner.calls[0] == (LOUD, "stem", app.SUB_OVERLAP, False, True),
+          len(spawner.calls) == 1 and spawner.calls[0] == (LOUD, "stem", app.SUB_OVERLAP, False, True, "vocals"),
           str(spawner.calls))
     saved = json.loads((pathlib.Path(tmp) / "songs" / LOUD / "status.json").read_text("utf-8"))
     check("vokal var: status.sub running + started",
@@ -224,6 +228,59 @@ def main():
     check("ana stem yolu degismedi", client.get(f"/songs/{LOUD}/stems/vocals.m4a", headers=H).content == b"ana")
     check("ana stem'e sub adi uymaz",
           client.get(f"/songs/{LOUD}/stems/lead.m4a", headers=H).status_code == 404)
+
+    # --- DAVUL grubu (Asama 10 oturum 4): her grubun KENDI durumu
+    before_calls = len(spawner.calls)
+    check("gecersiz grup -> 400", client.post(f"/songs/{LOUD}/sub?group=bass", headers=H).status_code == 400)
+    DR_QUIET = "1" * 64     # vokal var, davul yok
+    DR_BOTH = "2" * 64      # vokal alt ayrimi TAMAM, davul istenmemis
+    make_song(tmp, DR_QUIET, 0.1, drums_amplitude=0)
+    make_song(tmp, DR_BOTH, 0.1, sub={"state": "done", "version": 77, "reliability": "ok", "lead_share": 0.9})
+    response = client.post(f"/songs/{DR_QUIET}/sub?group=drums", headers=H)
+    body = response.json()
+    check("davul yok: no_drums, GPU yok", response.status_code == 200 and body["state"] == "no_drums"
+          and body["group"] == "drums" and len(spawner.calls) == before_calls, str(body))
+    saved = json.loads((pathlib.Path(tmp) / "songs" / DR_QUIET / "status.json").read_text("utf-8"))
+    check("davul yok: status.sub_drums yazildi, vokal durumu YOK (dokunulmadi)",
+          saved["sub_drums"]["state"] == "no_drums" and "sub" not in saved)
+    body = client.post(f"/songs/{DR_QUIET}/sub", headers=H).json()
+    check("ayni sarkida vokal grubu bagimsiz: running", body["state"] == "running" and body["group"] == "vocals")
+    saved = json.loads((pathlib.Path(tmp) / "songs" / DR_QUIET / "status.json").read_text("utf-8"))
+    check("vokal running, davul no_drums birlikte durur",
+          saved["sub"]["state"] == "running" and saved["sub_drums"]["state"] == "no_drums")
+
+    # Vokal tamam iken davul istegi vokal durumunu/dosyalarini bozmaz
+    sub_dir2 = pathlib.Path(tmp) / "songs" / DR_BOTH / "stems" / "sub"
+    sub_dir2.mkdir(parents=True)
+    (sub_dir2 / "lead.m4a").write_bytes(b"vokal-lead")
+    body = client.post(f"/songs/{DR_BOTH}/sub?group=drums", headers=H).json()
+    check("vokal tamam + davul istegi: davul running, GPU 'drums' grubuyla spawn",
+          body["state"] == "running" and body["group"] == "drums"
+          and spawner.calls[-1] == (DR_BOTH, "stem", app.SUB_OVERLAP, False, True, "drums"), str(spawner.calls[-1]))
+    saved = json.loads((pathlib.Path(tmp) / "songs" / DR_BOTH / "status.json").read_text("utf-8"))
+    check("vokal durumu ve dosyasi dokunulmadi",
+          saved["sub"] == {"state": "done", "version": 77, "reliability": "ok", "lead_share": 0.9}
+          and (sub_dir2 / "lead.m4a").read_bytes() == b"vokal-lead")
+    calls_now = len(spawner.calls)
+    check("davul suruyor: ayni grup tekrar spawn etmez",
+          client.post(f"/songs/{DR_BOTH}/sub?group=drums", headers=H).json()["state"] == "running"
+          and len(spawner.calls) == calls_now)
+    check("davul suruyorken vokal 'done' kalir (existing)",
+          client.post(f"/songs/{DR_BOTH}/sub", headers=H).json()["state"] == "done")
+    check("davul suruyorken reprocess/silme engellenir (herhangi grup)",
+          client.post(f"/songs/{DR_BOTH}/reprocess", headers=H).status_code == 409
+          and "Alt parcalar" in client.delete(f"/songs/{DR_BOTH}", headers=H).text)
+    songs = {item["id"]: item for item in client.get("/songs", headers=H).json()["songs"]}
+    check("/songs: sub_drums_state alani, vokal alani ayri",
+          songs[DR_BOTH]["sub_drums_state"] == "running" and songs[DR_BOTH]["sub_state"] == "done"
+          and songs[DR_BOTH]["sub_version"] == 77)
+    sub_dir2.joinpath("kick.m4a").write_bytes(b"k" * 100)
+    check("substems: davul parcasi (kick) 200",
+          client.get(f"/songs/{DR_BOTH}/substems/kick.m4a", headers=H).content == b"k" * 100)
+    check("substems: drumsother adi kabul (dosya yoksa 404)",
+          client.get(f"/songs/{DR_BOTH}/substems/drumsother.m4a", headers=H).status_code == 404)
+    check("substems: bilinmeyen ad (ride) 400",
+          client.get(f"/songs/{DR_BOTH}/substems/ride.m4a", headers=H).status_code == 400)
 
     shutil.rmtree(tmp, ignore_errors=True)
     print("\n" + "=" * 60)

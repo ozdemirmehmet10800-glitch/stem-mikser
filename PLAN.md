@@ -427,7 +427,7 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      önce bak: esnetici parametre değişikliğini belirli bir ses saati anına
      zamanlayabiliyor mu? Kaynak hızı giriş dikişinde, ton düzeltmesi çıkış
      dikişinde (dikiş + D) değişirse geçiş bölgesi tamamen kalkabilir.
-8. [ ] **Aşama 10 - alt parçalar (vokal: ana/arka, davul: kick/snare/hihat/cymbals/toms).**
+8. [~] **Aşama 10 - alt parçalar (vokal: ana/arka KAPANDI; davul: kick/snare/toms/hihat/cymbals backend+deney yapıldı, arayüz ve canlıya alma sırada).**
    PLAN ONAYLANDI (2026-10-01). Kararlar: önce vokal, sonra davul; davulda ride+crash
    SUNUCUDA tek "cymbals"; becruily karaoke ve MDX23C DrumSep ağırlıkları (lisansı
    belirsiz) NOTICE.md'ye kişisel kullanım notu ve kaynak alıntısıyla yazılır;
@@ -558,6 +558,58 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
        * Açık/bilinen: alt kanal indirme menüsü yok (indirme ana kanaldan); alt parçalar
          için ayrı çevrimdışı "indirildi" göstergesi yok; davul (oturum 4) `SUB_GROUPS`'a
          eklenecek, "tek ana kanal açık" kuralı o zaman devreye girer.
+     - **VOKAL ALT AYRIMI KAPANDI (2026-10-01):** telefon testi geçti (SW v31): Zeus'ta
+       açma/kapama, ana vokal mute, "Karaoke (arka vokal kalsın)", Final Duet'te "vokal
+       yok", Ado'da gerçek ayırma ve "güvenilmez olabilir" rozeti.
+     - **OTURUM 4 (davul, YALNIZ backend + deney) YAPILDI (2026-10-01), CANLIYA BAĞLI
+       DEĞİL, deploy EDİLMEDİ.** Davul alt ayrımı: SW `master/drums.flac` -> kick, snare,
+       toms, hihat, cymbals (ride+crash SUNUCUDA toplanır), drumsother = davul - toplam.
+       * MDX23C kodu pinli commit'ten depoya (`models/mdx23c_tfc_tdf_v3.py`, sha256
+         vendor README'sinde). Config dönüşümü: `ml_collections.ConfigDict` (öznitelik
+         erişimi); `sub_image`a `ml-collections==1.0.0`. Yükleme STRICT. `_hifi_demix`
+         `num_stems`'i MDX23C için `training.instruments` uzunluğundan alıyor (Hi-Fi/
+         karaoke davranışı aynı) => **deploy'dan ÖNCE `hifi_smoke` koşulmalı.**
+       * Ağırlık (437 652 699 bayt, sha256 d2a4aa53…): orijinal kaynak (jarredou GitHub/HF)
+         SİLİNMİŞ; iki bağımsız aynada (Sucial/MSST-WebUI, lainlives) aynı hash.
+         `fetch_drum_weights` (`modal run backend/app.py::drum_fetch`). NOTICE.md'ye yazıldı.
+       * **Durum GRUP BAŞINA:** vokal `status.sub` (eski ad, canlı istemci uyumu), davul
+         `status.sub_drums`. `POST /songs/{id}/sub?group=vocals|drums`; her grup kendi
+         "yok" kapısı (`no_vocals` / `no_drums`), kendi dosyaları (aynı `master/sub`,
+         `stems/sub` dizinleri, farklı adlar; bir grubun yazımı ötekinin dosyasına
+         dokunmaz), `/songs`'ta `sub_drums_state`/`sub_drums_version`. Ana şarkı yeniden
+         işlenince İKİ grup da düşer; alt ayrım (herhangi grup) sürerken silme/reprocess 409.
+         `get_substem` tüm parça adlarını (lead, backing, kick, snare, toms, hihat, cymbals,
+         drumsother) kabul eder.
+       * **"Davul yok" kapısı: -50 dBFS (CPU, GPU açılmaz), eşik DOĞRULANDI:** 6 gerçek
+         davul -16.6…-25.4 dBFS (en sessizi HAZBIN -25.45), Final Duet -117.7. Boşluk 92 dB,
+         eşik en sessiz gerçek davulun 24.5 dB altı.
+       * **Ölçümler (6 şarkı, T4, overlap 4 = config; kesitsiz, HİÇBİR ŞEY yazılmadı):**
+         çıkarım gerçek zamanın ~5.5 katı hızlı, VRAM 1.5-3.3 GB, model yükleme 2.4-3.2 sn
+         (438 MB), şarkı başı **$0.012-0.021** (2.6-7.2 dk; vokaldan UCUZ). Toplam hatası
+         -185…-211 dB (float), FLAC24'te -116…-125 dB: yapısal olarak sıfır.
+         `drumsother` güç payı HER ŞARKIDA < %1 (0.0002-0.0065); atanan parçaların güç
+         toplamı 0.86-0.98. Parça seviyeleri davula göre (dB): kick -0.2…-2.7 (güç payı
+         %54-96), snare -8.9…-18, toms -8.6…-31.6, hihat -11.5…-32.5, cymbals -15.5…-41.6.
+       * **SIZINTI HİPOTEZİ ÇÜRÜDÜ:** "BTS/HAZBIN'de sızıntı drumsother'a gider" DOĞRU DEĞİL:
+         artık ihmal edilebilir (BTS %0.65, HAZBIN %0.14). Tonal (HPSS harmonik) pay: BTS
+         davul 0.72 -> kick 0.84, toms 0.96 (güç %9.4), drumsother 0.79 (güç %0.65); HAZBIN
+         davul 0.57 -> kick 0.70, toms 0.55, snare 0.06, hihat 0.09. Yani tonal sızıntı
+         (piyano/müzik) kick ve ÖZELLİKLE toms'a yapışıyor; toms HER şarkıda yüksek tonal
+         (0.89-0.98): "toms" büyük olasılıkla tonal/bas sızıntı çöpü. Kulakla doğrulanmadı.
+         Zeus'ta kick güç payı %96 (808'ler tonal, harmonik 0.34 değil 808 gövdesi kick'e).
+       * **Güvenilirlik kapısı ÖNERİSİ (onay bekliyor):** artık payı kapı olamaz (hep <%1) ve
+         ölçümler bilinen sızıntılı şarkıyı (HAZBIN) ayıramıyor: metrikle sert kapı
+         YAZILMAZ. Öneri: sert kapı YOK (`_sub_drum_gate` şimdilik hep "ok"); yumuşak uyarı
+         = "toms güç payı >= %8 VE toms tonal pay >= 0.9" (BTS %9.4/0.96 ve NEM-slowed
+         %14/0.98 yakalanır, diğerleri değil: Usseewa 0.2%, Zeus 0.07%, Ado 3%, HAZBIN 1.5%)
+         + kör kulak testi (BTS, HAZBIN, NEM-slowed) sonrası kesinleştir.
+       * **Vokal + davul birlikte (CANLI Zeus'un KLONUNDA, klon sonda silindi):** davul
+         üretim yolu koştu (172 sn, $0.029 soğuk), vokal parça dosyaları (4, sha256) ve
+         `status.sub` BİREBİR aynı, `stems_version`/`pipeline` aynı, davul 6 parça yazıldı.
+         Canlı Zeus'a dokunulmadı (`sub_drums` yok).
+       * Testler: `tests/test_sub_gate.py` (66), `tests/test_sub_api.py` (52: davul grubu,
+         bağımsız durumlar, no_drums, substems parça adları). Araçlar: `drum_validate`,
+         `drum_coexist`, `sub_levels(stem)`.
      - **Kulak testi:** kör kesitler kitaplıkta `[X kisa]` (HAZBIN g/q, Below The
        Surface c/w, Zeus a/n), kanallar lead/backing/other; kağıtlar
        `backend/sub_out/sheets/`, anahtar `backend/sub_out/key.json` (gitignore'lı).

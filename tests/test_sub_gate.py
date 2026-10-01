@@ -169,12 +169,93 @@ def test_drop(app):
         check("sub'i olmayan sarki: no-op", app._sub_drop(song) is False)
 
 
+
+
+def test_groups(app):
+    now = time.time()
+    both = {"sub": {"state": "done"}, "sub_drums": {"state": "running", "started": now}}
+    check("grup: davul running -> herhangi grup suruyor", app._sub_is_running(both))
+    check("grup: yalniz davul sorulunca true, vokal sorulunca false",
+          app._sub_is_running(both, "drums") and not app._sub_is_running(both, "vocals"))
+    check("grup: takilmis davul running sayilmaz",
+          not app._sub_is_running({"sub_drums": {"state": "running", "started": now - 99999}}))
+    check("grup: silme engeli davul icin de",
+          bool(app._delete_block_reason({"state": "done", "sub_drums": {"state": "running", "started": now}})))
+    check("grup yapilandirmasi", app.SUB_GROUP_CFG["vocals"]["key"] == "sub"
+          and app.SUB_GROUP_CFG["drums"]["key"] == "sub_drums"
+          and app.SUB_DRUM_PARTS == ("kick", "snare", "toms", "hihat", "cymbals", "drumsother"))
+    check("tum parca adlari: vokal + davul", set(app.SUB_ALL_PARTS) ==
+          {"lead", "backing", "kick", "snare", "toms", "hihat", "cymbals", "drumsother"})
+    check("model cikis adlari (ride/crash ayri, sunucuda birlesir)",
+          app.SUB_DRUM_MODEL_OUTPUTS == ("kick", "snare", "toms", "hh", "ride", "crash"))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        app.DATA_DIR = tmp
+        app.volume = FakeVolume()
+        song = "c" * 64
+        base = pathlib.Path(tmp) / "songs" / song
+        for folder, names, ext in (("master", ("lead", "backing", "kick", "snare"), "flac"),
+                                   ("stems", ("lead", "backing", "kick", "snare"), "m4a")):
+            (base / folder / "sub").mkdir(parents=True)
+            for name in names:
+                (base / folder / "sub" / f"{name}.{ext}").write_bytes(name.encode())
+        (base / "status.json").write_text(json.dumps(
+            {"id": song, "state": "done", "stems_version": 3,
+             "sub": {"state": "done"}, "sub_drums": {"state": "done"}}), encoding="utf-8")
+        app._sub_remove_part_files(song, app.SUB_DRUM_PARTS)
+        check("davul dosyalari silindi",
+              not (base / "master" / "sub" / "kick.flac").exists() and not (base / "stems" / "sub" / "snare.m4a").exists())
+        check("VOKAL dosyalari dokunulmadi",
+              (base / "master" / "sub" / "lead.flac").read_bytes() == b"lead"
+              and (base / "stems" / "sub" / "backing.m4a").read_bytes() == b"backing")
+        app._sub_remove_part_files(song, app.SUB_PART_NAMES)
+        check("vokal dosyalari ayri silinir", not (base / "master" / "sub" / "lead.flac").exists())
+        (base / "master" / "sub" / "lead.flac").write_bytes(b"x")
+        check("_sub_drop: iki grubu da dusurur", app._sub_drop(song) is True)
+        status = json.loads((base / "status.json").read_text(encoding="utf-8"))
+        check("_sub_drop: sub ve sub_drums gitti, ana alanlar kaldi",
+              "sub" not in status and "sub_drums" not in status and status["stems_version"] == 3)
+
+
+def test_drum_metrics(app):
+    try:
+        import numpy as np
+    except ImportError:
+        print("numpy yok: davul metrik testi atlandi")
+        return
+    rng = np.random.default_rng(1)
+    n = 44100 * 3
+    t = np.arange(n) / 44100.0
+    kick = np.zeros((2, n), dtype=np.float32)
+    kick[:, ::22050] = 0.5
+    snare = (rng.standard_normal((2, n)) * 0.02).astype(np.float32)
+    toms = np.zeros((2, n), dtype=np.float32)
+    hihat = (rng.standard_normal((2, n)) * 0.01).astype(np.float32)
+    cymbals = (rng.standard_normal((2, n)) * 0.01).astype(np.float32)
+    leak = (np.sin(2 * np.pi * 220 * t) * 0.05).astype(np.float32)[None, :].repeat(2, 0)
+    parts = {"kick": kick, "snare": snare, "toms": toms, "hihat": hihat, "cymbals": cymbals}
+    drums = (sum(parts.values()) + leak).astype(np.float32)
+    other = (drums - sum(parts.values())).astype(np.float32)
+    app._sub_harmonic_shares = lambda signals, sr: {name: None for name in signals}   # librosa'siz
+    m = app._sub_drum_metrics(drums, parts, other, 44100)
+    check("davul metrik: toplam hatasi ~0 (artik tanimi gerek)", m["sum_err_db"] < -100, str(m["sum_err_db"]))
+    check("davul metrik: artik = sizinti (sinus 0.05 RMS ~ -29 dB)",
+          abs(m["levels"]["drumsother"]["rel_db"] - app._sub_db(app._sub_rms(leak), app._sub_rms(drums))) < 0.2)
+    check("davul metrik: artik gucu payi 0-1", 0.0 < m["other_power_share"] < 1.0, str(m["other_power_share"]))
+    check("davul metrik: tum parcalar rapor edildi",
+          set(m["levels"]) == {"kick", "snare", "toms", "hihat", "cymbals", "drumsother"})
+    check("davul metrik: sessiz parca -200 dB", m["levels"]["toms"]["rel_db"] == -200.0)
+    check("davul kapisi simdilik hep ok (esik olcumden sonra)", app._sub_drum_gate(m) in ("ok", "warn", "unreliable"))
+
+
 def main():
     app = load_app()
     test_gates(app)
     test_astats(app)
     test_running_and_block(app)
     test_drop(app)
+    test_groups(app)
+    test_drum_metrics(app)
     print("\n" + "=" * 60)
     print(f"gecen: {len(PASSED)}   basarisiz: {len(FAILED)}")
     for name in FAILED:

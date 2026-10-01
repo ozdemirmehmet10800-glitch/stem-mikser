@@ -33,6 +33,7 @@ değişti (aşağıda).
 | `models/bs_roformer/attend.py` | 4410 | `c7abbc40a3fd20ff7f6001fa9f8ee9ad5df6452272712a5e719b8f8468bf2223` |
 | `models/bs_roformer/bs_roformer.py` | 20494 | `a6f670325cdb8a7a212914f62602119b23eb888df9bcfe4a85f9be74728b3ef4` |
 | `models/bs_roformer/mel_band_roformer.py` | 22532 | `3b4a57ab268933900172e05fb76dd9e8acc1eb770c745d583a4e42b94b79ec15` |
+| `models/mdx23c_tfc_tdf_v3.py` | 7121 | `5b29c37cbba4b06e49dcd6bef668d372501df2517392b71b93804355cb7d535e` |
 | `utils/model_utils.py` | 39219 | `5cd24dac438ebc8243fb5b19e71296f1eb113b1181b607d085ae4f74fa333a86` |
 
 `__init__.py` dosyaları upstream'den DEĞİL, bizim yazdığımız boş dosyalardır:
@@ -45,7 +46,8 @@ Hangi dosyayı kim kullanıyor:
 |---|---|
 | `attend.py` | `bs_roformer.py` ve `mel_band_roformer.py` import ediyor |
 | `bs_roformer.py` | canlı Hi-Fi vokal yolu (`app.py`) + deney B/C kolları |
-| `mel_band_roformer.py` | yalnız deney (`experiment.py`, A ve E kolları) |
+| `mel_band_roformer.py` | yalnız deney (`experiment.py`, A ve E kolları) + vokal alt ayrımı (`separate_sub`, becruily karaoke) |
+| `mdx23c_tfc_tdf_v3.py` | davul alt ayrımı (`separate_sub`, DrumSep MDX23C). `utils.model_utils.prefer_target_instrument` ve `ml_collections.ConfigDict` ister |
 | `utils/model_utils.py` | yalnız deney (`experiment.py::reference`) |
 
 ## `attend.py`'deki tek değişiklik: torch 2.5.1 uyumu

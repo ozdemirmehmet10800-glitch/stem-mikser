@@ -80,22 +80,40 @@ kullanılıyor (`backend/app.py::separate_sub`), canlıya BAĞLI DEĞİL.
   dağıtım yok; olacaksa sahibinden yazılı izin gerekir.
 - Mimari kodu (`mel_band_roformer.py`) MSST'den, MIT (aşağıya bak).
 
-### MDX23C DrumSep (aufr33 & jarredou) — **LİSANS BELİRSİZ, kişisel kullanım** (henüz kullanılmıyor)
+### MDX23C DrumSep (aufr33 & jarredou) — **LİSANS BELİRSİZ, kişisel kullanım**
 
-Aşama 10 davul alt parçaları için SEÇİLDİ, entegrasyon sonraki oturumda.
-6 çıkış: kick / snare / toms / hi-hat / ride / crash (ride + crash sunucuda
-tek "cymbals" kanalına birleştirilecek).
+Aşama 10 davul alt parçaları (kick / snare / toms / hihat / cymbals / drumsother).
+Deneyde kullanılıyor (`backend/app.py::separate_sub`, grup `drums`), canlıya BAĞLI
+DEĞİL. Modelin 6 çıkışı: kick, snare, toms, hh, ride, crash; ride + crash
+sunucuda tek "cymbals" kanalına toplanıyor, `drumsother` = davul − hepsinin
+toplamı.
 
 | | |
 |---|---|
-| ağırlık | `aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.ckpt` |
-| kaynak | `github.com/jarredou/models`, sürüm `aufr33-jarredou_MDX23C_DrumSep_model_v0.1` |
-| lisans beyanı | **yok**: MSST'nin model listesi (`docs/pretrained_models.md`) bu model için lisansı "belirtilmemiş" diye gösteriyor, sürüm sayfasında da lisans dosyası görülmedi (2026-10-01) |
+| dosya | `aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.ckpt`, 437 652 699 bayt |
+| sha256 | `d2a4aa53eb584d21eead358a4e66d1882ad182911be018f052b5da73be9096d0` |
+| config | `aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.yaml`, 2 417 bayt, sha256 `440a13f67461b2cdad2bb1cb86c08ff27a8ec53093c4a24d4d7fc2c19cb9f5f5` |
+| indirildiği yerler | ckpt: `Sucial/MSST-WebUI` (Hugging Face), commit `90b617b15bd0dc0b784f3d361faca1b51173fe44`, `All_Models/multi_stem_models/`; config: `lainlives/audio-separator-models`, commit `3b39120409f3c2d50e9cc4c391f4169131e9d643` |
+| lisans beyanı | **yok**: MSST'nin model listesi (`docs/pretrained_models.md`) lisansı "belirtilmemiş" gösteriyor; her iki aynada da lisans metadata'sı boş |
 
-**Durum olduğu gibi:** ağırlık depoda dağıtılmayacak, Volume'a sha256
-doğrulamalı inecek; kullanım **kişisel**, belirsizlik bilinerek kabul edildi;
-ticari kullanım ya da yeniden dağıtım için lisansın netleşmesi gerekir.
-Sha256 ve sürüm, indirme kodu yazıldığında buraya eklenecek.
+**Durum olduğu gibi:**
+
+- **Orijinal kaynak SİLİNMİŞ.** MSST dokümanının gösterdiği
+  `github.com/jarredou/models/releases/...` adresi, `github.com/jarredou` ve
+  `huggingface.co/jarredou` 2026-10-01'de 404 veriyor (SW modeliyle aynı durum,
+  yukarıya bak). Lisans metni yazara sorulamıyor.
+- **İki bağımsız ayna aynı dosya:** `Sucial/MSST-WebUI` ve
+  `lainlives/audio-separator-models` aynı sha256'yı ve aynı boyutu veriyor
+  (LFS meta verisi); aynı hash = orijinal dosya, elimizdeki tek kanıt bu.
+  Config için ikinci bir bağımsız kopya YOK (yalnız `lainlives`); sha256'sı
+  koda gömülü ve her yüklemede doğrulanıyor.
+- Ağırlık **bu depoda dağıtılmıyor**. Çalışma anında Modal Volume'a iniyor
+  (`fetch_drum_weights`), sha256 doğrulanıyor.
+- Kullanım **kişisel**. Bu, proje sahibinin bilinçli kararıdır; lisans
+  belirsizliği bilinerek kabul edilmiştir. Ticari kullanım ya da yeniden
+  dağıtım için lisansın netleşmesi gerekir.
+- Mimari kodu (`models/mdx23c_tfc_tdf_v3.py`) MSST'den, MIT, depoda
+  (`backend/vendor/msst/`, pinli commit, sha256'sı oradaki README'de).
 
 ---
 
