@@ -335,7 +335,11 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      cihazdaki her şey bir kez yeniden iner, `pruneSuperseded` regex'i de buna
      uyarlanmalı.
    - Mevcut şarkıları `reprocess` ile yenilemek ~şarkı başı $0.04.
-9. [ ] **Pratik paketi (yalnız arayüz, GPU yok).** Sıra: 4 → 1 → 3 → 2. Onaylı
+9. [x] **Pratik paketi KAPANDI (2026-10-01).** Madde 4 (mikser ön ayarları + hafıza) ve
+   Madde 1 (A-B döngü, tutamaçlar, döngü hafızası) TAMAM; ilk yarı ve Madde 4 telefonda
+   doğrulandı, ikinci yarı (tutamaçlar, loop hafızası, SW v29) telefon testine
+   bırakıldı. **Madde 3 (sayım/bekleme) ve Madde 2 (hız antrenörü) İPTAL: kullanıcı
+   ihtiyaç duymuyor.** Aşağıdaki notlar kayıt için duruyor. Eski sıra: 4 → 1 → 3 → 2. Onaylı
    kararlar: dikişte gain çukuru (~5 ms) varsayılan; döngü uçlarına ızgara telafisi
    YOK (ızgara 8-15 ms erken, uç atak öncesine düşüyor; telafi gerekirse yalnız
    tık/sayım için tek sabit); sayım o anki hızla atar; antrenör %70→%100, %5'lik
@@ -423,7 +427,23 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      önce bak: esnetici parametre değişikliğini belirli bir ses saati anına
      zamanlayabiliyor mu? Kaynak hızı giriş dikişinde, ton düzeltmesi çıkış
      dikişinde (dikiş + D) değişirse geçiş bölgesi tamamen kalkabilir.
-8. [ ] **Aşama 10 - davul alt parçaları.** Düşük öncelik, en sona.
+8. [ ] **Aşama 10 - alt parçalar (vokal: ana/arka, davul: kick/snare/hihat/cymbals/toms).**
+   PLAN ONAYLANDI (2026-10-01). Kararlar: önce vokal, sonra davul; davulda ride+crash
+   SUNUCUDA tek "cymbals"; becruily karaoke ve MDX23C DrumSep ağırlıkları (lisansı
+   belirsiz) NOTICE.md'ye kişisel kullanım notu ve kaynak alıntısıyla yazılır;
+   ağırlıklar depoya girmez, Volume'a sha256 doğrulamalı iner. Alt parçalar ana
+   şarkıyı geçersiz KILMAZ: `status.sub` (ayrı sürüm), `stems/sub/`, telefon önbelleği
+   ayrı anahtar; `stems_version`/`pipeline`'a dokunulmaz. Ayrıntı: aşağıdaki
+   "Aşama 10 plan notları".
+   **Notlar:**
+   - **Karaoke girdisi doğrulanmadı.** Karaoke modelleri genelde TAM KARIŞIMLA eğitilir;
+     "izole vokalle eğitildi" varsayımı (plan raporu madde 2) doğrulanmadı. İlk
+     deneyde İKİ girdi denenir: (a) SW vokal stem'i, (b) tam karışım. İkisinde de
+     ana = model çıktısı, arka = SW vokal − ana.
+   - **Motor:** alt kanalları açma/kapama için canlı tampon değişimi YOK; seek gibi
+     kısa yeniden başlatma (~150 ms) yeterli. Canlı değişim yalnız gerekirse, ayrı
+     iş olarak. Telefonda aynı anda tek ana kanal açık olabilir.
+   - **İleride ön ayar:** "Karaoke (arka vokal kalsın)" yalnız ANA vokali sustursun.
 
 ### Sonra (şimdilik gerek yok)
 **Anında başlatma (önizleme dosyaları).** KOD YOK, plan. **ERTELENDİ
