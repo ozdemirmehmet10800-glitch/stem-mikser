@@ -858,7 +858,8 @@ def _hifi_window(window_size: int, fade_size: int, device):
     return window
 
 
-def _hifi_demix(model, mix, config: dict, device: str = "cuda"):
+def _hifi_demix(model, mix, config: dict, device: str = "cuda",
+                overlap: int = None):
     """Örtüşmeli parça parça çıkarım, fp32.
 
     MSST'nin demix()'inin generic dalıyla AYNI algoritma; deneyde MSST'nin
@@ -872,7 +873,9 @@ def _hifi_demix(model, mix, config: dict, device: str = "cuda"):
     chunk_size = int(config["audio"]["chunk_size"])
     batch_size = int(config.get("inference", {}).get("batch_size", 1))
     fade_size = chunk_size // 10
-    step = chunk_size // HIFI_OVERLAP
+    # overlap yalnız alt parça deneyi (separate_sub) için; Hi-Fi yolu varsayılanı
+    # (HIFI_OVERLAP) kullanıyor, yani davranışı DEĞİŞMEDİ.
+    step = chunk_size // int(overlap or HIFI_OVERLAP)
     border = chunk_size - step
 
     mix = torch.as_tensor(mix, dtype=torch.float32, device=device)
@@ -1651,6 +1654,729 @@ def hifi_smoke(song_id: str = "", must_contain: str = "HAZBIN",
             print(f"HATA: {line}")
         raise SystemExit(1)
     print("DUMAN TESTI GECTI")
+
+
+# --------------------------------------------------------------------------
+# Aşama 10 - alt parçalar (oturum 1: vokal -> ana / arka)
+# --------------------------------------------------------------------------
+# CANLI SİSTEME BAĞLI DEĞİL: bu bölümdeki hiçbir şey `separate`, `api` ya da
+# status.json'ın canlı alanlarına dokunmuyor; yalnız `modal run` ile deney.
+#
+# Model: becruily/mel-band-roformer-karaoke (Mel-Band Roformer, 2 çıkış:
+# Vocals = ANA vokal, Instrumental = müzik + arka vokal). Lisansı belirsiz
+# (model kartı yok; HF tartışması #1'de sahibi "ticari olmadıkça serbest"
+# demiş), kişisel kullanım, bkz. NOTICE.md. Ağırlık depoda DEĞİL, Volume'a
+# sha256 doğrulamalı iniyor.
+#
+# Girdi iki yoldan denenir (PLAN.md Aşama 10 notu): "stem" = SW vokal stem'i,
+# "mix" = tam karışım. Karaoke modelleri genelde tam karışımla eğitilir,
+# "izole vokalle eğitildi" varsayımı DOĞRULANMADI. İki yolda da:
+#     ana = model çıktısı,  arka = SW vokal - ana
+# yani ana + arka = SW vokal yapısal olarak (float'ta) tam tutar.
+
+SUB_WEIGHTS_SUBDIR = "weights-sub"
+SUB_EXP_SUBDIR = "sub-exp"
+SUB_KARAOKE_REV = "0c149975cfaa261c7d87baf54330a9da85bcf888"
+SUB_KARAOKE_BASE = ("https://huggingface.co/becruily/mel-band-roformer-karaoke/"
+                    f"resolve/{SUB_KARAOKE_REV}")
+SUB_KARAOKE_CKPT = "mel_band_roformer_karaoke_becruily.ckpt"
+SUB_KARAOKE_CKPT_SHA256 = "d3aa262ac01df870b9fc033e9c7b6cad33fe04fc9c148b6c40841326a515a0e0"
+SUB_KARAOKE_CKPT_BYTES = 1719139254
+SUB_KARAOKE_YAML = "config_karaoke_becruily.yaml"
+SUB_KARAOKE_YAML_SHA256 = "cd37b0dcc285fc22d88090415722ac7127ee1d9ea2f3346c3b8d8fcc61e0c74b"
+SUB_KARAOKE_YAML_BYTES = 1724
+# Örtüşme: config 8 diyor; üretimdeki Hi-Fi gibi 2 ile başlıyoruz (maliyet 4x
+# düşük). Deneyde --overlap ile değiştirilebilir.
+SUB_OVERLAP = 2
+SUB_USD_PER_SECOND = 0.000164     # T4, PLAN.md maliyet tablosuyla aynı
+SUB_WINDOW_SEC = 2.0
+SUB_EXCERPT_SECONDS = 10.0
+SUB_EXCERPT_GAP = 1.0
+SUB_EXCERPT_FADE = 0.020
+SUB_PATHS = ("stem", "mix")
+
+# GPU imajı. Hi-Fi `separate_image`ından AYRI: Mel-Band Roformer'ın mel filtre
+# bankası librosa istiyor ve canlı imaja (demucs ağırlığını build'de gömen,
+# deploy edilmiş) librosa eklemek onu yeniden build ettirirdi. demucs YOK.
+sub_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("ffmpeg")
+    .pip_install(
+        "torch==2.5.1",
+        "numpy==1.26.4",
+        "soundfile==0.13.1",
+    )
+    .pip_install(
+        "einops==0.8.2",
+        "rotary-embedding-torch==0.9.1",
+        "beartype==0.19.0",
+        "librosa==0.11.0",         # yalnız mel filtre bankası için (filters)
+        "numba==0.62.1",
+        "PyYAML==6.0.2",
+        "tqdm==4.67.1",
+    )
+    .add_local_dir(MSST_LOCAL, MSST_DIR)
+)
+
+# Kesit/yazım imajı: torch YOK.
+sub_cpu_image = light_image.pip_install("numpy==1.26.4", "soundfile==0.13.1")
+
+_SUB_CONTAINER_START = time.time()
+_SUB_FIRST_CALL = True
+
+
+def _sub_weights_dir() -> pathlib.Path:
+    return pathlib.Path(DATA_DIR) / SUB_WEIGHTS_SUBDIR
+
+
+def _sub_exp_dir(song_id: str) -> pathlib.Path:
+    """Deney çıktı klasörü; kimlik doğrulanıyor (yol dışarı çıkamaz)."""
+    if not _is_valid_song_id(song_id):
+        raise ValueError(f"gecersiz sarki kimligi: {str(song_id)[:80]!r}")
+    return pathlib.Path(DATA_DIR) / SUB_EXP_SUBDIR / song_id
+
+
+@app.function(
+    image=light_image,
+    volumes={DATA_DIR: volume},
+    timeout=3600,
+)
+def fetch_sub_weights() -> dict:
+    """Karaoke ağırlığını Volume'a indirir ve sha256 doğrular.
+
+        modal run backend/app.py::sub_fetch
+
+    Ağırlık depoda DAĞITILMIYOR. İndirme geçici adla yapılıp doğrulanınca
+    yerine konuyor: yarım/bozuk dosya asla gerçek adla durmaz. 1.7 GB olduğu
+    için belleğe okunmuyor, parça parça yazılıyor.
+    """
+    import urllib.request
+
+    volume.reload()
+    target_dir = _sub_weights_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    report = {}
+
+    for name, sha, size in (
+        (SUB_KARAOKE_CKPT, SUB_KARAOKE_CKPT_SHA256, SUB_KARAOKE_CKPT_BYTES),
+        (SUB_KARAOKE_YAML, SUB_KARAOKE_YAML_SHA256, SUB_KARAOKE_YAML_BYTES),
+    ):
+        target = target_dir / name
+        if target.exists():
+            try:
+                _verify_sha256(target, sha, size)
+                print(f"[atla] {name} zaten var ve dogrulandi")
+                report[name] = {"downloaded": False, "sha256": sha}
+                continue
+            except ValueError:
+                print(f"[yeniden] {name} dogrulanamadi, tekrar iniyor")
+
+        url = f"{SUB_KARAOKE_BASE}/{name}"
+        partial = target_dir / (name + ".part")
+        print(f"[indir] {name} <- {url}")
+        started = time.time()
+        with urllib.request.urlopen(url, timeout=600) as response, \
+                partial.open("wb") as handle:
+            while True:
+                block = response.read(8 * 1024 * 1024)
+                if not block:
+                    break
+                handle.write(block)
+        try:
+            _verify_sha256(partial, sha, size)
+        except ValueError:
+            partial.unlink(missing_ok=True)
+            raise
+        partial.replace(target)
+        seconds = round(time.time() - started, 1)
+        print(f"[dogrulandi] {name} {seconds} sn, sha256={sha}")
+        report[name] = {"downloaded": True, "bytes": int(target.stat().st_size),
+                        "seconds": seconds}
+
+    volume.commit()
+    return _assert_plain(report)
+
+
+@app.local_entrypoint()
+def sub_fetch():
+    print(json.dumps(fetch_sub_weights.remote(), ensure_ascii=False, indent=2))
+
+
+def _sub_load_karaoke():
+    """Karaoke modelini yükler (cuda). Dönen: (model, config, vokal_indeksi, sn)."""
+    import sys
+
+    import torch
+
+    weights = _sub_weights_dir()
+    ckpt = weights / SUB_KARAOKE_CKPT
+    config_path = weights / SUB_KARAOKE_YAML
+    if not ckpt.is_file() or not config_path.is_file():
+        raise FileNotFoundError(
+            f"Karaoke agirliklari yok: {ckpt}. "
+            f"'modal run backend/app.py::sub_fetch' calistirilmali."
+        )
+    started = time.time()
+    _verify_sha256(ckpt, SUB_KARAOKE_CKPT_SHA256, SUB_KARAOKE_CKPT_BYTES)
+    _verify_sha256(config_path, SUB_KARAOKE_YAML_SHA256, SUB_KARAOKE_YAML_BYTES)
+    config = _load_hifi_config(config_path)
+    if int(config["audio"]["sample_rate"]) != 44100:
+        raise ValueError(f"beklenmeyen ornekleme hizi: {config['audio']['sample_rate']}")
+    names = [str(item).lower() for item in config["training"]["instruments"]]
+    if "vocals" not in names:
+        raise ValueError(f"karaoke konfiginde 'vocals' yok: {names}")
+
+    if MSST_DIR not in sys.path:
+        sys.path.insert(0, MSST_DIR)
+    from models.bs_roformer.mel_band_roformer import MelBandRoformer
+
+    model = MelBandRoformer(**dict(config["model"]))
+    state = torch.load(str(ckpt), map_location="cpu", weights_only=False)
+    if isinstance(state, dict):
+        for key in ("state_dict", "model", "model_state_dict"):
+            if key in state and isinstance(state[key], dict):
+                state = state[key]
+                break
+    if any(name.startswith("module.") for name in state):
+        state = {name.removeprefix("module."): value for name, value in state.items()}
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing or unexpected:
+        # strict=False sessiz geçerse yanlış mimariyle rastgele ağırlık çalışır.
+        raise ValueError(f"karaoke ckpt uyusmuyor: eksik={len(missing)} fazla={len(unexpected)} "
+                         f"(ilk eksikler: {missing[:3]})")
+    model.to("cuda")
+    model.eval()
+    seconds = round(time.time() - started, 2)
+    print(f"[sub] karaoke modeli {seconds} sn'de hazir; ciktilar={names}")
+    return model, config, names.index("vocals"), seconds
+
+
+def _sub_rms(array) -> float:
+    import numpy as np
+
+    data = np.asarray(array, dtype=np.float64)
+    return float(np.sqrt(np.mean(data ** 2))) if data.size else 0.0
+
+
+def _sub_db(value: float, reference: float) -> float:
+    import math
+
+    if value <= 0.0 or reference <= 0.0:
+        return -200.0
+    return round(20.0 * math.log10(value / reference), 2)
+
+
+def _sub_window_levels(array, reference_rms: float, samplerate: int) -> list:
+    """2 sn'lik pencerelerde RMS, `reference_rms`'e göre dB (liste, düz float)."""
+    import numpy as np
+
+    size = int(SUB_WINDOW_SEC * samplerate)
+    count = array.shape[1] // size
+    return [_sub_db(float(np.sqrt(np.mean(array[:, i * size:(i + 1) * size].astype(np.float64) ** 2))),
+                    reference_rms) for i in range(count)]
+
+
+def _sub_metrics(vocal, lead, backing, samplerate: int) -> dict:
+    """Ana/arka/SW vokal arasındaki ölçümler (hepsi düz Python)."""
+    import numpy as np
+
+    vocal_rms = _sub_rms(vocal)
+    peak = max(float(abs(vocal).max()), float(abs(lead).max()), float(abs(backing).max()))
+    scale = 1.0 / max(1.0, 1.01 * peak)           # FLAC'a yazılırken uygulanacak ortak ölçek
+
+    def quantize(x):
+        return np.round(x.astype(np.float64) * scale * 8388607.0) / 8388607.0
+
+    err = lead.astype(np.float64) + backing.astype(np.float64) - vocal.astype(np.float64)
+    err_q = quantize(lead) + quantize(backing) - quantize(vocal)
+
+    mono_lead = lead.mean(axis=0).astype(np.float64)
+    mono_back = backing.mean(axis=0).astype(np.float64)
+    denominator = float(np.sqrt(np.dot(mono_lead, mono_lead) * np.dot(mono_back, mono_back)))
+    correlation = float(np.dot(mono_lead, mono_back) / denominator) if denominator > 0 else 0.0
+
+    window = _sub_window_levels(backing, vocal_rms, samplerate)
+    return {
+        "vocal_rms_db": _sub_db(vocal_rms, 1.0),
+        "lead_rel_db": _sub_db(_sub_rms(lead), vocal_rms),
+        "backing_rel_db": _sub_db(_sub_rms(backing), vocal_rms),
+        "sum_err_db": _sub_db(_sub_rms(err), vocal_rms),
+        "sum_err_flac24_db": _sub_db(_sub_rms(err_q), vocal_rms),
+        "lead_backing_corr": round(correlation, 4),
+        "backing_windows_over_m20db": int(sum(1 for v in window if v > -20.0)),
+        "windows": len(window),
+        "backing_window_db": window,
+        "peak": round(peak, 4),
+    }
+
+
+@app.function(
+    image=sub_image,
+    gpu="T4",
+    volumes={DATA_DIR: volume},
+    timeout=1800,
+    max_containers=1,       # min_containers YOK: boştayken maliyet sıfır
+)
+def separate_sub(song_id: str, paths: str = "stem", overlap: int = SUB_OVERLAP,
+                 experiment: bool = False) -> dict:
+    """Vokali ana / arka vokale böler.
+
+    paths: "stem" (SW vokal stem'i girdi), "mix" (tam karışım girdi) ya da
+    "stem,mix". Model BİR kez yüklenir. Ana = model çıktısı, arka = SW vokal -
+    ana (her iki yolda).
+
+    experiment=True: `/data/sub-exp/<id>/<yol>/` altına ana/arka float32 WAV
+    yazılır (kulak testi kesitleri için). Canlı şarkıya HİÇBİR ŞEY yazılmaz;
+    status.json'a dokunulmaz. (Üretimde `stems/sub/` + `status.sub` sonraki
+    oturumların işi.)
+
+    Dönen: ölçümler, süreler ve maliyet tahmini (düz Python).
+    """
+    global _SUB_FIRST_CALL
+
+    import numpy as np
+    import soundfile as sf
+    import torch
+
+    call_started = time.time()
+    cold = _SUB_FIRST_CALL
+    boot_seconds = round(call_started - _SUB_CONTAINER_START, 2) if cold else 0.0
+    _SUB_FIRST_CALL = False
+
+    wanted = [item.strip() for item in paths.split(",") if item.strip()]
+    if not wanted or any(item not in SUB_PATHS for item in wanted):
+        raise ValueError(f"paths 'stem' ve/veya 'mix' olmali: {paths!r}")
+    overlap = int(overlap)
+    if overlap < 1:
+        raise ValueError("overlap >= 1 olmali")
+
+    volume.reload()
+    status = json.loads((_song_dir(song_id) / "status.json").read_text(encoding="utf-8"))
+    vocal_path = _song_dir(song_id) / "master" / "vocals.flac"
+    if not vocal_path.is_file():
+        raise FileNotFoundError(f"master/vocals.flac yok: {song_id}")
+    data, vocal_rate = sf.read(str(vocal_path), dtype="float32", always_2d=True)
+    if int(vocal_rate) != 44100:
+        raise ValueError(f"SW vokal 44100 Hz bekleniyordu: {vocal_rate}")
+    vocal = np.ascontiguousarray(data.T)
+    duration = vocal.shape[1] / 44100.0
+
+    model, config, vocal_index, load_seconds = _sub_load_karaoke()
+    torch.cuda.reset_peak_memory_stats()
+
+    out = {}
+    for path_name in wanted:
+        if path_name == "stem":
+            model_input = vocal
+        else:
+            model_input = _decode_pcm(_find_input(song_id), 44100, 2)
+            if model_input.shape[1] != vocal.shape[1]:
+                # SW çıkışı karışımla aynı uzunlukta olmalı; farklıysa en kısaya kırp.
+                limit = min(model_input.shape[1], vocal.shape[1])
+                print(f"[sub] uyari: karisim {model_input.shape[1]} != vokal {vocal.shape[1]}, "
+                      f"{limit} orneğe kirpiliyor")
+                model_input = model_input[:, :limit]
+        infer_started = time.time()
+        estimated = _hifi_demix(model, model_input, config, overlap=overlap)
+        infer_seconds = round(time.time() - infer_started, 2)
+        lead = estimated[vocal_index].astype(np.float32)
+        length = min(lead.shape[1], vocal.shape[1])
+        lead = np.ascontiguousarray(lead[:, :length])
+        reference = vocal[:, :length]
+        backing = (reference - lead).astype(np.float32)
+
+        metrics = _sub_metrics(reference, lead, backing, 44100)
+        metrics["infer_s"] = infer_seconds
+        metrics["realtime_x"] = round(duration / infer_seconds, 2) if infer_seconds else 0.0
+        out[path_name] = metrics
+        print(f"[sub] {path_name}: {infer_seconds} sn (gercek zamanin {metrics['realtime_x']}x), "
+              f"ana {metrics['lead_rel_db']} dB, arka {metrics['backing_rel_db']} dB, "
+              f"toplam hata {metrics['sum_err_db']} dB")
+
+        if experiment:
+            target = _sub_exp_dir(song_id) / path_name
+            target.mkdir(parents=True, exist_ok=True)
+            sf.write(str(target / "lead.wav"), lead.T, 44100, subtype="FLOAT", format="WAV")
+            sf.write(str(target / "backing.wav"), backing.T, 44100, subtype="FLOAT", format="WAV")
+        del estimated, lead, backing
+        torch.cuda.empty_cache()
+
+    if experiment:
+        volume.commit()
+    wall = round(time.time() - call_started, 2)
+    billed = round(wall + boot_seconds, 2)
+    return _assert_plain({
+        "song_id": song_id,
+        "title": str(status.get("title") or song_id[:12]),
+        "duration": round(duration, 2),
+        "overlap": overlap,
+        "cold_start": bool(cold),
+        "boot_s": boot_seconds,
+        "model_load_s": load_seconds,
+        "wall_s": wall,
+        "billed_estimate_s": billed,
+        "cost_usd_estimate": round(billed * SUB_USD_PER_SECOND, 4),
+        "peak_vram_mb": round(float(torch.cuda.max_memory_allocated()) / 1024 ** 2, 1),
+        "torch": str(torch.__version__).split("+")[0],
+        "paths": out,
+    })
+
+
+@app.function(image=light_image, volumes={DATA_DIR: volume}, timeout=120)
+def sub_find(needles: list) -> dict:
+    """Başlığında iğne geçen KAYNAK şarkılar: {iğne: [kimlik, başlık]}."""
+    volume.reload()
+    found = {}
+    for needle in needles:
+        try:
+            song_id, title = _pick_source_song(needle)
+        except FileNotFoundError:
+            continue
+        found[needle] = [song_id, title]
+    return _assert_plain(found)
+
+
+def _sub_read_wav(path: pathlib.Path):
+    import numpy as np
+    import soundfile as sf
+
+    data, rate = sf.read(str(path), dtype="float32", always_2d=True)
+    if int(rate) != 44100:
+        raise ValueError(f"{path.name}: 44100 Hz bekleniyordu ({rate})")
+    return np.ascontiguousarray(data.T)
+
+
+def _sub_segment_means(levels, count: int) -> list:
+    """Art arda `count` pencerenin ortalaması (liste uzunluğu len-count+1)."""
+    return [sum(levels[i:i + count]) / count for i in range(len(levels) - count + 1)]
+
+
+def _sub_clock(seconds: float) -> str:
+    seconds = int(seconds)
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+@app.function(image=sub_cpu_image, volumes={DATA_DIR: volume}, timeout=1800, memory=16384)
+def sub_excerpt_song(song_id: str, letters: dict) -> dict:
+    """Kör dinleme kesitleri: her yol bir kütüphane şarkısı (`<id>-sb<harf>s`).
+
+    letters: {"stem": "a", "mix": "b"} (kimin hangi harf olduğu yalnız
+    çağıranın anahtar dosyasında). Her kesit 10 sn + 1 sn sessizlik + 10 sn:
+      1. bölüm: iki yolun ARKA vokalinin ortalama olarak en güçlü olduğu yer
+                (arka vokal belirgin mi, doğru mu?)
+      2. bölüm: iki yolun ANA vokalinin en çok ayrıştığı yer (zor vaka)
+    Seçim iki yolun ortalamasından yapılıyor: bir yola kayırma yok.
+    Kanallar: lead (ana), backing (arka), other (müzik = karışım - SW vokal).
+    Üçü de ORTAK ölçekle (iki harf arasında seviye farkı "daha iyi" yanılgısı
+    yaratmasın) yazılır.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    volume.reload()
+    status = json.loads((_song_dir(song_id) / "status.json").read_text(encoding="utf-8"))
+    title = str(status.get("title") or song_id[:12])
+    vocal_data, rate = sf.read(str(_song_dir(song_id) / "master" / "vocals.flac"),
+                               dtype="float32", always_2d=True)
+    vocal = np.ascontiguousarray(vocal_data.T)
+    mix = _decode_pcm(_find_input(song_id), 44100, 2)
+    length = min(vocal.shape[1], mix.shape[1])
+    vocal, mix = vocal[:, :length], mix[:, :length]
+    instrumental = (mix - vocal).astype(np.float32)
+
+    base = _sub_exp_dir(song_id)
+    stems = {}
+    for path_name in SUB_PATHS:
+        lead = _sub_read_wav(base / path_name / "lead.wav")[:, :length]
+        backing = _sub_read_wav(base / path_name / "backing.wav")[:, :length]
+        stems[path_name] = {"lead": lead, "backing": backing}
+
+    vocal_rms = _sub_rms(vocal)
+    window = int(SUB_WINDOW_SEC * 44100)
+    windows = length // window
+    count = int(round(SUB_EXCERPT_SECONDS / SUB_WINDOW_SEC))
+    if windows < 2 * count + 1:
+        raise ValueError("sarki iki kesit icin cok kisa")
+
+    back_stem = _sub_window_levels(stems["stem"]["backing"], vocal_rms, 44100)
+    back_mix = _sub_window_levels(stems["mix"]["backing"], vocal_rms, 44100)
+    back_level = [(a + b) / 2.0 for a, b in zip(back_stem, back_mix)]
+    diff = stems["stem"]["lead"] - stems["mix"]["lead"]
+    diff_level = _sub_window_levels(diff, vocal_rms, 44100)
+
+    # Vokalin olmadığı pencereler (SW vokal çok sessiz) seçilmesin.
+    vocal_level = _sub_window_levels(vocal, vocal_rms, 44100)
+    active = [level > -30.0 for level in vocal_level]
+
+    def best(levels, forbidden=None):
+        means = _sub_segment_means(levels, count)
+        best_index, best_value = None, None
+        for index, value in enumerate(means):
+            if not all(active[index:index + count]):
+                continue
+            if forbidden is not None and not (
+                    index + count < forbidden[0] or index > forbidden[1]):
+                continue
+            if best_value is None or value > best_value:
+                best_index, best_value = index, value
+        if best_index is None:      # tamamen etkin pencere yoksa etkinlik şartını gevşet
+            for index, value in enumerate(means):
+                if forbidden is not None and not (
+                        index + count < forbidden[0] or index > forbidden[1]):
+                    continue
+                if best_value is None or value > best_value:
+                    best_index, best_value = index, value
+        return best_index, best_value
+
+    first, first_value = best(back_level)
+    if first is None:
+        raise ValueError("1. kesit bolumu secilemedi")
+    second, second_value = best(diff_level, forbidden=(first - 1, first + count))
+    if second is None:
+        raise ValueError("2. kesit bolumu secilemedi")
+
+    starts = {"backing": first * SUB_WINDOW_SEC, "disagree": second * SUB_WINDOW_SEC}
+    seg = int(SUB_EXCERPT_SECONDS * 44100)
+    gap = np.zeros((2, int(SUB_EXCERPT_GAP * 44100)), dtype=np.float32)
+    fade = int(SUB_EXCERPT_FADE * 44100)
+    ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+
+    def cut(array):
+        pieces = []
+        for kind in ("backing", "disagree"):
+            begin = int(starts[kind] * 44100)
+            piece = array[:, begin:begin + seg].copy()
+            piece[:, :fade] *= ramp
+            piece[:, -fade:] *= ramp[::-1]
+            pieces.append(piece)
+            if kind == "backing":
+                pieces.append(gap)
+        return np.concatenate(pieces, axis=1)
+
+    short_other = cut(instrumental)
+    cuts = {name: {"lead": cut(s["lead"]), "backing": cut(s["backing"])}
+            for name, s in stems.items()}
+    peak = max(float(abs(short_other).max()),
+               *(float(abs(v).max()) for s in cuts.values() for v in s.values()))
+    scale = max(1.01 * peak, 1.0)
+    excerpt_seconds = short_other.shape[1] / 44100.0
+
+    ids = {}
+    for path_name, letter in letters.items():
+        excerpt_id = f"{song_id}-sb{letter.lower()}s"
+        song_dir = _song_dir(excerpt_id)
+        master_dir, stems_dir = song_dir / "master", song_dir / "stems"
+        master_dir.mkdir(parents=True, exist_ok=True)
+        stems_dir.mkdir(parents=True, exist_ok=True)
+        parts = {"lead": cuts[path_name]["lead"], "backing": cuts[path_name]["backing"],
+                 "other": short_other}
+        for name, array in parts.items():
+            flac_path = master_dir / f"{name}.flac"
+            sf.write(str(flac_path), (array / scale).T, 44100, subtype=FLAC_SUBTYPE,
+                     format="FLAC")
+            _encode_stem_m4a(flac_path, stems_dir / f"{name}.m4a", 2)
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        (song_dir / "status.json").write_text(json.dumps({
+            "id": excerpt_id,
+            "title": f"[{letter.upper()} kisa] {title}",
+            "state": "done", "progress": 100,
+            "duration": round(excerpt_seconds, 3),
+            "stems": list(parts),
+            "created_at": now, "updated_at": now,
+            "source_song": song_id,
+            "experiment": {"sub": "excerpt", "clip_scale": round(scale, 4)},
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        ids[letter] = excerpt_id
+        print(f"[kesit] [{letter}] -> {excerpt_id} ({excerpt_seconds:.1f} sn)")
+
+    volume.commit()
+    return _assert_plain({
+        "title": title,
+        "duration": round(length / 44100.0, 1),
+        "excerpt_seconds": round(excerpt_seconds, 1),
+        "clip_scale": round(scale, 4),
+        "segments": {
+            "backing": {"full_start": _sub_clock(starts["backing"]),
+                        "full_end": _sub_clock(starts["backing"] + SUB_EXCERPT_SECONDS),
+                        "mean_backing_db": round(first_value, 1)},
+            "disagree": {"full_start": _sub_clock(starts["disagree"]),
+                         "full_end": _sub_clock(starts["disagree"] + SUB_EXCERPT_SECONDS),
+                         "mean_lead_diff_db": round(second_value, 1)},
+        },
+        "excerpt_ids": ids,
+    })
+
+
+SUB_SHEET_CHECKS = (
+    ("hepsi acik", "Ana + arka + muzik hepsi acik. Cizirti, faz bozulmasi, "
+                   "kayip/eksik ses, vokalde ince/bos duyulma?"),
+    ("ana solo", "Yalniz ana. Arka vokal/koro hala duyuluyor mu? Ana vokalin bir kismi "
+                 "eksik mi (kesik, boguk)?"),
+    ("arka solo", "Yalniz arka. Gercekten arka vokal mi? Ana vokal sizdiriyor mu? "
+                  "Yalniz yanki/artefakt mi duyuluyor?"),
+    ("ana kapali", "Ana MUTE, arka + muzik acik (karaoke). Ana vokal izi (hayalet) "
+                   "kaliyor mu? Arka vokal duyuluyor mu?"),
+)
+
+
+def _sub_sheet(title: str, result: dict) -> str:
+    seg = result["segments"]
+    letters = sorted(result["excerpt_ids"])
+    length = SUB_EXCERPT_SECONDS
+    lines = [
+        f"# Dinleme kagidi (alt parca, vokal): {title}",
+        "",
+        f"Kitapliktaki `[X kisa]` sarkilari ({len(letters)} harf: {', '.join(letters)}) "
+        f"her biri {result['excerpt_seconds']:.0f} sn. Kanallar: lead (ana), backing "
+        f"(arka), other (muzik).",
+        "",
+        "| kesit ici | bolum | tam surumde |",
+        "|---|---|---|",
+        f"| 0:00 - 0:{length:04.1f} | 1. bolum (arka vokalin en guclu oldugu yer) | "
+        f"{seg['backing']['full_start']} - {seg['backing']['full_end']} |",
+        f"| 0:{length:04.1f} - 0:{length + SUB_EXCERPT_GAP:04.1f} | sessizlik | |",
+        f"| 0:{length + SUB_EXCERPT_GAP:04.1f} - 0:{result['excerpt_seconds']:04.1f} | "
+        f"2. bolum (iki harfin ana vokalinin en cok ayristigi yer) | "
+        f"{seg['disagree']['full_start']} - {seg['disagree']['full_end']} |",
+        "",
+        "Her kontrolde ayni sirayla butun harfleri dinle (ayni kanal ayarlari, ayni ses "
+        "seviyesi).",
+        "",
+        "| # | kontrol | ne dinlenir | EN IYI harf | BELIRGIN KUSURLU harfler | kusur hangi bolumde (1/2) |",
+        "|---|---|---|---|---|---|",
+    ]
+    for number, (check, hint) in enumerate(SUB_SHEET_CHECKS, start=1):
+        lines.append(f"| {number} | {check} | {hint} | | | |")
+    lines += ["", "Not (serbest): hangi harf 'gercek arka vokal'a daha yakin?", "", ""]
+    return "\n".join(lines)
+
+
+@app.local_entrypoint()
+def sub_experiment(songs: str = "Final Duet,HAZBIN,Below The Surface",
+                   overlap: int = SUB_OVERLAP, dry: bool = False):
+    """Vokal alt ayrımı deneyi: iki girdi yolu (SW stem / tam karışım).
+
+        modal run backend/app.py::sub_fetch                 # bir kez
+        modal run backend/app.py::sub_experiment
+
+    Çıktılar backend/sub_out/ altında: report.json (ölçümler), key.json (harf
+    anahtarı: dinlemeden ÖNCE açma), sheets/*.md (dinleme kağıtları, harfin ne
+    olduğunu içermez). Kesitler kitaplıkta `[X kisa]` şarkıları olarak görünür.
+    """
+    import random
+
+    out_dir = pathlib.Path(__file__).resolve().parent / "sub_out"
+    sheets = out_dir / "sheets"
+    sheets.mkdir(parents=True, exist_ok=True)
+    needles = [item.strip() for item in songs.split(",") if item.strip()]
+    found = sub_find.remote(needles)
+    for needle in needles:
+        if needle not in found:
+            print(f"[uyari] '{needle}' iceren kaynak sarki bulunamadi")
+    if dry:
+        print(json.dumps(found, ensure_ascii=False, indent=2))
+        return
+
+    key_path, report_path = out_dir / "key.json", out_dir / "report.json"
+    keys = json.loads(key_path.read_text("utf-8")) if key_path.is_file() else {}
+    reports = json.loads(report_path.read_text("utf-8")) if report_path.is_file() else {}
+    pool = list("abcdefghjkmnpqrstuvwxyz")
+    total_cost = 0.0
+
+    for needle in needles:
+        if needle not in found:
+            continue
+        song_id, title = found[needle]
+        print(f"\n--- {title} ---")
+        result = separate_sub.remote(song_id, ",".join(SUB_PATHS), overlap, True)
+        reports[song_id] = result
+        total_cost += result["cost_usd_estimate"]
+        _print_sub_result(result)
+
+        # Harfler her şarkıda rastgele; yol -> harf eşlemesi YALNIZ key.json'da.
+        letters = random.sample(pool, len(SUB_PATHS))
+        mapping = dict(zip(SUB_PATHS, letters))
+        excerpt = sub_excerpt_song.remote(song_id, mapping)
+        keys[song_id] = {"title": title,
+                         "key": {letter: path for path, letter in mapping.items()},
+                         "ids": excerpt["excerpt_ids"]}
+        slug = "".join(ch if ch.isalnum() else "_" for ch in title)[:40]
+        (sheets / f"{slug}.md").write_text(_sub_sheet(title, excerpt), encoding="utf-8")
+        seg = excerpt["segments"]
+        print(f"  1. bolum {seg['backing']['full_start']}-{seg['backing']['full_end']} "
+              f"(arka ort. {seg['backing']['mean_backing_db']} dB), "
+              f"2. bolum {seg['disagree']['full_start']}-{seg['disagree']['full_end']}, "
+              f"kesit {excerpt['excerpt_seconds']} sn, ortak olcek {excerpt['clip_scale']}")
+        key_path.write_text(json.dumps(keys, ensure_ascii=False, indent=2), encoding="utf-8")
+        report_path.write_text(json.dumps(reports, ensure_ascii=False, indent=2),
+                               encoding="utf-8")
+
+    print(f"\nToplam maliyet tahmini: ${total_cost:.3f}")
+    print(f"Kagitlar: {sheets}  |  ANAHTAR (dinleme bitmeden acma): {key_path}")
+
+
+def _print_sub_result(result: dict):
+    print(f"  {result['duration']} sn, overlap {result['overlap']}, "
+          f"{'SOGUK' if result['cold_start'] else 'sicak'} baslangic "
+          f"(boot {result['boot_s']} sn), model {result['model_load_s']} sn, "
+          f"toplam {result['wall_s']} sn, VRAM {result['peak_vram_mb']} MB, "
+          f"~${result['cost_usd_estimate']}")
+    for path_name, m in result["paths"].items():
+        print(f"  [{path_name:4}] cikarim {m['infer_s']} sn ({m['realtime_x']}x) | "
+              f"ana {m['lead_rel_db']} dB, arka {m['backing_rel_db']} dB (vokale gore) | "
+              f"toplam hata {m['sum_err_db']} dB (FLAC24 {m['sum_err_flac24_db']} dB) | "
+              f"ana-arka korelasyon {m['lead_backing_corr']} | "
+              f"arka >-20 dB pencere {m['backing_windows_over_m20db']}/{m['windows']}")
+
+
+@app.function(image=sub_cpu_image, volumes={DATA_DIR: volume}, timeout=300)
+def sub_cleanup_run(dry_run: bool = True, only: str = "") -> dict:
+    """`<id>-sb<harf>s` kesit şarkılarını ve /data/sub-exp'i siler.
+
+    only: doluysa YALNIZ bu kaynak şarkı kimliğinin (öneki) kesitleri ve
+    sub-exp klasörü silinir; diğerleri kalır.
+    """
+    volume.reload()
+    root = pathlib.Path(DATA_DIR) / "songs"
+    pattern = re.compile(r"^[0-9a-f]{64}-sb[a-z]s$")
+    removed = []
+    for entry in sorted(root.iterdir()) if root.is_dir() else []:
+        if not pattern.match(entry.name):
+            continue
+        if only and not entry.name.startswith(only):
+            continue
+        status_path = entry / "status.json"
+        try:
+            data = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if not data.get("source_song"):          # yalnız deney kesitleri
+            continue
+        removed.append(entry.name)
+        if not dry_run:
+            shutil.rmtree(_safe_song_dir(entry.name))
+    exp_root = pathlib.Path(DATA_DIR) / SUB_EXP_SUBDIR
+    if only:
+        exp_root = exp_root / only if _is_valid_song_id(only) else exp_root / "yok"
+    exp_bytes = 0
+    if exp_root.is_dir():
+        exp_bytes = sum(p.stat().st_size for p in exp_root.rglob("*") if p.is_file())
+        if not dry_run:
+            shutil.rmtree(exp_root)
+    if not dry_run:
+        volume.commit()
+    return _assert_plain({"dry_run": bool(dry_run), "excerpt_songs": removed,
+                          "sub_exp_bytes": int(exp_bytes)})
+
+
+@app.local_entrypoint()
+def sub_cleanup(yes: bool = False, only: str = ""):
+    """Deney kesitlerini ve geçici çıktıları temizler (varsayılan: yalnız göster).
+
+    --only <kaynak sarki kimligi>: yalniz o sarkinin kesitleri.
+    """
+    print(json.dumps(sub_cleanup_run.remote(dry_run=not yes, only=only),
+                     ensure_ascii=False, indent=2))
 
 
 @app.function(

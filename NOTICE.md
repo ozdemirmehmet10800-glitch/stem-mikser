@@ -53,6 +53,50 @@ kopyası hâlâ öyle diyor), yazar sonradan MIT'e çevirmiş. 2026-09-28'de
 kontrol edilen güncel metadata `mit`, commit
 `ac9b0614ab3cd7f77219e18ba494dfd93956c348`.
 
+### Mel-Band Roformer Karaoke (becruily) — **LİSANS BELİRSİZ, kişisel kullanım**
+
+Aşama 10 (alt parçalar) vokal ayrımı: ana vokal / arka vokal. Deneyde
+kullanılıyor (`backend/app.py::separate_sub`), canlıya BAĞLI DEĞİL.
+
+| | |
+|---|---|
+| dosya | `mel_band_roformer_karaoke_becruily.ckpt`, 1 719 139 254 bayt |
+| sha256 | `d3aa262ac01df870b9fc033e9c7b6cad33fe04fc9c148b6c40841326a515a0e0` |
+| config | `config_karaoke_becruily.yaml`, sha256 `cd37b0dcc285fc22d88090415722ac7127ee1d9ea2f3346c3b8d8fcc61e0c74b` |
+| indirildiği yer | `becruily/mel-band-roformer-karaoke` (Hugging Face), commit `0c149975cfaa261c7d87baf54330a9da85bcf888` |
+| o deponun lisans beyanı | **yok** (model kartı ve lisans metadata'sı boş) |
+
+**Durum olduğu gibi:**
+
+- Depoda lisans beyanı yok. HF'deki "License" tartışmasında (#1, "Under what
+  license is this model released?") sahibi şöyle yanıtlamış: *"You can use the
+  model freely as long as it's not commercial use."* ve ticari kullanım için
+  iletişime geçilmesini istemiş. Yani gayriresmî "ticari olmayan serbest".
+  Kontrol tarihi: 2026-10-01.
+- Ağırlık **bu depoda dağıtılmıyor**. Çalışma anında yukarıdaki sürümden
+  Modal Volume'a iniyor (`fetch_sub_weights`) ve sha256 doğrulanıyor.
+- Kullanım **kişisel**. Bu, proje sahibinin bilinçli kararıdır; lisans
+  belirsizliği bilinerek kabul edilmiştir. Ticari kullanım ya da yeniden
+  dağıtım yok; olacaksa sahibinden yazılı izin gerekir.
+- Mimari kodu (`mel_band_roformer.py`) MSST'den, MIT (aşağıya bak).
+
+### MDX23C DrumSep (aufr33 & jarredou) — **LİSANS BELİRSİZ, kişisel kullanım** (henüz kullanılmıyor)
+
+Aşama 10 davul alt parçaları için SEÇİLDİ, entegrasyon sonraki oturumda.
+6 çıkış: kick / snare / toms / hi-hat / ride / crash (ride + crash sunucuda
+tek "cymbals" kanalına birleştirilecek).
+
+| | |
+|---|---|
+| ağırlık | `aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.ckpt` |
+| kaynak | `github.com/jarredou/models`, sürüm `aufr33-jarredou_MDX23C_DrumSep_model_v0.1` |
+| lisans beyanı | **yok**: MSST'nin model listesi (`docs/pretrained_models.md`) bu model için lisansı "belirtilmemiş" diye gösteriyor, sürüm sayfasında da lisans dosyası görülmedi (2026-10-01) |
+
+**Durum olduğu gibi:** ağırlık depoda dağıtılmayacak, Volume'a sha256
+doğrulamalı inecek; kullanım **kişisel**, belirsizlik bilinerek kabul edildi;
+ticari kullanım ya da yeniden dağıtım için lisansın netleşmesi gerekir.
+Sha256 ve sürüm, indirme kodu yazıldığında buraya eklenecek.
+
 ---
 
 ## Kod

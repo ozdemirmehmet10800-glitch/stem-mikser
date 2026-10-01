@@ -444,6 +444,42 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      kısa yeniden başlatma (~150 ms) yeterli. Canlı değişim yalnız gerekirse, ayrı
      iş olarak. Telefonda aynı anda tek ana kanal açık olabilir.
    - **İleride ön ayar:** "Karaoke (arka vokal kalsın)" yalnız ANA vokali sustursun.
+   - **Oturum 1 (vokal, yalnız backend + deney) YAPILDI (2026-10-01), CANLIYA BAĞLI DEĞİL.**
+     `backend/app.py`: `fetch_sub_weights` (becruily karaoke, commit 0c14997, sha256
+     doğrulamalı, Volume `weights-sub/`), `separate_sub(song_id, paths, overlap,
+     experiment)`, `sub_experiment` / `sub_excerpt_song` / `sub_cleanup` (deney),
+     ayrı `sub_image` (Hi-Fi `separate_image`ına DOKUNMADAN librosa'lı). Deploy
+     EDİLMEDİ; `status.sub`, `stems/sub/`, API yolu ve arayüz sonraki oturumlar.
+     `_hifi_demix`'e isteğe bağlı `overlap` parametresi eklendi (varsayılan aynı,
+     Hi-Fi davranışı değişmedi) AMA Hi-Fi koduna dokunulduğu için **deploy'dan ÖNCE
+     `modal run backend/app.py::hifi_smoke` koşulmalı**.
+     - Model çıktıları `[Vocals, Instrumental]`; Vocals = ANA vokal. Ağırlık
+       yüklemesi strict: eksik/fazla anahtar hata verir.
+     - **Ölçümler (T4, fp32, overlap 2):** çıkarım gerçek zamanın ~2.1-2.4 katı
+       hızlı (0.42-0.48 x süre), tek yol için 4 dk'lık şarkı ~115 sn + model yükleme
+       11-23 sn (1.7 GB, Volume'dan) => **~$0.022-0.03 / şarkı (tek yol)**; iki yol
+       birlikte HAZBIN (340 sn) için $0.055. VRAM ~3.0-3.2 GB. Soğuk başlangıç boot
+       ~4 sn (imaj önbellekliydi).
+     - **Toplam hatası:** ana + arka − SW vokal float'ta -150…-170 dB, FLAC 24-bit
+       ölçekli yazımda -128…-130 dB (vokale göre): pratikte sıfır, yapısal.
+     - **Arka/vokal RMS ve ana/vokal RMS (stem girdi | karışım girdi):**
+       HAZBIN ana -1.6 | -1.1 dB, arka -6.6 | -8.5 dB (arka belirgin, iki yol yakın);
+       Zeus ana -0.2 | -0.1, arka -16.9 | -14.8 (zayıf arka); Below The Surface ana
+       -17.1 | -14.8, arka -0.1 | -0.2 (model neredeyse HER ŞEYİ arkaya veriyor:
+       işlenmiş/koro vokal, ana boş kalıyor; hata ya da model sınırı, kulakla
+       bakılacak).
+     - **Final Duet GEÇERSİZ vaka:** SW vokal stem'i -118.7 dBFS, yani şarkı
+       enstrümantal (vokal yok). Karışım yolunda model enstrüman melodisini "ana
+       vokal" saydı (ana vokale göre +49 dB, ana/arka korelasyon -1.0). Kesitleri
+       silindi (`sub_cleanup --only`). Zor vaka olarak yerine Zeus kondu.
+     - **Karışım yolunun yapısal riski:** arka = SW vokal − ana(karışımdan) olduğu için
+       model vokal olmayan içeriği "ana" sayarsa arka kanalda onun NEGATİFİ çıkar
+       (korelasyon -1.0 örneği). Stem yolunda bu olmaz (ana, SW vokalin içinden).
+     - **Kulak testi:** kör kesitler kitaplıkta `[X kisa]` (HAZBIN g/q, Below The
+       Surface c/w, Zeus a/n), kanallar lead/backing/other; kağıtlar
+       `backend/sub_out/sheets/`, anahtar `backend/sub_out/key.json` (gitignore'lı).
+       **Henüz dinlenmedi; sonuç yazılınca karar (stem mi karışım mı) verilecek.**
+
 
 ### Sonra (şimdilik gerek yok)
 **Anında başlatma (önizleme dosyaları).** KOD YOK, plan. **ERTELENDİ
