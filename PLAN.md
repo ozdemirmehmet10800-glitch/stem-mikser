@@ -143,7 +143,8 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      başka şarkı açılınca %17'de duruyor ve açılış bitince %67'ye devam ediyor.
 
 ### Sırada
-7. [ ] **Piyano ve davulu Hi-Fi modelden (BS-RoFormer SW) almak.** PLAN ONAYLANDI
+7. [x] **Piyano ve davulu Hi-Fi modelden (BS-RoFormer SW) almak.** CANLIDA: hifi_v2 (2026-10-01).
+   PLAN ONAYLANDI
    (2026-09-29), deney KODU henüz yazılmadı (şarkı adları bekleniyor).
    **Temel:** SW altı stem'i tek geçişte zaten üretiyor; `_hifi_vocals` beşini
    atıyor (`app.py:972`). Ek GPU maliyeti 0 sn. Stem sırası (`training.instruments`)
@@ -309,6 +310,19 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      girmediği için görülmedi; piyano stem'inde >2 kHz payı V0 0.33, SW 0.027.
    - **ÖNERİ: canlıya V2o** (piyano+davul SW'den, artık other'a). V1 (yalnız piyano)
      ve V3 değil.
+
+   **CANLIYA ALINDI (2026-10-01): V2o = hifi_v2.** `separate()`: enstrümantal = karışım -
+   vokal - piyano - davul, demucs yalnız bas/gitar/other; demucs'un vokal/piyano/davul
+   artığı other'a (`_hifi_v2_compose`, testli: tests/test_hifi_compose.py).
+   `status.json` `pipeline: hifi_v2` (alan yoksa hifi_v1), /songs listesinde de var;
+   telefon önbellek anahtarı `stems_version.pipeline` (`cacheTag`), SW v26.
+   hifi_smoke üç SW stem'ini kontrol ediyor (varsayılan referans HAZBIN deney
+   çıktıları `pdm`/`pdt`; deney şarkıları silindiği için artık "referans yok"
+   UYARISI verir, hata değil). Deploy öncesi smoke geçti (davul SNR 124 dB).
+   9 şarkı reprocess edildi (hepsi hifi_v2); 2 sn'lik klip ve "slowed+reverb"
+   Nothing Else Matters atlandı. 66 harfli deney şarkısı (kısa+tam) ve ölü MSST kopyası
+   silindi. Bilinen risk: BTS'de davul sızıntısı iki oturumda ters yorumlandı; V0'da da
+   var, kararı değiştirmedi.
 
    **Canlı yola girerse (sonuç iyi çıkarsa):**
    - `_hifi_vocals`'ın dönüşü genişler, `separate` piyano/davulu çıkarır,
