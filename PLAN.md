@@ -490,10 +490,36 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
          Below The Surface 0.02. **%25 eşiği Ado'yu 0.001 farkla keser** (8D ses
          işlenmiş, kulakla bakılmadı); NEM-slowed 0.37 geçer. Net kopuş yok: gri bölge
          0.25-0.4, işlenmiş sesler. Öneri: < 0.10 güvenilmez (dosya yazılmaz), 0.10-0.50
-         yazılır + arayüzde "ayrım güvenilmez olabilir" rozeti, >= 0.50 temiz. Onay bekliyor.
+         yazılır + arayüzde "ayrım güvenilmez olabilir" rozeti, >= 0.50 temiz. **ONAYLANDI
+         (2026-10-01)**, vokal yok eşiği -50 dBFS da onaylı. Ado/NEM için ek kesit gerekmedi
+         (kullanıcı özellik canlıya gelince telefonda dinleyecek).
        * Doğrulama araçları: `sub_levels`, `sub_validate` (kesitsiz, metrik), sonuç
          `backend/sub_out/validate.json` (gitignore'lı). Tek yol maliyeti ölçüldü:
          ~$0.013-0.026 / şarkı (3.5-7 dk).
+     - **OTURUM 2 (sunucu + API + telefon önbelleği) YAYINDA, `modal deploy` 2026-10-01.**
+       * `POST /songs/{id}/sub`: ÖNCE CPU'da "vokal yok" (API konteynerinde ffmpeg
+         `astats`, GPU AÇILMAZ; olabildi), sonra `separate_sub(..., production=True)`.
+         Durumlar `status.sub.state`: running | done | unreliable | no_vocals | error.
+         Mevcut sonuç varsa tekrar koşmaz; 40 dk'dan eski "running" takılmış sayılıp
+         yeniden denenir. `GET /songs/{id}/substems/{lead|backing}.m4a` (Range'li).
+         `/songs` listesinde `sub_state`, `sub_version`. Alt ayrım sürerken silme ve
+         reprocess 409.
+       * Üretim: `master/sub/*.flac` + `stems/sub/*.m4a` (AAC 256k/48 kHz) + `status.sub`
+         (`version`, `parent_stems_version`, `parent_pipeline`, `lead_share`,
+         `reliability` ok|warn, `model`, `thresholds`...). `stems_version`/`pipeline`
+         DEĞİŞMEZ. Önce dosyalar, sonra status. `separate` başında `_sub_drop`: ana
+         şarkı yeniden işlenince alt parçalar ve `status.sub` silinir (CANLIDA doğrulandı).
+       * Telefon: `api.startSub`, `api.subStemBuffer`, `StemCache.removeNames`
+         (sunucuda alt ayrım yoksa cihazdaki lead/backing silinir), SW v30. Arayüz
+         (düğme, rozet, mikser) OTURUM 3.
+       * Doğrulama: `hifi_smoke` GEÇTİ; canlı Zeus'ta gerçek alt ayrım (lead payı 0.979,
+         ok, $0.015, soğuk 89 sn); iki m4a AAC 48 kHz stereo 158.29 sn (ana vokalle aynı),
+         toplam hatası m4a'da -46.6 dB; Final Duet ve Zeus için CPU kapısı (-118.66 → vokal
+         yok, -25.05 → ok); normal ayırma uçtan uca sentetik şarkıda (hifi_v2, 6 stem,
+         status.sub yok); reprocess alt ayrımı düşürüyor, stems_version artıyor.
+         Testler: tests/test_sub_gate.py (48), tests/test_sub_api.py (38, gerçek FastAPI
+         handler'ları, sahte Modal), stemcache testleri. **GERÇEK HTTP (token'lı) çağrısı
+         yapılmadı:** API_TOKEN Modal secret'ında, bende yok.
      - **Kulak testi:** kör kesitler kitaplıkta `[X kisa]` (HAZBIN g/q, Below The
        Surface c/w, Zeus a/n), kanallar lead/backing/other; kağıtlar
        `backend/sub_out/sheets/`, anahtar `backend/sub_out/key.json` (gitignore'lı).

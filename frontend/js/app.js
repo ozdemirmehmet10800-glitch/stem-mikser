@@ -1151,6 +1151,11 @@ async function openSong(song) {
     }
     currentSong = { ...song, ...detail };
     const stems = (detail.status && detail.status.stems) || STEM_ORDER;
+    // Alt parçalar (Aşama 10): sunucuda yoksa (ana şarkı yeniden işlendi) cihazdaki
+    // lead/backing bayat kalmasın. Arayüz oturum 3'te.
+    if (!(detail.status && detail.status.sub && detail.status.sub.state === "done")) {
+      stemCache.removeNames(song.id, ["lead", "backing"]).catch(() => {});
+    }
     // Yeniden işlemede stem dosyaları değişiyor; sürüm önbellek anahtarına
     // giriyor, yoksa cihaz eski sesi çalmaya devam eder.
     const stemsVersion = Number((detail.status && detail.status.stems_version) || 0);

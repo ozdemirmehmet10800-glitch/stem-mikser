@@ -454,6 +454,9 @@ def _delete_block_reason(status):
                   "analyzing": "analiz ediliyor"}
         return (f"Sarki islenirken silinemez ({labels.get(state, state)}). "
                 "Bitmesini bekleyip tekrar dene.")
+    if _sub_is_running(status):
+        return ("Alt parcalar ayrilirken silinemez. "
+                "Bitmesini bekleyip tekrar dene.")
     return None
 
 
@@ -1695,6 +1698,111 @@ SUB_EXCERPT_GAP = 1.0
 SUB_EXCERPT_FADE = 0.020
 SUB_PATHS = ("stem", "mix")
 
+# --- Üretim kapıları (PLAN.md Aşama 10, ölçümle onaylı) ---------------------
+# 1) "Vokal yok": SW vokal RMS < -50 dBFS => model ÇALIŞMAZ, GPU açılmaz. Bu
+#    kontrol API konteynerinde (CPU, ffmpeg astats) yapılıyor. Ölçüm: 6 gerçek
+#    vokal -17.5..-25.1 dBFS, Final Duet -118.7 dBFS.
+# 2) Lead payı = ana güç / (ana + arka güç): < 0.10 güvenilmez (dosya YAZILMAZ),
+#    0.10-0.50 yazılır + "ayrım güvenilmez olabilir" rozeti, >= 0.50 temiz.
+#    Ölçüm (stem yolu): Zeus 0.98, Usseewa 0.96, HAZBIN 0.76, NEM slowed 0.37,
+#    Ado 8D 0.249, Below The Surface 0.02.
+SUB_SILENT_DBFS = -50.0
+SUB_LEAD_UNRELIABLE = 0.10
+SUB_LEAD_WARN = 0.50
+SUB_RUNNING_STALE_SECONDS = 2400     # bundan uzun "running" = takılmış, yeniden denenebilir
+SUB_PART_NAMES = ("lead", "backing")
+
+
+def _sub_lead_share(lead_rel_db: float, backing_rel_db: float) -> float:
+    """Ana gücün (ana + arka) gücüne oranı; dB değerleri vokale göre."""
+    lead = 10.0 ** (float(lead_rel_db) / 10.0)
+    backing = 10.0 ** (float(backing_rel_db) / 10.0)
+    total = lead + backing
+    return lead / total if total > 0 else 0.0
+
+
+def _sub_lead_gate(share: float) -> str:
+    """'unreliable' | 'warn' | 'ok'."""
+    if share < SUB_LEAD_UNRELIABLE:
+        return "unreliable"
+    if share < SUB_LEAD_WARN:
+        return "warn"
+    return "ok"
+
+
+def _sub_vocal_gate(rms_dbfs: float) -> str:
+    """'no_vocals' | 'ok'."""
+    return "no_vocals" if float(rms_dbfs) < SUB_SILENT_DBFS else "ok"
+
+
+_ASTATS_RMS = re.compile(r"RMS level dB:\s*(-?inf|[-+]?\d+(?:\.\d+)?)", re.IGNORECASE)
+
+
+def _parse_astats_rms(text: str) -> float:
+    """ffmpeg astats çıktısından GENEL (Overall) RMS seviyesi, dBFS.
+
+    Çıktıda önce kanal bölümleri, en sonda 'Overall' bölümü var; son 'Overall'dan
+    sonraki ilk 'RMS level dB' alınır. Tamamen sessizlikte ffmpeg '-inf' yazar:
+    -200 sayılıyor.
+    """
+    index = text.rfind("Overall")
+    if index < 0:
+        raise ValueError("astats ciktisinda 'Overall' bolumu yok")
+    match = _ASTATS_RMS.search(text, index)
+    if not match:
+        raise ValueError("astats ciktisinda 'RMS level dB' yok")
+    value = match.group(1).lower()
+    if value.endswith("inf"):
+        return -200.0
+    return float(value)
+
+
+def _sub_vocal_level(path: pathlib.Path) -> float:
+    """SW vokal stem'inin RMS seviyesi (dBFS), CPU'da, model/torch YOK."""
+    proc = subprocess.run(
+        ["ffmpeg", "-nostdin", "-hide_banner", "-v", "info", "-i", str(path),
+         "-af", "astats=metadata=0:reset=0", "-f", "null", "-"],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        err = proc.stderr.decode("utf-8", "replace")[-1500:] if proc.stderr else ""
+        raise RuntimeError(f"ffmpeg astats basarisiz (kod {proc.returncode}): {err}")
+    return _parse_astats_rms(proc.stderr.decode("utf-8", "replace"))
+
+
+def _sub_is_running(status) -> bool:
+    """Alt ayrım sürüyor mu? Çok uzun süredir 'running' ise TAKILMIŞ sayılır."""
+    sub = (status or {}).get("sub") or {}
+    if sub.get("state") != "running":
+        return False
+    started = float(sub.get("started") or 0)
+    return (time.time() - started) < SUB_RUNNING_STALE_SECONDS
+
+
+def _sub_drop(song_id: str) -> bool:
+    """Alt parçaları ve status.sub'ı siler (ana şarkı yeniden işlenirken).
+
+    Ana stem değişince alt parçaların toplamı artık tutmaz; bayat bırakılmaz.
+    Dönen: bir şey silindi mi.
+    """
+    song_dir = _song_dir(song_id)
+    removed = False
+    for part in (song_dir / "master" / "sub", song_dir / "stems" / "sub"):
+        if part.exists():
+            shutil.rmtree(part, ignore_errors=True)
+            removed = True
+    status_path = song_dir / "status.json"
+    if status_path.is_file():
+        data = json.loads(status_path.read_text(encoding="utf-8"))
+        if "sub" in data:
+            data.pop("sub")
+            status_path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                                   encoding="utf-8")
+            removed = True
+    if removed:
+        volume.commit()
+    return removed
+
 # GPU imajı. Hi-Fi `separate_image`ından AYRI: Mel-Band Roformer'ın mel filtre
 # bankası librosa istiyor ve canlı imaja (demucs ağırlığını build'de gömen,
 # deploy edilmiş) librosa eklemek onu yeniden build ettirirdi. demucs YOK.
@@ -1910,6 +2018,63 @@ def _sub_metrics(vocal, lead, backing, samplerate: int) -> dict:
     }
 
 
+def _sub_produce(song_id: str, status: dict, vocal, lead, backing, metrics: dict,
+                 seconds: dict) -> dict:
+    """Kapıyı uygular; güvenilirse dosyaları ve status.sub'ı yazar.
+
+    Sıra: ÖNCE dosyalar, SONRA status (state=done gören okuyucu dosyaları
+    bulur). Güvenilmezse (lead payı < 0.10) HİÇBİR dosya yazılmaz.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    share = _sub_lead_share(metrics["lead_rel_db"], metrics["backing_rel_db"])
+    gate = _sub_lead_gate(share)
+    base = {
+        "lead_share": round(share, 4),
+        "lead_rel_db": metrics["lead_rel_db"],
+        "backing_rel_db": metrics["backing_rel_db"],
+        "sum_err_db": metrics["sum_err_db"],
+        "sum_err_flac24_db": metrics["sum_err_flac24_db"],
+        "parent_stems_version": status.get("stems_version"),
+        "parent_pipeline": status.get("pipeline"),
+        "model": {"name": "becruily/mel-band-roformer-karaoke", "rev": SUB_KARAOKE_REV,
+                  "input": "stem", "overlap": SUB_OVERLAP},
+        "thresholds": {"silent_dbfs": SUB_SILENT_DBFS, "unreliable": SUB_LEAD_UNRELIABLE,
+                       "warn": SUB_LEAD_WARN},
+        "seconds": seconds,
+        "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    song_dir = _song_dir(song_id)
+    for part in (song_dir / "master" / "sub", song_dir / "stems" / "sub"):
+        shutil.rmtree(part, ignore_errors=True)       # yeniden koşumda eski dosyalar kalmasın
+
+    if gate == "unreliable":
+        sub = {**base, "state": "unreliable", "parts": {}}
+        _write_status(song_id, sub=sub)
+        print(f"[sub] GUVENILMEZ: lead payi {share:.3f} < {SUB_LEAD_UNRELIABLE}; dosya yazilmadi")
+        return sub
+
+    # Tepe 1'i aşarsa (model taşırması) ikisi ORTAK ölçekle yazılır; aşmıyorsa dokunulmaz.
+    peak = max(float(abs(lead).max()), float(abs(backing).max()))
+    scale = 1.0 if peak <= 1.0 else 1.0 / (1.01 * peak)
+    master_dir = song_dir / "master" / "sub"
+    stems_dir = song_dir / "stems" / "sub"
+    master_dir.mkdir(parents=True, exist_ok=True)
+    stems_dir.mkdir(parents=True, exist_ok=True)
+    for name, array in (("lead", lead), ("backing", backing)):
+        flac_path = master_dir / f"{name}.flac"
+        sf.write(str(flac_path), (array * np.float32(scale)).T, 44100,
+                 subtype=FLAC_SUBTYPE, format="FLAC")
+        _encode_stem_m4a(flac_path, stems_dir / f"{name}.m4a", 2)
+    sub = {**base, "state": "done", "reliability": gate,
+           "version": int(time.time()), "clip_scale": round(scale, 6),
+           "parts": {"vocals": list(SUB_PART_NAMES)}}
+    _write_status(song_id, sub=sub)
+    print(f"[sub] yazildi: lead payi {share:.3f} ({gate}), surum {sub['version']}")
+    return sub
+
+
 @app.function(
     image=sub_image,
     gpu="T4",
@@ -1918,7 +2083,7 @@ def _sub_metrics(vocal, lead, backing, samplerate: int) -> dict:
     max_containers=1,       # min_containers YOK: boştayken maliyet sıfır
 )
 def separate_sub(song_id: str, paths: str = "stem", overlap: int = SUB_OVERLAP,
-                 experiment: bool = False) -> dict:
+                 experiment: bool = False, production: bool = False) -> dict:
     """Vokali ana / arka vokale böler.
 
     paths: "stem" (SW vokal stem'i girdi), "mix" (tam karışım girdi) ya da
@@ -1930,8 +2095,32 @@ def separate_sub(song_id: str, paths: str = "stem", overlap: int = SUB_OVERLAP,
     status.json'a dokunulmaz. (Üretimde `stems/sub/` + `status.sub` sonraki
     oturumların işi.)
 
+    production=True: üretim modu (API'den). Yalnız "stem" yolu; lead payı kapısı
+    uygulanır; güvenilirse `master/sub/` + `stems/sub/` + `status.sub` yazılır,
+    güvenilmezse yalnız `status.sub` (state=unreliable). Hata olursa
+    `status.sub.state = "error"`. "Vokal yok" kapısı BURADA DEĞİL, API'de (CPU):
+    GPU konteyneri açılmadan elenir.
+
     Dönen: ölçümler, süreler ve maliyet tahmini (düz Python).
     """
+    global _SUB_FIRST_CALL
+
+    if production:
+        try:
+            return _separate_sub_impl(song_id, "stem", overlap, False, True)
+        except Exception as error:     # durumu "çalışıyor"da bırakma
+            with contextlib.suppress(Exception):
+                volume.reload()
+                _write_status(song_id, sub={"state": "error",
+                                            "error": str(error)[:300],
+                                            "finished_at": time.strftime(
+                                                "%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+            raise
+    return _separate_sub_impl(song_id, paths, overlap, experiment, False)
+
+
+def _separate_sub_impl(song_id: str, paths: str, overlap: int, experiment: bool,
+                       production: bool) -> dict:
     global _SUB_FIRST_CALL
 
     import numpy as np
@@ -1989,6 +2178,10 @@ def separate_sub(song_id: str, paths: str = "stem", overlap: int = SUB_OVERLAP,
         metrics["infer_s"] = infer_seconds
         metrics["realtime_x"] = round(duration / infer_seconds, 2) if infer_seconds else 0.0
         out[path_name] = metrics
+        if production:
+            metrics["production"] = _sub_produce(
+                song_id, status, reference, lead, backing, metrics,
+                {"model_load": load_seconds, "infer": infer_seconds})
         print(f"[sub] {path_name}: {infer_seconds} sn (gercek zamanin {metrics['realtime_x']}x), "
               f"ana {metrics['lead_rel_db']} dB, arka {metrics['backing_rel_db']} dB, "
               f"toplam hata {metrics['sum_err_db']} dB")
@@ -2442,6 +2635,69 @@ def sub_validate(silent_below: float = -70.0, min_seconds: float = 10.0,
         json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+@app.function(image=light_image, volumes={DATA_DIR: volume}, timeout=300)
+def sub_gate_check(song_id: str) -> dict:
+    """API'nin "vokal yok" kapısının AYNISI (ffmpeg astats, CPU, GPU açılmaz).
+
+    Canlı doğrulama için: `modal run backend/app.py::sub_gate`. status'a YAZMAZ.
+    """
+    volume.reload()
+    vocal_path = _song_dir(song_id) / "master" / "vocals.flac"
+    level = round(_sub_vocal_level(vocal_path), 2)
+    status = json.loads((_song_dir(song_id) / "status.json").read_text(encoding="utf-8"))
+    return _assert_plain({"title": str(status.get("title") or ""), "vocal_rms_dbfs": level,
+                          "gate": _sub_vocal_gate(level),
+                          "sub": str((status.get("sub") or {}).get("state"))})
+
+
+@app.local_entrypoint()
+def sub_gate(songs: str = "Zeus,Final Duet"):
+    needles = [item.strip() for item in songs.split(",") if item.strip()]
+    for needle, (song_id, _title) in sub_find.remote(needles).items():
+        print(needle, json.dumps(sub_gate_check.remote(song_id), ensure_ascii=False))
+
+
+@app.function(image=sub_cpu_image, volumes={DATA_DIR: volume}, timeout=600, memory=8192)
+def sub_files_check(song_id: str) -> dict:
+    """Üretilen alt parça m4a'larını doğrular: boyut, süre, örnekleme hızı ve
+    ana vokal m4a'sına göre toplam hatası (AAC gürültüsü dahil). status'a YAZMAZ."""
+    import numpy as np
+
+    volume.reload()
+    base = _song_dir(song_id) / "stems"
+    out = {}
+    decoded = {}
+    for name, path in (("lead", base / "sub" / "lead.m4a"),
+                       ("backing", base / "sub" / "backing.m4a"),
+                       ("vocals", base / "vocals.m4a")):
+        info = {"exists": path.is_file()}
+        if info["exists"]:
+            info["bytes"] = int(path.stat().st_size)
+            probe = _run(["ffprobe", "-v", "error", "-show_entries",
+                          "stream=codec_name,sample_rate,channels:format=duration",
+                          "-of", "json", str(path)])
+            data = json.loads(probe.stdout.decode("utf-8"))
+            stream = data["streams"][0]
+            info.update({"codec": stream["codec_name"],
+                         "sample_rate": int(stream["sample_rate"]),
+                         "channels": int(stream["channels"]),
+                         "duration": round(float(data["format"]["duration"]), 2)})
+            decoded[name] = _decode_pcm(path, 48000, 2)
+        out[name] = info
+    if len(decoded) == 3:
+        length = min(array.shape[1] for array in decoded.values())
+        total = decoded["lead"][:, :length] + decoded["backing"][:, :length]
+        reference = decoded["vocals"][:, :length]
+        out["sum_vs_vocals_m4a_db"] = _sub_db(_sub_rms(total - reference), _sub_rms(reference))
+    return _assert_plain(out)
+
+
+@app.local_entrypoint()
+def sub_files(song: str = "Zeus"):
+    for needle, (song_id, _title) in sub_find.remote([song]).items():
+        print(needle, json.dumps(sub_files_check.remote(song_id), ensure_ascii=False, indent=1))
+
+
 @app.function(image=sub_cpu_image, volumes={DATA_DIR: volume}, timeout=300)
 def sub_cleanup_run(dry_run: bool = True, only: str = "") -> dict:
     """`<id>-sb<harf>s` kesit şarkılarını ve /data/sub-exp'i siler.
@@ -2518,6 +2774,9 @@ def separate(song_id: str, quality: str = DEFAULT_QUALITY,
     quality = quality if quality in QUALITIES else DEFAULT_QUALITY
 
     try:
+        # Ana stem'ler değişiyor: alt parçaların toplamı artık tutmaz, bayat
+        # bırakılmaz (Aşama 10). Yeni şarkıda no-op.
+        _sub_drop(song_id)
         _write_status(song_id, state="separating", progress=5, error=None,
                       quality=quality)
 
@@ -3809,6 +4068,8 @@ def api():
                         "quality": data.get("quality"),
                         "stems_version": data.get("stems_version"),
                         "pipeline": data.get("pipeline"),
+                        "sub_state": (data.get("sub") or {}).get("state"),
+                        "sub_version": (data.get("sub") or {}).get("version"),
                     }
                 )
             return found
@@ -3831,12 +4092,8 @@ def api():
 
     # ---------------- stem servisi (Range) ----------------------------------
 
-    @web.get("/songs/{song_id}/stems/{name}.m4a")
-    async def get_stem(song_id: str, name: str, request: Request, _=auth):
-        if "/" in name or "." in name or not name.isalnum():
-            raise HTTPException(status_code=400, detail="Gecersiz stem adi")
-        path = _song_dir(song_id) / "stems" / f"{name}.m4a"
-
+    async def serve_m4a(path, request):
+        """Stem dosyasını Range desteğiyle sunar (ana ve alt parça ortak)."""
         if not await asyncio.to_thread(path.exists):
             await gate.refresh(force=True)  # başka konteyner yeni commit etmiş olabilir
             if not await asyncio.to_thread(path.exists):
@@ -3869,6 +4126,62 @@ def api():
             media_type="audio/mp4",
             headers={**base_headers, "Content-Range": f"bytes {start}-{end}/{size}"},
         )
+
+    @web.get("/songs/{song_id}/stems/{name}.m4a")
+    async def get_stem(song_id: str, name: str, request: Request, _=auth):
+        if "/" in name or "." in name or not name.isalnum():
+            raise HTTPException(status_code=400, detail="Gecersiz stem adi")
+        return await serve_m4a(_song_dir(song_id) / "stems" / f"{name}.m4a", request)
+
+    @web.get("/songs/{song_id}/substems/{name}.m4a")
+    async def get_substem(song_id: str, name: str, request: Request, _=auth):
+        """Alt parça (Aşama 10). Yalnız bilinen adlar: yol dışarı çıkamaz."""
+        if not _is_valid_song_id(song_id):
+            raise HTTPException(status_code=400, detail="Gecersiz sarki kimligi")
+        if name not in SUB_PART_NAMES:
+            raise HTTPException(status_code=400, detail="Gecersiz alt parca adi")
+        return await serve_m4a(_song_dir(song_id) / "stems" / "sub" / f"{name}.m4a", request)
+
+    @web.post("/songs/{song_id}/sub")
+    async def start_sub(song_id: str, _=auth):
+        """Vokali ana/arka olarak böler (istek üzerine).
+
+        Sıra: CPU'da "vokal yok" kontrolü (GPU AÇILMAZ), sonra GPU işi. Sonuç
+        `status.sub`'da; mevcut durum yoklaması onu okur.
+        """
+        await gate.refresh(force=True)
+        status = await require_status(song_id)
+        if status.get("state") != "done" or not status.get("stems"):
+            raise HTTPException(status_code=409, detail="Sarki henuz hazir degil")
+        sub = status.get("sub") or {}
+        if _sub_is_running(status):
+            return {"id": song_id, "state": "running", "existing": True}
+        if sub.get("state") in ("done", "unreliable", "no_vocals"):
+            return {"id": song_id, "state": sub["state"], "existing": True}
+
+        vocal_path = _song_dir(song_id) / "master" / "vocals.flac"
+        if not await asyncio.to_thread(vocal_path.exists):
+            raise HTTPException(status_code=409, detail="Vokal stem'i yok")
+        async with gate.reading():
+            level = await asyncio.to_thread(_sub_vocal_level, vocal_path)
+        level = round(level, 2)
+
+        if _sub_vocal_gate(level) == "no_vocals":
+            record = {"state": "no_vocals", "vocal_rms_dbfs": level,
+                      "parent_stems_version": status.get("stems_version"),
+                      "parent_pipeline": status.get("pipeline"),
+                      "thresholds": {"silent_dbfs": SUB_SILENT_DBFS},
+                      "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            await asyncio.to_thread(_write_status, song_id, sub=record)
+            return {"id": song_id, "state": "no_vocals", "vocal_rms_dbfs": level}
+
+        await asyncio.to_thread(
+            _write_status, song_id,
+            sub={"state": "running", "started": int(time.time()), "vocal_rms_dbfs": level},
+        )
+        call = separate_sub.spawn(song_id, "stem", SUB_OVERLAP, False, True)
+        return {"id": song_id, "state": "running", "call_id": str(call.object_id),
+                "vocal_rms_dbfs": level}
 
     # ---------------- imzalı indirme ----------------------------------------
 
@@ -3953,6 +4266,9 @@ def api():
         status = await require_status(song_id)
         if status.get("state") in ("separating", "analyzing"):
             raise HTTPException(status_code=409, detail="Sarki zaten isleniyor")
+        if _sub_is_running(status):
+            raise HTTPException(status_code=409,
+                                detail="Alt parcalar ayrilirken yeniden islenemez")
         chosen = quality if quality in QUALITIES else DEFAULT_QUALITY
         call = separate.spawn(song_id, chosen, True)
         return {"id": song_id, "call_id": str(call.object_id),

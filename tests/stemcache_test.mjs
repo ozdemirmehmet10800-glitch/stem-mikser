@@ -9,7 +9,7 @@
 // tarafi ayni kefeye koymayan bir temizlik ya dosyayi birakir ya iki kez
 // sayar.
 
-import { StemCache, keyFor, cacheTag } from "../frontend/js/stemcache.js";
+import { StemCache, keyFor, cacheTag, keyMatchesNames } from "../frontend/js/stemcache.js";
 
 const ORIGIN = "https://ornek.test/";
 
@@ -231,9 +231,40 @@ async function testPipelineTag() {
   void cache;
 }
 
+async function testRemoveNames() {
+  await reset();
+  const stems = new StemCache();
+  const tag = cacheTag(9, "sub");
+  for (const name of ["drums", "vocals", "lead", "backing"]) {
+    await stems.put(A, name, buffer(10), name === "lead" || name === "backing" ? tag : cacheTag(5, "hifi_v2"));
+  }
+  await stems.put(B, "lead", buffer(10), tag);
+  check("5 kayit yazildi", indexKeys().length === 5, String(indexKeys().length));
+
+  const result = await stems.removeNames(A, ["lead", "backing"]);
+  check("yalniz o sarkinin lead/backing'i silindi", result.removed === 2 && result.bytes === 20,
+    JSON.stringify(result));
+  check("ana stem'lere dokunulmadi",
+    indexKeys().some((k) => k.includes(`/${A}/drums@`)) && indexKeys().some((k) => k.includes(`/${A}/vocals@`)));
+  check("baska sarkinin lead'i kaldi", indexKeys().includes(keyFor(B, "lead", tag)));
+  check("Cache Storage'dan da gitti",
+    !(await cacheKeys()).some((k) => k.includes(`${A}/lead`) || k.includes(`${A}/backing`)));
+
+  const again = await stems.removeNames(A, ["lead", "backing"]);
+  check("ikinci cagri no-op", again.removed === 0);
+  check("bos ad listesi no-op", (await stems.removeNames(A, [])).removed === 0);
+  check("keyMatchesNames: surumlu ve surumsuz",
+    keyMatchesNames(`stems/${A}/lead@9.sub.m4a`, A, ["lead"]) &&
+    keyMatchesNames(`stems/${A}/lead.m4a`, A, ["lead"]));
+  check("keyMatchesNames: onek tuzagi (leader != lead)",
+    !keyMatchesNames(`stems/${A}/leader@1.m4a`, A, ["lead"]));
+  check("keyMatchesNames: baska sarki",
+    !keyMatchesNames(`stems/${B}/lead@9.m4a`, A, ["lead"]));
+}
+
 for (const test of [testRemovesOneSong, testVersionedKeys, testOnlyInCacheStorage,
                     testOnlyInIndex, testNoopCases, testMultipleSongs,
-                    testIndexHas, testPipelineTag]) {
+                    testIndexHas, testPipelineTag, testRemoveNames]) {
   console.log(`\n--- ${test.name} ---`);
   await test();
 }

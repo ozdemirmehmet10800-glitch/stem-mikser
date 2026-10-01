@@ -163,6 +163,23 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         query = dict(re.findall(r"([^?&=]+)=([^&]*)", self.path))
 
+        match = re.fullmatch(r"/songs/([^/]+)/sub", path)
+        if match:
+            # Sahte alt ayrim (Asama 10): vokal m4a'si hem lead hem backing olarak
+            # servis edilir; durum "done" doner. Gercek API'de state running/
+            # no_vocals/unreliable da olabilir.
+            if not self._authorized():
+                return
+            song = self._song(match.group(1))
+            if not song:
+                self._json(404, {"detail": "Sarki bulunamadi"})
+                return
+            song["status"]["sub"] = {"state": "done", "version": int(time.time()),
+                                      "reliability": "ok", "lead_share": 0.9,
+                                      "parts": {"vocals": ["lead", "backing"]}}
+            self._json(200, {"id": match.group(1), "state": "done", "existing": False})
+            return
+
         if re.fullmatch(r"/songs/[^/]+/download-link", path):
             if not self._authorized():
                 return
@@ -291,6 +308,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(404, {"detail": "Sarki bulunamadi"})
                 return
             self._json(200, {"status": song["status"], "chords": song["chords"]})
+            return
+
+        match = re.fullmatch(r"/songs/([^/]+)/substems/(lead|backing)\.m4a", path)
+        if match:
+            if not self._authorized():
+                return
+            self._serve_file(match.group(1), "stems", "vocals.m4a", "audio/mp4",
+                             ranges=True)
             return
 
         match = re.fullmatch(r"/songs/([^/]+)/stems/([^/]+)\.m4a", path)

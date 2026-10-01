@@ -7,3 +7,10 @@ modal==1.5.5
 # imajı da librosa 0.11.0 kullanıyor (API aynı); numpy sürümü farklı olabilir
 # çünkü yerel Python 3.14 için numpy 1.26.4 wheel'i yok.
 librosa==0.11.0
+
+# Yalnızca tests/test_sub_api.py için: gerçek FastAPI handler'larını Modal'a
+# bağlanmadan çalıştırır (api_image ile aynı sürümler + TestClient için httpx).
+fastapi==0.141.1
+starlette==1.7.0
+python-multipart==0.0.32
+httpx==0.28.1

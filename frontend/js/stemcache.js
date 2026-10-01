@@ -64,6 +64,14 @@ function keyFor(songId, name, version = 0) {
   return `stems/${songId}/${name}${suffix}.m4a`;
 }
 
+// `stems/<id>/<ad>` anahtarı bu adlardan birine mi ait? (sürüm eki `@...` olabilir)
+export function keyMatchesNames(key, songId, names) {
+  const at = String(key).indexOf(`stems/${songId}/`);
+  if (at < 0) return false;
+  const rest = String(key).slice(at + `stems/${songId}/`.length);
+  return names.some((name) => rest === `${name}.m4a` || rest.startsWith(`${name}@`));
+}
+
 export class StemCache {
   constructor() {
     this.available = "caches" in window;
@@ -221,6 +229,46 @@ export class StemCache {
       }
     }
     return { bytes, files: entries.length, songs, limit: MAX_BYTES, quota };
+  }
+
+  // Bir şarkının YALNIZ verilen adlı stem'lerini siler (ör. alt parçalar:
+  // ana şarkı yeniden işlenince sunucu `status.sub`'ı düşürür, cihazdaki
+  // lead/backing bayat kalmasın). Diğer stem'lere dokunmaz.
+  async removeNames(songId, names) {
+    if (!songId || !names || !names.length) return { removed: 0, bytes: 0 };
+    const index = loadIndex();
+    let cache = null;
+    if (this.available) {
+      try {
+        cache = await caches.open(CACHE_NAME);
+      } catch {
+        cache = null;
+      }
+    }
+    let removed = 0;
+    let bytes = 0;
+    if (cache) {
+      try {
+        for (const request of await cache.keys()) {
+          if (!keyMatchesNames(request.url, songId, names)) continue;
+          try {
+            await cache.delete(request);
+          } catch {
+            /* yok say */
+          }
+        }
+      } catch {
+        /* yok say */
+      }
+    }
+    for (const key of Object.keys(index)) {
+      if (!keyMatchesNames(key, songId, names)) continue;
+      bytes += (index[key] && index[key].size) || 0;
+      removed += 1;
+      delete index[key];
+    }
+    if (removed) saveIndex(index);
+    return { removed, bytes };
   }
 
   // Bir şarkının bütün stem'lerini önbellekten siler (şarkı silinince).
