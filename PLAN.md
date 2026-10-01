@@ -427,7 +427,7 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      önce bak: esnetici parametre değişikliğini belirli bir ses saati anına
      zamanlayabiliyor mu? Kaynak hızı giriş dikişinde, ton düzeltmesi çıkış
      dikişinde (dikiş + D) değişirse geçiş bölgesi tamamen kalkabilir.
-8. [~] **Aşama 10 - alt parçalar (vokal: ana/arka KAPANDI; davul: kick/snare/toms/hihat/cymbals backend+deney yapıldı, arayüz ve canlıya alma sırada).**
+8. [~] **Aşama 10 - alt parçalar (vokal KAPANDI; davul canlıda, telefon testi ve tom uyarı eşiğinin kulakla doğrulanması bekliyor).**
    PLAN ONAYLANDI (2026-10-01). Kararlar: önce vokal, sonra davul; davulda ride+crash
    SUNUCUDA tek "cymbals"; becruily karaoke ve MDX23C DrumSep ağırlıkları (lisansı
    belirsiz) NOTICE.md'ye kişisel kullanım notu ve kaynak alıntısıyla yazılır;
@@ -603,6 +603,9 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
          = "toms güç payı >= %8 VE toms tonal pay >= 0.9" (BTS %9.4/0.96 ve NEM-slowed
          %14/0.98 yakalanır, diğerleri değil: Usseewa 0.2%, Zeus 0.07%, Ado 3%, HAZBIN 1.5%)
          + kör kulak testi (BTS, HAZBIN, NEM-slowed) sonrası kesinleştir.
+         **ONAYLANDI (oturum 5): sert kapı YOK, yumuşak uyarı VAR, kör kesit YOK; eşik
+         (toms >= %8 ve tonal >= 0.9) KULAKLA DOĞRULANACAK (kullanıcı BTS'yi telefonda
+         dinleyecek). Uyarı metni: "Tom kanalına başka enstrüman sızmış olabilir".**
        * **Vokal + davul birlikte (CANLI Zeus'un KLONUNDA, klon sonda silindi):** davul
          üretim yolu koştu (172 sn, $0.029 soğuk), vokal parça dosyaları (4, sha256) ve
          `status.sub` BİREBİR aynı, `stems_version`/`pipeline` aynı, davul 6 parça yazıldı.
@@ -610,6 +613,38 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
        * Testler: `tests/test_sub_gate.py` (66), `tests/test_sub_api.py` (52: davul grubu,
          bağımsız durumlar, no_drums, substems parça adları). Araçlar: `drum_validate`,
          `drum_coexist`, `sub_levels(stem)`.
+     - **OTURUM 5 (davul canlıya + telefon) YAPILDI ve YAYINDA (2026-10-01), SW v32,
+       `modal deploy` yapıldı; telefonda doğrulanmadı.**
+       * **drumsother AYRI KANAL DEĞİL:** güç payı < %1 olduğu için sunucuda TOMS'a
+         eklenir, toplam yine tam. Davul grubu 5 kanal: kick, snare, toms, hihat, cymbals;
+         arayüz adları Kick, Snare, Tom, Hi-hat, Zil. `drumsother` artık geçersiz ad (400).
+       * **Yumuşak uyarı** (`_sub_drum_gate`): toms güç payı >= %8 VE toms tonal pay >= 0.9
+         -> `status.sub_drums.reliability = "warn"` (dosyalar yine yazılır, sert kapı yok).
+         Rozet: "Tom kanalına başka enstrüman sızmış olabilir". **Eşik 6 şarkıdan türedi,
+         KULAKLA DOĞRULANACAK.**
+       * Arayüz: davul kanalının altında KENDİ "Alt parçaları ayır" (`~1 dk, ~$0.011`
+         tahmini), yoklama, ok; `sub.js` iki grup (`SUB_GROUPS`, `SUB_KEYS`: vokal `sub`,
+         davul `sub_drums`), grup başına mesajlar ("Bu şarkıda davul yok"). Tek yoklama
+         iki grup için. Bitince grubun alt parçaları cihaza iniyor.
+       * **"Tek ana kanal açık" devrede:** davulu açınca vokal grubu kapanır (ve tersi),
+         TEK yeniden başlatmayla (`engine.regroup({collapse, expand})`; çözme önce, sonra tek
+         stop+play). Konum ve döngü korunur.
+       * **Uzun şarkı eşiği GRUP BAŞINA** (`groupThresholdSec`): tepe tampon = 6 + açık
+         grubun alt kanalları + hedef grubun alt kanalları; eşik 6/tepe ile ölçeklenir
+         (vokal 6/8, davul 6/11, vokaldan davula geçiş 6/13). Sonsuz eşik (8 GB+) sonsuz.
+         NOT: vokal eşiği önceki sürümden (6/6) biraz SIKI (6/8).
+       * "Davulu ben çalıyorum" tüm davul grubunu susturur (ana kanalın M/S'i gruba);
+         mikser hafızası iki grubun alt adlarını kaydeder, kapalı grubun kaydı korunur.
+       * Testler: node (sub 50+, mixmemory davul grubu, engine_leak iki grup arası geçiş +
+         40 geçiş sızıntı + döngü), mock sunucu iki grup (`--sub-mode`, grup parametresi),
+         tarayıcıda uçtan uca (ayır, yoklama, geçiş, S/M, ön ayarlar, warn rozeti), hiza testi
+         tüm satırlar geçti, `hifi_smoke` GEÇTİ (Hi-Fi çıktısı birebir aynı), Python testleri.
+       * **CANLI DOĞRULAMA (token'lı HTTP, 2026-10-01):** Zeus `POST /sub?group=drums` ->
+         running (GPU), 152 sn'de done (`reliability: ok`, toms tonal 0.825, artık payı
+         0.0003); 5 parça (kick 4 694 531, snare 4 280 825, toms 4 667 288, hihat 4 395 074,
+         cymbals 4 697 447 bayt) 200 audio/mp4 `ftyp`, Range 206, aralık dışı 416; drumsother
+         400; vokal alt ayrımı ve `stems_version`/`pipeline` DEĞİŞMEDİ; tekrar POST `existing`.
+         BTS'ye dokunulmadı (kullanıcı telefondan başlatacak).
      - **Kulak testi:** kör kesitler kitaplıkta `[X kisa]` (HAZBIN g/q, Below The
        Surface c/w, Zeus a/n), kanallar lead/backing/other; kağıtlar
        `backend/sub_out/sheets/`, anahtar `backend/sub_out/key.json` (gitignore'lı).

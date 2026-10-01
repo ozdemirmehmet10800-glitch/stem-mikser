@@ -18,7 +18,9 @@ import {
   removeMix, writeLoop, isDefaultMix,
 } from "./mixmemory.js";
 import { ChordStrip, formatTime } from "./chords.js";
-import { SUB_GROUPS, SUB_NAMES, subView, subVersion, isRunning } from "./sub.js";
+import {
+  SUB_GROUPS, GROUP_ORDER, subNames, subOf, subView, subVersion, isRunning, groupThresholdSec,
+} from "./sub.js";
 import { MediaBridge } from "./media.js";
 import { WakeLock } from "./wakelock.js";
 import { StemCache, cacheTag } from "./stemcache.js";
@@ -1133,7 +1135,7 @@ async function openSong(song) {
   mixSongId = null;
   resetLoopState();         // motor döngüyü releaseStems'te bıraktı
   stopSubPolling();
-  subStarting = false;
+  subStarting.clear();
   subBusy = false;
   mixer.groupSpecs.clear();
 
@@ -1161,8 +1163,11 @@ async function openSong(song) {
     const stems = (detail.status && detail.status.stems) || STEM_ORDER;
     // Alt parçalar (Aşama 10): sunucuda yoksa (ana şarkı yeniden işlendi) cihazdaki
     // lead/backing bayat kalmasın. Arayüz oturum 3'te.
-    if (!(detail.status && detail.status.sub && detail.status.sub.state === "done")) {
-      stemCache.removeNames(song.id, ["lead", "backing"]).catch(() => {});
+    for (const group of GROUP_ORDER) {
+      const sub = subOf(detail.status, group);
+      if (!(sub && sub.state === "done")) {
+        stemCache.removeNames(song.id, subNames(group)).catch(() => {});
+      }
     }
     // Yeniden işlemede stem dosyaları değişiyor; sürüm önbellek anahtarına
     // giriyor, yoksa cihaz eski sesi çalmaya devam eder.
@@ -1696,7 +1701,7 @@ function updatePresetButtons(names) {
     const preset = PRESETS.find((item) => item.id === button.dataset.preset);
     if (preset && preset.needsSub) {
       // Alt parçası olmayan (ya da açılamayan) şarkıda pasif.
-      button.disabled = !subUsable();
+      button.disabled = !subUsable(preset.group || "vocals");
     } else {
       button.disabled = !preset || !applyPreset(preset, names);
     }
@@ -1718,10 +1723,12 @@ function buildPresetButtons() {
     button.dataset.preset = preset.id;
     button.textContent = preset.label;
     button.addEventListener("click", async () => {
-      if (preset.needsSub && !subExpanded()) {
-        // Alt parçalar hazır ama kapalı: önce aç (kısa yeniden başlatma).
-        await expandSub();
-        if (!subExpanded()) return;
+      const group = preset.group || "vocals";
+      if (preset.needsSub && !subExpanded(group)) {
+        // Alt parçalar hazır ama kapalı: önce aç (kısa yeniden başlatma; başka
+        // bir grup açıksa o kapanır).
+        await expandSub(group);
+        if (!subExpanded(group)) return;
       }
       const states = applyPreset(preset, [...engine.channels.keys()]);
       // Ön ayar "temiz başlangıç": kapalı alt kanalların eski kayıtlı ayarı da gitsin.
@@ -1745,68 +1752,85 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("pagehide", flushMixSave);
 
 // ------------------------------------------------ alt parçalar (Aşama 10)
-// Vokal kanalının altında: "Alt parçaları ayır" -> yoklama -> açma oku. Açınca
-// ana vokal tamponu bellekten bırakılır, lead/backing çalar (seek gibi kısa
-// yeniden başlatma, canlı tampon değişimi YOK). Telefonda aynı anda tek ana
-// kanal açık olabilir (bugün yalnız vokal var). Mantık sub.js'te.
+// İki grup: vokal (lead/backing) ve davul (kick/snare/tom/hi-hat/zil). Her ana
+// kanalın altında KENDİ "Alt parçaları ayır" düğmesi / durumu / açma oku var.
+// Açınca ana kanalın tamponu bellekten bırakılır, alt kanallar çalar (seek gibi
+// kısa yeniden başlatma, canlı tampon değişimi YOK). AYNI ANDA TEK ana kanal
+// açık: davulu açınca vokal grubu kapanır (ve tersi), TEK yeniden başlatmayla.
+// Mantık sub.js'te.
 
 const SUB_POLL_MS = 4000;
-const SUB_PARENT = "vocals";
 let subPollTimer = 0;
-let subStarting = false;     // "ayır" isteği gidiyor
-let subBusy = false;         // açma/kapama sürüyor
-let currentStemTag = 0;      // ana stem önbellek etiketi (kapatırken ana vokal geri gelsin)
+const subStarting = new Set();   // "ayır" isteği giden gruplar
+let subBusy = false;             // açma/kapama sürüyor
+let currentStemTag = 0;          // ana stem önbellek etiketi (kapatırken ana tampon geri gelsin)
 
-function subStatus() {
-  return currentSong && currentSong.status ? currentSong.status.sub : undefined;
+function subStatus(group) {
+  return currentSong && currentSong.status ? subOf(currentSong.status, group) : undefined;
 }
 
-function subTag() {
-  return cacheTag(subVersion(subStatus()), "sub");
+function subTag(group) {
+  return cacheTag(subVersion(subStatus(group)), "sub");
 }
 
-function subExpanded() {
-  return engine.isExpanded(SUB_PARENT);
+function subExpanded(group) {
+  return engine.isExpanded(group);       // ana kanal adı = grup adı
 }
 
-function subCached() {
-  return Boolean(currentSong) && stemCache.indexHas(currentSong.id, SUB_NAMES, subTag());
+function openGroup() {
+  return GROUP_ORDER.find((group) => engine.isExpanded(group)) || null;
 }
 
-function subViewNow() {
+function subCached(group) {
+  return Boolean(currentSong)
+    && stemCache.indexHas(currentSong.id, subNames(group), subTag(group));
+}
+
+// Uzun şarkı eşiği GRUP BAŞINA (davul 5 alt kanal, vokal 2; başka bir grup açıksa
+// geçişte o da bellekte): bkz. sub.js::groupThresholdSec.
+function groupThreshold(group) {
+  const open = openGroup();
+  const nOpen = open && open !== group ? SUB_GROUPS[open].length : 0;
+  return groupThresholdSec(longSongThresholdSec(), nOpen, SUB_GROUPS[group].length);
+}
+
+function subViewNow(group) {
   return subView({
-    sub: subStatus(),
+    group,
+    sub: subStatus(group),
     duration: engine.duration || Number(currentSong && currentSong.duration) || 0,
     mobile: isMobile(),
-    thresholdSec: longSongThresholdSec(),
+    thresholdSec: groupThreshold(group),
     offline: isOffline(),
-    cached: subCached(),
-    expanded: subExpanded(),
+    cached: subCached(group),
+    expanded: subExpanded(group),
     busy: subBusy,
-    starting: subStarting,
+    starting: subStarting.has(group),
   });
 }
 
-// Ön ayar "Karaoke (arka vokal kalsın)" için: alt parçalar kullanılabilir mi?
-function subUsable() {
-  if (!currentSong || !engine.channels.has(SUB_PARENT)) return false;
-  if (subExpanded()) return true;
-  const view = subViewNow();
+// Ön ayar için: grubun alt parçaları kullanılabilir mi?
+function subUsable(group) {
+  if (!currentSong || !engine.channels.has(group)) return false;
+  if (subExpanded(group)) return true;
+  const view = subViewNow(group);
   return view.kind === "ready" && view.canExpand && !view.disabled;
 }
 
 function refreshSubUi() {
-  if (!currentSong || !engine.channels.has(SUB_PARENT)) {
-    mixer.setGroupControl(SUB_PARENT, null);
-    return;
+  for (const group of GROUP_ORDER) {
+    if (!currentSong || !engine.channels.has(group)) {
+      mixer.setGroupControl(group, null);
+      continue;
+    }
+    const view = subViewNow(group);
+    mixer.setGroupControl(group, {
+      ...view,
+      text: subBusy && view.kind !== "none" ? "Yükleniyor…" : view.text,
+      onButton: () => startSubSeparation(group),
+      onToggle: () => toggleSubExpand(group),
+    });
   }
-  const view = subViewNow();
-  const text = subBusy ? "Yükleniyor…" : view.text;
-  mixer.setGroupControl(SUB_PARENT, {
-    ...view, text,
-    onButton: startSubSeparation,
-    onToggle: toggleSubExpand,
-  });
   updatePresetButtons([...engine.channels.keys()]);
 }
 
@@ -1816,20 +1840,20 @@ function adoptDetail(detail) {
   writeMeta(currentSong.id, detail);     // çevrimdışı açılışta da alt parça bilgisi dursun
 }
 
-async function startSubSeparation() {
-  if (!currentSong || subStarting) return;
+async function startSubSeparation(group) {
+  if (!currentSong || subStarting.has(group)) return;
   if (!requireOnline(el("player-message"), "Alt parçaları ayırmak")) return;
   const songId = currentSong.id;
-  subStarting = true;
+  subStarting.add(group);
   refreshSubUi();
   try {
-    await api.startSub(songId);
-    const detail = await api.getSong(songId);       // status.sub'ın tamamı
+    await api.startSub(songId, group);
+    const detail = await api.getSong(songId);       // status.sub*'ın tamamı
     if (currentSong && currentSong.id === songId) adoptDetail(detail);
   } catch (error) {
     showMessage(el("player-message"), describeError(error));
   } finally {
-    subStarting = false;
+    subStarting.delete(group);
     refreshSubUi();
     ensureSubPolling();
   }
@@ -1840,35 +1864,41 @@ function stopSubPolling() {
   subPollTimer = 0;
 }
 
-// Sürerken 4 sn'de bir durum; bitince durur. Şarkı değişirse / kapanırsa durur.
+function anySubRunning() {
+  return GROUP_ORDER.some((group) => isRunning(subStatus(group)));
+}
+
+// Sürerken 4 sn'de bir durum (iki grup için TEK yoklama); bitince durur. Şarkı
+// değişirse / kapanırsa durur.
 function ensureSubPolling() {
-  if (subPollTimer || !currentSong || !isRunning(subStatus())) return;
+  if (subPollTimer || !currentSong || !anySubRunning()) return;
   const songId = currentSong.id;
   subPollTimer = setInterval(async () => {
     if (!currentSong || currentSong.id !== songId) {
       stopSubPolling();
       return;
     }
+    const before = new Set(GROUP_ORDER.filter((group) => isRunning(subStatus(group))));
     try {
-      const detail = await api.getSong(songId);
-      adoptDetail(detail);
+      adoptDetail(await api.getSong(songId));
     } catch {
       return;                       // geçici ağ hatası: bir sonraki turda tekrar
     }
-    if (isRunning(subStatus())) return;
-    stopSubPolling();
+    if (!anySubRunning()) stopSubPolling();
     refreshSubUi();
-    const state = subStatus() && subStatus().state;
-    if (state === "done") prefetchSubStems();
+    for (const group of before) {
+      const sub = subStatus(group);
+      if (!isRunning(sub) && sub && sub.state === "done") prefetchSubStems(group);
+    }
   }, SUB_POLL_MS);
 }
 
 // Bitince alt parçalar sessizce cihaza iniyor: çevrimdışıyken de açılabilsin.
-async function prefetchSubStems() {
+async function prefetchSubStems(group) {
   if (!currentSong || isOffline()) return;
   const songId = currentSong.id;
-  const tag = subTag();
-  for (const name of SUB_NAMES) {
+  const tag = subTag(group);
+  for (const name of subNames(group)) {
     try {
       if (await stemCache.get(songId, name, tag)) continue;
       const buffer = await api.subStemBuffer(songId, name);
@@ -1880,9 +1910,9 @@ async function prefetchSubStems() {
   if (currentSong && currentSong.id === songId) refreshSubUi();
 }
 
-async function subStemBuffer(name) {
+async function subStemBuffer(group, name) {
   const songId = currentSong.id;
-  const tag = subTag();
+  const tag = subTag(group);
   let buffer = await stemCache.get(songId, name, tag);
   if (!buffer) {
     buffer = await api.subStemBuffer(songId, name);
@@ -1891,12 +1921,12 @@ async function subStemBuffer(name) {
   return buffer;
 }
 
-async function parentStemBuffer() {
+async function parentStemBuffer(parent) {
   const songId = currentSong.id;
-  let buffer = await stemCache.get(songId, SUB_PARENT, currentStemTag);
+  let buffer = await stemCache.get(songId, parent, currentStemTag);
   if (!buffer) {
-    buffer = await api.stemBuffer(songId, SUB_PARENT);
-    await stemCache.put(songId, SUB_PARENT, buffer.slice(0), currentStemTag);
+    buffer = await api.stemBuffer(songId, parent);
+    await stemCache.put(songId, parent, buffer.slice(0), currentStemTag);
   }
   return buffer;
 }
@@ -1909,16 +1939,16 @@ function rebuildMixer() {
   mixSongId = null;
   const names = [...engine.channels.keys()];
   const groups = new Map();
-  for (const [parent, children] of Object.entries(SUB_GROUPS)) {
-    if (engine.isExpanded(parent)) groups.set(parent, children.filter((n) => names.includes(n)));
+  for (const group of GROUP_ORDER) {
+    if (engine.isExpanded(group)) groups.set(group, SUB_GROUPS[group].filter((n) => names.includes(n)));
   }
   mixer.render(names, groups);
   if (currentSong && keep) {
     const storage = mixStorage();
     const record = storage ? readMix(storage, currentSong.id) : null;
     const plan = planRestore(record, names);
-    const subNames = new Set(Object.values(SUB_GROUPS).flat());
-    const only = new Map([...plan].filter(([name]) => subNames.has(name)));
+    const subNamesAll = new Set(Object.values(SUB_GROUPS).flat());
+    const only = new Map([...plan].filter(([name]) => subNamesAll.has(name)));
     if (only.size) engine.applyMix(only);
   }
   mixer.syncFromEngine();
@@ -1926,19 +1956,25 @@ function rebuildMixer() {
   refreshSubUi();
 }
 
-async function expandSub() {
-  if (!currentSong || subBusy || subExpanded()) return;
-  const view = subViewNow();
+async function expandSub(group) {
+  if (!currentSong || subBusy || subExpanded(group)) return;
+  const view = subViewNow(group);
   if (view.kind !== "ready" || !view.canExpand) return;
   subBusy = true;
   refreshSubUi();
   try {
     // Sırayla: her çözme geçici ek bellek açıyor (telefon).
     const buffers = new Map();
-    for (const name of SUB_GROUPS[SUB_PARENT]) {
-      buffers.set(name, await engine.decode(await subStemBuffer(name)));
+    for (const name of SUB_GROUPS[group]) {
+      buffers.set(name, await engine.decode(await subStemBuffer(group, name)));
     }
-    await engine.expandChannel(SUB_PARENT, buffers);
+    // Başka bir grup açıksa o KAPANIR (tek ana kanal açık): ana tamponu da çözülür
+    // ve ikisi TEK yeniden başlatmada değişir.
+    const other = openGroup();
+    const collapse = other
+      ? { parent: other, buffer: await engine.decode(await parentStemBuffer(other)) }
+      : null;
+    await engine.regroup({ collapse, expand: { parent: group, buffers } });
     metronome.resync();
   } catch (error) {
     showMessage(el("player-message"), `Alt parçalar açılamadı: ${describeError(error)}`);
@@ -1948,13 +1984,13 @@ async function expandSub() {
   }
 }
 
-async function collapseSub() {
-  if (!currentSong || subBusy || !subExpanded()) return;
+async function collapseSub(group) {
+  if (!currentSong || subBusy || !subExpanded(group)) return;
   subBusy = true;
   refreshSubUi();
   try {
-    const buffer = await engine.decode(await parentStemBuffer());
-    await engine.collapseChannel(SUB_PARENT, buffer);
+    const buffer = await engine.decode(await parentStemBuffer(group));
+    await engine.collapseChannel(group, buffer);
     metronome.resync();
   } catch (error) {
     showMessage(el("player-message"), `Alt parçalar kapatılamadı: ${describeError(error)}`);
@@ -1964,9 +2000,9 @@ async function collapseSub() {
   }
 }
 
-async function toggleSubExpand() {
-  if (subExpanded()) await collapseSub();
-  else await expandSub();
+async function toggleSubExpand(group) {
+  if (subExpanded(group)) await collapseSub(group);
+  else await expandSub(group);
 }
 
 // ----------------------------------------------------- A-B döngü (Madde 1)

@@ -183,9 +183,9 @@ def test_groups(app):
           bool(app._delete_block_reason({"state": "done", "sub_drums": {"state": "running", "started": now}})))
     check("grup yapilandirmasi", app.SUB_GROUP_CFG["vocals"]["key"] == "sub"
           and app.SUB_GROUP_CFG["drums"]["key"] == "sub_drums"
-          and app.SUB_DRUM_PARTS == ("kick", "snare", "toms", "hihat", "cymbals", "drumsother"))
+          and app.SUB_DRUM_PARTS == ("kick", "snare", "toms", "hihat", "cymbals"))
     check("tum parca adlari: vokal + davul", set(app.SUB_ALL_PARTS) ==
-          {"lead", "backing", "kick", "snare", "toms", "hihat", "cymbals", "drumsother"})
+          {"lead", "backing", "kick", "snare", "toms", "hihat", "cymbals"})
     check("model cikis adlari (ride/crash ayri, sunucuda birlesir)",
           app.SUB_DRUM_MODEL_OUTPUTS == ("kick", "snare", "toms", "hh", "ride", "crash"))
 
@@ -233,19 +233,46 @@ def test_drum_metrics(app):
     hihat = (rng.standard_normal((2, n)) * 0.01).astype(np.float32)
     cymbals = (rng.standard_normal((2, n)) * 0.01).astype(np.float32)
     leak = (np.sin(2 * np.pi * 220 * t) * 0.05).astype(np.float32)[None, :].repeat(2, 0)
-    parts = {"kick": kick, "snare": snare, "toms": toms, "hihat": hihat, "cymbals": cymbals}
-    drums = (sum(parts.values()) + leak).astype(np.float32)
-    other = (drums - sum(parts.values())).astype(np.float32)
+    raw = {"kick": kick, "snare": snare, "toms": toms, "hihat": hihat, "cymbals": cymbals}
+    drums = (sum(raw.values()) + leak).astype(np.float32)
+    other = (drums - sum(raw.values())).astype(np.float32)
+    parts = dict(raw)
+    parts["toms"] = (raw["toms"] + other).astype(np.float32)     # artik toms'a eklenir
     app._sub_harmonic_shares = lambda signals, sr: {name: None for name in signals}   # librosa'siz
     m = app._sub_drum_metrics(drums, parts, other, 44100)
-    check("davul metrik: toplam hatasi ~0 (artik tanimi gerek)", m["sum_err_db"] < -100, str(m["sum_err_db"]))
-    check("davul metrik: artik = sizinti (sinus 0.05 RMS ~ -29 dB)",
-          abs(m["levels"]["drumsother"]["rel_db"] - app._sub_db(app._sub_rms(leak), app._sub_rms(drums))) < 0.2)
-    check("davul metrik: artik gucu payi 0-1", 0.0 < m["other_power_share"] < 1.0, str(m["other_power_share"]))
-    check("davul metrik: tum parcalar rapor edildi",
-          set(m["levels"]) == {"kick", "snare", "toms", "hihat", "cymbals", "drumsother"})
-    check("davul metrik: sessiz parca -200 dB", m["levels"]["toms"]["rel_db"] == -200.0)
-    check("davul kapisi simdilik hep ok (esik olcumden sonra)", app._sub_drum_gate(m) in ("ok", "warn", "unreliable"))
+    check("davul metrik: 5 parca, drumsother YOK",
+          set(m["levels"]) == {"kick", "snare", "toms", "hihat", "cymbals"})
+    check("davul metrik: toplam hatasi ~0 (artik toms'ta, toplam TAM)", m["sum_err_db"] < -100, str(m["sum_err_db"]))
+    check("davul metrik: FLAC24 toplam hatasi cok kucuk", m["sum_err_flac24_db"] < -90, str(m["sum_err_flac24_db"]))
+    check("davul metrik: toms artigi icerir (sinus 0.05 RMS)",
+          abs(m["levels"]["toms"]["rel_db"] - app._sub_db(app._sub_rms(leak), app._sub_rms(drums))) < 0.2)
+    check("davul metrik: birlestirilen artik payi raporlanir (0-1)",
+          0.0 < m["merged_other_power_share"] < 1.0, str(m["merged_other_power_share"]))
+    check("davul metrik: sessiz parca (yok) -200 dB",
+          app._sub_db(app._sub_rms(toms), 1.0) == -200.0)
+
+
+def test_drum_warn(app):
+    # Yumusak uyari: toms gucu >= %8 VE tonal >= 0.9. Olculen 6 sarki (oturum 4):
+    measured = {
+        "Below The Surface": (0.0942, 0.9627, "warn"),
+        "NEM slowed": (0.1395, 0.9792, "warn"),
+        "HAZBIN": (0.015, 0.5492, "ok"),
+        "Usseewa": (0.0023, 0.9689, "ok"),
+        "Zeus": (0.0007, 0.894, "ok"),
+        "Ado 8D": (0.0333, 0.8367, "ok"),
+    }
+    for name, (power, tonal, expected) in measured.items():
+        got = app._sub_drum_gate({"levels": {"toms": {"power_share": power}}, "harmonic_share": {"toms": tonal}})
+        check(f"davul uyarisi {name}: {expected}", got == expected, got)
+    gate = lambda p, t: app._sub_drum_gate({"levels": {"toms": {"power_share": p}}, "harmonic_share": {"toms": t}})  # noqa: E731
+    check("sinir: tam %8 ve 0.9 -> warn", gate(0.08, 0.9) == "warn")
+    check("sinir: %7.99 -> ok", gate(0.0799, 0.99) == "ok")
+    check("sinir: tonal 0.899 -> ok", gate(0.5, 0.899) == "ok")
+    check("tonal olculemediyse (None) sert kapi yok: ok", gate(0.5, None) == "ok")
+    check("esik sabitleri", app.SUB_DRUM_WARN_TOMS_POWER == 0.08 and app.SUB_DRUM_WARN_TOMS_TONAL == 0.9)
+    check("davul sessizlik kapisi -50 dBFS (6 gercek davul -16.6..-25.4, Final Duet -117.7)",
+          app.SUB_DRUMS_SILENT_DBFS == -50.0)
 
 
 def main():
@@ -256,6 +283,7 @@ def main():
     test_drop(app)
     test_groups(app)
     test_drum_metrics(app)
+    test_drum_warn(app)
     print("\n" + "=" * 60)
     print(f"gecen: {len(PASSED)}   basarisiz: {len(FAILED)}")
     for name in FAILED:

@@ -341,6 +341,99 @@ const near = (x, y, eps = 1e-6) => Math.abs(x - y) <= eps;
   e.dispose();
 }
 
+// ------------- iki grup (vokal + davul): "tek ana kanal acik", TEK yeniden baslatma
+{
+  const e = new Engine();
+  await e.loadStems(STEMS, provide, { concurrency: 3 });
+  const V = ["lead", "backing"];
+  const D = ["kick", "snare", "toms", "hihat", "cymbals"];
+  const kids = async (names) => new Map(await Promise.all(names.map(async (n) => [n, await e.decode(new ArrayBuffer(8))])));
+  const parent = async () => e.decode(new ArrayBuffer(8));
+  let plays = 0;
+  const originalPlay = e.play.bind(e);
+  e.play = async () => { plays += 1; return originalPlay(); };
+
+  await e.regroup({ expand: { parent: "vocals", buffers: await kids(V) } });
+  check("vokal acik: 7 canli gain, davul kapali", liveGains(e) === 7 && e.isExpanded("vocals") && !e.isExpanded("drums"));
+  await e.play();
+  e.ctx.currentTime = e.startedAt + 3;
+  const position = e.currentTime;
+  plays = 0;
+
+  await e.regroup({
+    collapse: { parent: "vocals", buffer: await parent() },
+    expand: { parent: "drums", buffers: await kids(D) },
+  });
+  check("gecis: tek yeniden baslatma (play 1 kez)", plays === 1, `(${plays})`);
+  check("gecis: vokal kapandi, davul acik",
+    !e.isExpanded("vocals") && e.isExpanded("drums") && e.channels.get("vocals").buffer !== null
+    && e.channels.get("drums").buffer === null);
+  check("gecis: konum korundu, calma suruyor", e.playing && Math.abs(e.offset - position) < 1e-6, `(${e.offset} vs ${position})`);
+  check("gecis: tamponlu kanal 10 (5 ana + 5 davul alt), alt vokal yok",
+    [...e.channels.values()].filter((c) => c.buffer).length === 10
+    && !e.channels.has("lead") && e.channels.has("kick") && e.channels.has("cymbals"));
+  check("gecis: bagli gain = 10, canli kaynak 10",
+    liveGains(e) === 10 && liveSources(e) === 10, `(${liveGains(e)}/${liveSources(e)})`);
+  check("davul alt kanallarinin ebeveyni davul", D.every((n) => e.channels.get(n).parent === "drums"));
+
+  e.toggleMute("drums");
+  check("davul ANA mute -> 5 alt kanal sessiz", D.every((n) => !e.isAudible(n)) && e.isAudible("bass"));
+  e.toggleMute("drums");
+  e.toggleSolo("toms");
+  check("tom SOLO -> yalniz tom duyulur", e.isAudible("toms") && !e.isAudible("kick") && !e.isAudible("bass"));
+  e.toggleSolo("toms");
+
+  plays = 0;
+  await e.regroup({
+    collapse: { parent: "drums", buffer: await parent() },
+    expand: { parent: "vocals", buffers: await kids(V) },
+  });
+  check("ters gecis: tek yeniden baslatma, vokal acik davul kapali",
+    plays === 1 && e.isExpanded("vocals") && !e.isExpanded("drums") && liveGains(e) === 7);
+
+  let threw = 0;
+  for (const op of [
+    () => e.regroup({ expand: { parent: "vocals", buffers: new Map() } }),
+    () => e.regroup({ collapse: { parent: "drums", buffer: {} } }),
+  ]) {
+    try { await op(); } catch { threw += 1; }
+  }
+  check("zaten acik grubu acma / kapali grubu kapatma hata verir, durum bozulmaz",
+    threw === 2 && e.isExpanded("vocals") && liveGains(e) === 7);
+
+  await e.setLoop(2, 6);
+  await e.regroup({
+    collapse: { parent: "vocals", buffer: await parent() },
+    expand: { parent: "drums", buffers: await kids(D) },
+  });
+  check("dongu + gecis: dongu korundu, kaynaklar dongulu",
+    e.loop && e.loop.a === 2 && [...e.channels.values()].filter((c) => c.source).every((c) => c.source.loop === true));
+  e.clearLoop();
+  e.pause();
+
+  for (let i = 0; i < 40; i += 1) {
+    if (i % 2 === 0) await e.play();
+    const openNow = e.isExpanded("drums") ? "drums" : (e.isExpanded("vocals") ? "vocals" : null);
+    const next = openNow === "drums" ? "vocals" : "drums";
+    await e.regroup({
+      collapse: openNow ? { parent: openNow, buffer: await parent() } : null,
+      expand: { parent: next, buffers: await kids(next === "drums" ? D : V) },
+    });
+    e.pause();
+  }
+  const openLast = e.isExpanded("drums") ? "drums" : "vocals";
+  await e.collapseChannel(openLast, await parent());
+  check("40 gecis + kapatma: bagli gain = 6 (sizinti yok)", liveGains(e) === 6, `(${liveGains(e)})`);
+  check("40 gecis: canli kaynak yok", liveSources(e) === 0, `(${liveSources(e)})`);
+  check("40 gecis: sayac tutarli", e.diagnostics().liveGains === 6, `(${e.diagnostics().liveGains})`);
+  check("kapaliyken 6 kanal, alt kanal kalmadi", e.channels.size === 6);
+
+  await e.expandChannel("drums", await kids(D));
+  e.releaseStems();
+  check("davul acikken releaseStems: hepsi birakildi", e.channels.size === 0 && liveGains(e) === 0 && liveSources(e) === 0);
+  e.dispose();
+}
+
 if (failed) {
   console.log(`\n${failed} test BASARISIZ`);
   process.exit(1);

@@ -1723,7 +1723,14 @@ SUB_PART_NAMES = ("lead", "backing")
 # drums : durum `status.sub_drums`
 # Dosyalar ortak dizinde (`master/sub`, `stems/sub`), adları farklı: bir grubun
 # yazımı/yeniden koşumu ötekinin dosyasına ve durumuna DOKUNMAZ.
-SUB_DRUM_PARTS = ("kick", "snare", "toms", "hihat", "cymbals", "drumsother")
+# 5 kanal. Model artığı (davul - toplam, güç payı HER ŞARKIDA < %1) AYRI kanal
+# DEĞİL: sunucuda toms'a eklenir, toplam yine tam (PLAN.md Aşama 10 oturum 5).
+SUB_DRUM_PARTS = ("kick", "snare", "toms", "hihat", "cymbals")
+# Yumuşak uyarı (SERT KAPI YOK): toms güç payı >= %8 VE toms tonal (HPSS) payı >= 0.9
+# => `reliability: "warn"` ("Tom kanalına başka enstrüman sızmış olabilir").
+# Eşik 6 şarkıdan türedi, KULAKLA DOĞRULANACAK (PLAN.md).
+SUB_DRUM_WARN_TOMS_POWER = 0.08
+SUB_DRUM_WARN_TOMS_TONAL = 0.9
 SUB_GROUP_CFG = {
     "vocals": {"stem": "vocals", "key": "sub", "parts": SUB_PART_NAMES},
     "drums": {"stem": "drums", "key": "sub_drums", "parts": SUB_DRUM_PARTS},
@@ -1751,7 +1758,7 @@ SUB_DRUM_YAML_URL = ("https://huggingface.co/lainlives/audio-separator-models/re
 SUB_DRUM_YAML_SHA256 = "440a13f67461b2cdad2bb1cb86c08ff27a8ec53093c4a24d4d7fc2c19cb9f5f5"
 SUB_DRUM_YAML_BYTES = 2417
 # Model çıkışları (config.training.instruments, küçük harf) -> parça adları.
-# ride + crash SUNUCUDA tek "cymbals"; drumsother = davul - (hepsinin toplamı).
+# ride + crash SUNUCUDA tek "cymbals"; model artığı (davul - toplam) toms'a eklenir.
 SUB_DRUM_MODEL_OUTPUTS = ("kick", "snare", "toms", "hh", "ride", "crash")
 
 
@@ -1858,7 +1865,8 @@ def _sub_drop(song_id: str) -> bool:
 def _sub_remove_part_files(song_id: str, parts) -> None:
     """YALNIZ verilen parçaların dosyaları (öteki grubun dosyalarına dokunma)."""
     song_dir = _song_dir(song_id)
-    for name in parts:
+    legacy = ("drumsother",) if "toms" in parts else ()   # oturum 4 denemesinden kalma
+    for name in (*parts, *legacy):
         (song_dir / "master" / "sub" / f"{name}.flac").unlink(missing_ok=True)
         (song_dir / "stems" / "sub" / f"{name}.m4a").unlink(missing_ok=True)
 
@@ -2287,7 +2295,7 @@ def _separate_sub_impl(song_id: str, paths: str, overlap: int, experiment: bool,
 
 # --------------------------------------------------------------------------
 # Davul alt ayrımı (Aşama 10, oturum 4): SW davul stem'i -> kick, snare, toms,
-# hihat, cymbals (ride + crash), drumsother (artık). CANLIYA BAĞLI DEĞİL.
+# hihat, cymbals (ride + crash); artık toms'a eklenir (5 kanal).
 # --------------------------------------------------------------------------
 
 
@@ -2408,7 +2416,7 @@ def _sub_harmonic_shares(signals: dict, samplerate: int) -> dict:
     """Her sinyalin HARMONİK (tonal) enerji payı (HPSS), 0-1.
 
     Sızıntı göstergesi: davul stem'ine sızan piyano/müzik tonal olduğu için
-    harmonik payı yüksek. Hangi parçanın (kick/snare/.../drumsother) tonal
+    harmonik payı yüksek. Hangi parçanın (kick/snare/toms/...) tonal
     içerik taşıdığı buradan okunuyor. Aynı 8 parça (8 sn, eşit aralıklı) tüm
     sinyallerde kullanılır; bir sinyalin enerjisi ihmal edilebilirse None.
     """
@@ -2439,36 +2447,41 @@ def _sub_harmonic_shares(signals: dict, samplerate: int) -> dict:
 
 
 def _sub_drum_metrics(drums, parts: dict, other, samplerate: int) -> dict:
-    """Parçaların davula göre seviyeleri, artık payı, toplam hatası, tonal pay."""
+    """Parçaların davula göre seviyeleri, toplam hatası, tonal pay.
+
+    `parts`: 5 NİHAİ parça (toms artığı İÇERİYOR, toplamları davula eşit).
+    `other`: toms'a eklenen model artığı; yalnız raporlama için (`merged_other_power_share`).
+    """
     import numpy as np
 
     drums_rms = _sub_rms(drums)
     drums_power = drums_rms ** 2
     levels = {}
-    for name, array in {**parts, "drumsother": other}.items():
+    for name, array in parts.items():
         rms = _sub_rms(array)
         levels[name] = {
             "rel_db": _sub_db(rms, drums_rms),
             "power_share": round(float(rms ** 2 / drums_power), 4) if drums_power > 0 else 0.0,
             "peak": round(float(abs(array).max()), 4),
         }
-    total = sum(parts.values()) + other
+    total = sum(parts.values())
     err = total.astype(np.float64) - drums.astype(np.float64)
-    peak = max(float(abs(drums).max()), *(float(abs(a).max()) for a in parts.values()),
-               float(abs(other).max()))
+    peak = max(float(abs(drums).max()), *(float(abs(a).max()) for a in parts.values()))
     scale = 1.0 / max(1.0, 1.01 * peak)
 
     def quantize(x):
         return np.round(x.astype(np.float64) * scale * 8388607.0) / 8388607.0
 
-    err_q = sum(quantize(a) for a in parts.values()) + quantize(other) - quantize(drums)
-    assigned = sum(v["power_share"] for k, v in levels.items() if k != "drumsother")
-    signals = {"drums": drums, **parts, "drumsother": other}
+    err_q = sum(quantize(a) for a in parts.values()) - quantize(drums)
+    assigned = sum(v["power_share"] for v in levels.values())
+    other_rms = _sub_rms(other)
+    signals = {"drums": drums, **parts}
     return {
         "drums_rms_db": _sub_db(drums_rms, 1.0),
         "levels": levels,
         "assigned_power_share": round(assigned, 4),
-        "other_power_share": levels["drumsother"]["power_share"],
+        "merged_other_power_share": round(float(other_rms ** 2 / drums_power), 4)
+        if drums_power > 0 else 0.0,
         "sum_err_db": _sub_db(_sub_rms(err), drums_rms),
         "sum_err_flac24_db": _sub_db(_sub_rms(err_q), drums_rms),
         "harmonic_share": _sub_harmonic_shares(signals, samplerate),
@@ -2477,8 +2490,17 @@ def _sub_drum_metrics(drums, parts: dict, other, samplerate: int) -> dict:
 
 
 def _sub_drum_gate(metrics: dict) -> str:
-    """Davul güvenilirlik kapısı. 'ok' (ŞİMDİLİK her zaman): eşik oturum 4 ölçümlerinden
-    sonra belirlenecek, bkz. PLAN.md."""
+    """Davul YUMUŞAK uyarısı: 'warn' | 'ok'. SERT KAPI YOK (dosyalar hep yazılır).
+
+    toms güç payı >= %8 ve toms tonal payı >= 0.9 -> tom kanalına başka enstrüman
+    (piyano/bas) sızmış olabilir. Ölçüm: BTS (%9.4 / 0.96) ve NEM-slowed (%14 / 0.98)
+    uyarı alır; Usseewa, Zeus, Ado, HAZBIN almaz. Kulakla doğrulanacak.
+    """
+    toms_power = (metrics.get("levels", {}).get("toms") or {}).get("power_share", 0.0)
+    toms_tonal = (metrics.get("harmonic_share") or {}).get("toms")
+    if toms_tonal is not None and toms_power >= SUB_DRUM_WARN_TOMS_POWER \
+            and toms_tonal >= SUB_DRUM_WARN_TOMS_TONAL:
+        return "warn"
     return "ok"
 
 
@@ -2490,20 +2512,22 @@ def _sub_produce_drums(song_id: str, status: dict, drums, parts: dict, other, me
 
     gate = _sub_drum_gate(metrics)
     base = {
-        "other_power_share": metrics["other_power_share"],
+        "merged_other_power_share": metrics["merged_other_power_share"],
+        "toms_tonal_share": (metrics.get("harmonic_share") or {}).get("toms"),
         "sum_err_db": metrics["sum_err_db"],
         "sum_err_flac24_db": metrics["sum_err_flac24_db"],
         "levels": {k: v["rel_db"] for k, v in metrics["levels"].items()},
         "parent_stems_version": status.get("stems_version"),
         "parent_pipeline": status.get("pipeline"),
         "model": {"name": "aufr33-jarredou DrumSep MDX23C", "ckpt_sha256": SUB_DRUM_CKPT_SHA256,
-                  "input": "stem", "overlap": SUB_DRUM_OVERLAP, "cymbals": "ride+crash"},
+                  "input": "stem", "overlap": SUB_DRUM_OVERLAP, "cymbals": "ride+crash",
+                  "residue": "toms"},
         "seconds": seconds,
         "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     song_dir = _song_dir(song_id)
     _sub_remove_part_files(song_id, SUB_DRUM_PARTS)       # yalnız davul dosyaları
-    everything = {**parts, "drumsother": other}
+    everything = dict(parts)
     peak = max(float(abs(a).max()) for a in everything.values())
     scale = 1.0 if peak <= 1.0 else 1.0 / (1.01 * peak)
     master_dir = song_dir / "master" / "sub"
@@ -2518,7 +2542,8 @@ def _sub_produce_drums(song_id: str, status: dict, drums, parts: dict, other, me
     sub = {**base, "state": "done", "reliability": gate, "version": int(time.time()),
            "clip_scale": round(scale, 6), "parts": {"drums": list(SUB_DRUM_PARTS)}}
     _write_status(song_id, sub_drums=sub)
-    print(f"[sub] davul yazildi: artik payi {metrics['other_power_share']}, surum {sub['version']}")
+    print(f"[sub] davul yazildi ({gate}): toms payi "
+          f"{metrics['levels']['toms']['power_share']}, surum {sub['version']}")
     return sub
 
 
@@ -2570,13 +2595,16 @@ def _separate_sub_drums_impl(song_id: str, overlap: int, production: bool) -> di
         "cymbals": (by_output["ride"][:, :length] + by_output["crash"][:, :length]),
     }
     other = (drums - sum(parts.values())).astype(np.float32)
+    # Artık (güç payı < %1) AYRI kanal değil: toms'a eklenir, toplam davula TAM eşit.
+    parts["toms"] = (parts["toms"] + other).astype(np.float32)
     del estimated, by_output
 
     metrics = _sub_drum_metrics(drums, parts, other, 44100)
     metrics["infer_s"] = infer_seconds
     metrics["realtime_x"] = round(duration / infer_seconds, 2) if infer_seconds else 0.0
     print(f"[sub] davul: {infer_seconds} sn (gercek zamanin {metrics['realtime_x']}x), "
-          f"artik payi {metrics['other_power_share']}, toplam hata {metrics['sum_err_db']} dB")
+          f"toms'a eklenen artik payi {metrics['merged_other_power_share']}, "
+          f"toplam hata {metrics['sum_err_db']} dB")
     if production:
         metrics["production"] = _sub_produce_drums(
             song_id, status, drums, parts, other, metrics,
@@ -3129,7 +3157,8 @@ def drum_validate(skip: str = "", silent_below: float = -70.0, min_seconds: floa
             k: run[k] for k in ("duration", "overlap", "cold_start", "model_load_s", "wall_s",
                                 "billed_estimate_s", "cost_usd_estimate", "peak_vram_mb")},
             "infer_s": m["infer_s"], "realtime_x": m["realtime_x"], "levels": m["levels"],
-            "other_power_share": m["other_power_share"], "assigned_power_share": m["assigned_power_share"],
+            "merged_other_power_share": m["merged_other_power_share"],
+            "assigned_power_share": m["assigned_power_share"],
             "sum_err_db": m["sum_err_db"], "sum_err_flac24_db": m["sum_err_flac24_db"],
             "harmonic_share": m["harmonic_share"]}
         total_cost += run["cost_usd_estimate"]
@@ -3139,7 +3168,7 @@ def drum_validate(skip: str = "", silent_below: float = -70.0, min_seconds: floa
               f"cikarim {m['infer_s']} sn ({m['realtime_x']}x), toplam {run['wall_s']} sn, "
               f"VRAM {run['peak_vram_mb']} MB, ~${run['cost_usd_estimate']}")
         print(f"  davula gore dB: {levels_text}")
-        print(f"  ARTIK (drumsother) guc payi {m['other_power_share']}, atanan toplam {m['assigned_power_share']}, "
+        print(f"  toms'a eklenen artik guc payi {m['merged_other_power_share']}, atanan toplam {m['assigned_power_share']}, "
               f"toplam hata {m['sum_err_db']} dB (FLAC24 {m['sum_err_flac24_db']} dB)")
         print(f"  tonal (harmonik) pay: {m['harmonic_share']}")
         path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -3189,7 +3218,7 @@ def sub_probe_state(song_id: str) -> dict:
     status = json.loads((base / "status.json").read_text(encoding="utf-8"))
     brief = lambda sub: None if not sub else {  # noqa: E731
         k: sub.get(k) for k in ("state", "version", "reliability", "lead_share",
-                                "other_power_share", "parent_stems_version")}
+                                "merged_other_power_share", "parent_stems_version")}
     return _assert_plain({"files": files, "sub": brief(status.get("sub")),
                           "sub_drums": brief(status.get("sub_drums")),
                           "stems_version": status.get("stems_version"),

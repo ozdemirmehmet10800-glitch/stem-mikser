@@ -277,8 +277,11 @@ def main():
     sub_dir2.joinpath("kick.m4a").write_bytes(b"k" * 100)
     check("substems: davul parcasi (kick) 200",
           client.get(f"/songs/{DR_BOTH}/substems/kick.m4a", headers=H).content == b"k" * 100)
-    check("substems: drumsother adi kabul (dosya yoksa 404)",
-          client.get(f"/songs/{DR_BOTH}/substems/drumsother.m4a", headers=H).status_code == 404)
+    check("substems: drumsother ARTIK gecersiz ad (toms'a eklendi) -> 400",
+          client.get(f"/songs/{DR_BOTH}/substems/drumsother.m4a", headers=H).status_code == 400)
+    for part in ("snare", "toms", "hihat", "cymbals"):
+        check(f"substems: {part} adi kabul (dosya yoksa 404)",
+              client.get(f"/songs/{DR_BOTH}/substems/{part}.m4a", headers=H).status_code == 404)
     check("substems: bilinmeyen ad (ride) 400",
           client.get(f"/songs/{DR_BOTH}/substems/ride.m4a", headers=H).status_code == 400)
 

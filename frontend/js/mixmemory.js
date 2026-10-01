@@ -69,7 +69,8 @@ export const PRESETS = [
   { id: "karaoke", label: "Karaoke", mute: ["vocals"] },
   // Yalnız ANA vokal (lead) susar, arka vokal kalır. Alt parçası olmayan
   // şarkıda pasif; alt parçalar hazırsa ama kapalıysa uygulama önce açar.
-  { id: "karaoke-backing", label: "Karaoke (arka vokal kalsın)", mute: ["lead"], needsSub: true },
+  { id: "karaoke-backing", label: "Karaoke (arka vokal kalsın)", mute: ["lead"], needsSub: true,
+    group: "vocals" },
   { id: "no-drums", label: "Davulu ben çalıyorum", mute: ["drums"] },
   { id: "no-bass", label: "Bası ben çalıyorum", mute: ["bass"] },
   { id: "no-guitar", label: "Gitarı ben çalıyorum", mute: ["guitar"] },

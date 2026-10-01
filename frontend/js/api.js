@@ -191,11 +191,12 @@ export class Api {
     return this.#fetchAudio(`/songs/${id}/substems/${name}.m4a`, onProgress, signal);
   }
 
-  // Vokali ana/arka olarak ayırır (istek üzerine, GPU). Dönen `state`:
-  // "running" | "no_vocals" | "done" | "unreliable" (+ existing: true).
-  async startSub(id) {
-    return (await this.#request(`/songs/${encodeURIComponent(id)}/sub`,
-                                { method: "POST" })).json();
+  // Bir ana kanalı alt parçalara ayırır (istek üzerine, GPU): group = "vocals" | "drums".
+  // Dönen `state`: "running" | "no_vocals" | "no_drums" | "done" | "unreliable" (+ existing: true).
+  async startSub(id, group = "vocals") {
+    return (await this.#request(
+      `/songs/${encodeURIComponent(id)}/sub?group=${encodeURIComponent(group)}`,
+      { method: "POST" })).json();
   }
 
   async #fetchAudio(path, onProgress, signal) {

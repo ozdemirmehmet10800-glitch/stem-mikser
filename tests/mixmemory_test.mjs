@@ -237,6 +237,42 @@ check("loop varken varsayilan mikser kaydi silmez", s4.getItem(mixKey("lp")) !==
   check("alt parcasi olmayan sarkida pasif (null)", applyPreset(kb, ["vocals", "drums", "bass"]) === null);
 }
 
+// --- DAVUL grubu (5 kanal) ve "Davulu ben caliyorum" -----------------------
+{
+  const D = ["kick", "snare", "toms", "hihat", "cymbals"];
+  const mk = (over = {}) => {
+    const m = new Map();
+    const base = { fader: 1, mute: false, solo: false };
+    for (const n of ["vocals", "bass", "guitar", "piano", "other"]) m.set(n, { ...base, ...(over[n] || {}) });
+    m.set("drums", { ...base, ...(over.drums || {}) });
+    for (const n of D) m.set(n, { ...base, parent: "drums", ...(over[n] || {}) });
+    return m;
+  };
+  const heardD = (c) => [...c.keys()].filter((n) => n !== "drums" && audible(c, n));
+  check("davul grubu: hepsi acik", heardD(mk()).length === 10);
+  check("davul ana MUTE -> 5 alt kanal susar, vokal/bas calar",
+    heardD(mk({ drums: { mute: true } })).join() === "vocals,bass,guitar,piano,other");
+  check("davul ana SOLO -> yalniz 5 alt kanal", heardD(mk({ drums: { solo: true } })).join() === D.join());
+  check("tom SOLO -> yalniz tom", heardD(mk({ toms: { solo: true } })).join() === "toms");
+  check("snare MUTE -> yalniz snare susar", !audible(mk({ snare: { mute: true } }), "snare")
+    && audible(mk({ snare: { mute: true } }), "kick") && audible(mk({ snare: { mute: true } }), "toms"));
+  check("davul fader x alt fader", Math.abs(effectiveGain(mk({ drums: { fader: 0.5 }, kick: { fader: 1.4 } }), "kick") - 0.7) < 1e-9);
+  const nod = applyPreset(preset("no-drums"), ["vocals", "drums", "bass", ...D]);
+  check("Davulu ben caliyorum: davul ANA kanalini susturur (acik grup)", nod.get("drums").mute && !nod.get("kick").mute);
+  const grouped = new Map([...nod].map(([n, v]) => [n, { ...v, ...(D.includes(n) ? { parent: "drums" } : {}) }]));
+  check("Davulu ben caliyorum: tum davul grubu susar, vokal+bas calar",
+    D.every((n) => !audible(grouped, n)) && audible(grouped, "vocals") && audible(grouped, "bass"));
+  const nodClosed = applyPreset(preset("no-drums"), ["vocals", "drums", "bass"]);
+  check("Davulu ben caliyorum kapali grupta da calisir", nodClosed.get("drums").mute);
+  const st = new FakeStorage();
+  writeMix(st, "TG", snapshot(new Map([["vocals", ch()], ["drums", ch()], ["kick", ch({ mute: true })], ["lead", ch({ fader: 0.3 })]])), 100, 1);
+  writeMix(st, "TG", snapshot(new Map([["vocals", ch()], ["drums", ch({ solo: true })]])), 100, 2);
+  const rt = readMix(st, "TG");
+  check("iki grup: hicbir grup acik degilken kick ve lead kayitlari korunur",
+    rt.stems.get("kick").mute && rt.stems.get("lead").fader === 30 && rt.stems.get("drums").solo);
+  check("alt kanalli kayit, alt kanalsiz acilista atlanir", planRestore(rt, ["vocals", "drums"]).size === 2);
+}
+
 // --- LRU
 const s5 = new FakeStorage();
 s5.setItem("stem-mikser.meta.keep", "{}");

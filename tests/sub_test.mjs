@@ -3,7 +3,8 @@
 //     node tests\sub_test.mjs
 
 import {
-  subView, estimateSub, isRunning, subVersion, SUB_NAMES, SUB_GROUPS, SUB_STALE_SECONDS,
+  subView, estimateSub, isRunning, subVersion, SUB_GROUPS, SUB_STALE_SECONDS, GROUP_ORDER,
+  SUB_KEYS, SUB_LABELS, WARN_BADGES, subNames, subOf, groupThresholdSec,
 } from "../frontend/js/sub.js";
 
 let failed = 0;
@@ -15,7 +16,14 @@ function check(name, ok, detail = "") {
 const NOW = 1_000_000;
 const view = (over = {}) => subView({ duration: 158, nowSec: NOW, ...over });
 
-check("adlar ve grup", SUB_NAMES.join() === "lead,backing" && SUB_GROUPS.vocals.join() === "lead,backing");
+check("adlar ve gruplar", subNames("vocals").join() === "lead,backing"
+  && SUB_GROUPS.drums.join() === "kick,snare,toms,hihat,cymbals" && GROUP_ORDER.join() === "vocals,drums");
+check("davul 5 kanal (drumsother YOK)", SUB_GROUPS.drums.length === 5 && !SUB_GROUPS.drums.includes("drumsother"));
+check("durum anahtarlari: vokal 'sub' (eski ad), davul 'sub_drums'", SUB_KEYS.vocals === "sub" && SUB_KEYS.drums === "sub_drums");
+check("arayuz adlari: Kick, Snare, Tom, Hi-hat, Zil",
+  ["kick", "snare", "toms", "hihat", "cymbals"].map((n) => SUB_LABELS[n]).join() === "Kick,Snare,Tom,Hi-hat,Zil");
+check("subOf: gruba gore status alani", subOf({ sub: { state: "done" }, sub_drums: { state: "running" } }, "drums").state === "running"
+  && subOf({ sub: { state: "done" } }, "vocals").state === "done" && subOf({}, "drums") === undefined && subOf(undefined, "drums") === undefined);
 
 // --- tahmin
 const e = estimateSub(158);
@@ -82,5 +90,56 @@ check("uzun sarkida zaten aciksa kapatilabilir", !v.disabled);
 // --- surum
 check("subVersion", subVersion({ state: "done", version: 77 }) === 77 && subVersion({ state: "running" }) === 0 && subVersion(undefined) === 0);
 
+// --- DAVUL grubu ---------------------------------------------------------
+{
+  const dv = (over = {}) => subView({ group: "drums", duration: 158, nowSec: NOW, ...over });
+  let v = dv();
+  check("davul: yok -> 'Alt parçaları ayır' + davul tahmini", v.kind === "none" && v.button === "Alt parçaları ayır" && /dk/.test(v.text));
+  const ed = estimateSub(158, "drums"), ev = estimateSub(158, "vocals");
+  check("davul tahmini: Zeus 158 sn ~1-2 dk, ~$0.0125 (vokaldan ucuz)", ed.minutes <= 2 && Math.abs(ed.usd - 0.0125) < 0.002 && ed.usd < ev.usd, ed.text);
+  v = dv({ sub: { state: "no_drums" } });
+  check("davul yok mesaji", v.kind === "no_drums" && v.text === "Bu şarkıda davul yok" && v.arrow === null);
+  v = subView({ group: "vocals", sub: { state: "no_drums" }, nowSec: NOW });
+  check("vokal grubu no_drums durumunu gostermez (kendi durumu)", v.kind === "none" && v.button !== null);
+  v = dv({ sub: { state: "done", reliability: "ok", version: 3 }, cached: true });
+  check("davul hazir: ok kapali, metin 5 kanal, rozet yok", v.kind === "ready" && v.arrow === "closed" && v.badge === null
+    && v.text === "Kick / Snare / Tom / Hi-hat / Zil");
+  v = dv({ sub: { state: "done", reliability: "warn", version: 3 }, cached: true });
+  check("davul warn rozeti: 'Tom kanalına başka enstrüman sızmış olabilir'",
+    v.badge === "Tom kanalına başka enstrüman sızmış olabilir" && v.badge === WARN_BADGES.drums && v.canExpand);
+  v = subView({ group: "vocals", sub: { state: "done", reliability: "warn", version: 3 }, cached: true, nowSec: NOW });
+  check("vokal warn rozeti AYRI metin", v.badge === "Ayrım güvenilmez olabilir");
+  v = dv({ sub: { state: "running", started: NOW - 5 } });
+  check("davul running", v.kind === "running" && v.disabled);
+  v = dv({ sub: { state: "unreliable" } });
+  check("davul 'ayrilamadi' metni davula ozel", v.text === "Bu şarkıda davul ayrılamadı");
+  v = dv({ sub: { state: "error" } });
+  check("davul hata: tekrar dene", v.button === "Tekrar dene");
+}
+
+// --- grup basina uzun sarki esigi ------------------------------------------
+{
+  const base = 480;      // 4 GB telefon
+  const vocals = groupThresholdSec(base, 0, 2);
+  const drums = groupThresholdSec(base, 0, 5);
+  const toDrums = groupThresholdSec(base, 2, 5);     // vokal acikken davula gecis
+  const toVocals = groupThresholdSec(base, 5, 2);
+  check("esik: vokal 6/8", Math.abs(vocals - 360) < 1e-9, String(vocals));
+  check("esik: davul 6/11", Math.abs(drums - 480 * 6 / 11) < 1e-9, drums.toFixed(1));
+  check("esik: gecis 6/13", Math.abs(toDrums - 480 * 6 / 13) < 1e-9 && Math.abs(toVocals - 480 * 6 / 13) < 1e-9);
+  check("esik: davul < vokal, gecis en siki", drums < vocals && toDrums < drums);
+  check("esik: sonsuz taban sonsuz kalir (8 GB+)", groupThresholdSec(Infinity, 2, 5) === Infinity);
+  const long = (group, duration, nOpen) => subView({
+    group, sub: { state: "done", version: 1 }, mobile: true, duration, cached: true,
+    thresholdSec: groupThresholdSec(base, nOpen, SUB_GROUPS[group].length), nowSec: NOW,
+  });
+  check("300 sn: vokal acilir", long("vocals", 300, 0).canExpand);
+  check("300 sn: davul ACILMAZ (esik ~262)", !long("drums", 300, 0).canExpand && /Uzun şarkı/.test(long("drums", 300, 0).hint));
+  check("250 sn: davul acilir", long("drums", 250, 0).canExpand);
+  check("250 sn: vokal aciksa davula gecis ACILMAZ (esik ~221)", !long("drums", 250, 2).canExpand);
+  check("200 sn: gecis acilir", long("drums", 200, 2).canExpand);
+}
+
 console.log(failed ? `\n${failed} HATA` : "\nhepsi gecti");
 process.exit(failed ? 1 : 0);
+

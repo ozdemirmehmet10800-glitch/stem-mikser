@@ -103,8 +103,9 @@ def find_songs():
         status.setdefault("title", entry.name[:12])
         status["state"] = "done"
         status["progress"] = 100
-        if entry.name in _sub["state"]:
-            status["sub"] = _sub["state"][entry.name]
+        for group, key in (("vocals", "sub"), ("drums", "sub_drums")):
+            if (entry.name, group) in _sub["state"]:
+                status[key] = _sub["state"][(entry.name, group)]
         status["stems"] = [s for s in STEM_ORDER if s in stems] + \
                           [s for s in stems if s not in STEM_ORDER]
         songs.append({"dir": entry, "status": status, "chords": chords})
@@ -173,22 +174,28 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authorized():
                 return
             song_id = match.group(1)
+            group = query.get("group", "vocals")
+            if group not in ("vocals", "drums"):
+                self._json(400, {"detail": "Gecersiz grup"})
+                return
+            key = "sub" if group == "vocals" else "sub_drums"
             song = self._song(song_id)
             if not song:
                 self._json(404, {"detail": "Sarki bulunamadi"})
                 return
-            current = song["status"].get("sub") or {}
-            if current.get("state") in ("done", "unreliable", "no_vocals"):
-                self._json(200, {"id": song_id, "state": current["state"], "existing": True})
+            current = song["status"].get(key) or {}
+            if current.get("state") in ("done", "unreliable", "no_vocals", "no_drums"):
+                self._json(200, {"id": song_id, "group": group, "state": current["state"], "existing": True})
                 return
             mode = _sub["mode"]
             if mode == "no_vocals":     # gercek API'de bu kontrol CPU'da, aninda
-                _sub["state"][song_id] = {"state": "no_vocals", "vocal_rms_dbfs": -118.66}
-                self._json(200, {"id": song_id, "state": "no_vocals", "vocal_rms_dbfs": -118.66})
+                silent = "no_vocals" if group == "vocals" else "no_drums"
+                _sub["state"][(song_id, group)] = {"state": silent, "rms_dbfs": -118.66}
+                self._json(200, {"id": song_id, "group": group, "state": silent, "rms_dbfs": -118.66})
                 return
-            _sub["state"][song_id] = {"state": "running", "started": int(time.time())}
-            _sub["left"][song_id] = _sub["polls"]
-            self._json(200, {"id": song_id, "state": "running"})
+            _sub["state"][(song_id, group)] = {"state": "running", "started": int(time.time())}
+            _sub["left"][(song_id, group)] = _sub["polls"]
+            self._json(200, {"id": song_id, "group": group, "state": "running"})
             return
 
         if re.fullmatch(r"/songs/[^/]+/download-link", path):
@@ -306,6 +313,8 @@ class Handler(BaseHTTPRequestHandler):
                     "quality": song["status"].get("quality"),
                     "sub_state": (song["status"].get("sub") or {}).get("state"),
                     "sub_version": (song["status"].get("sub") or {}).get("version"),
+                    "sub_drums_state": (song["status"].get("sub_drums") or {}).get("state"),
+                    "sub_drums_version": (song["status"].get("sub_drums") or {}).get("version"),
                 }
                 for index, song in enumerate(find_songs())
             ]
@@ -324,12 +333,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"status": song["status"], "chords": song["chords"]})
             return
 
-        match = re.fullmatch(r"/songs/([^/]+)/substems/(lead|backing)\.m4a", path)
+        match = re.fullmatch(
+            r"/songs/([^/]+)/substems/(lead|backing|kick|snare|toms|hihat|cymbals)\.m4a", path)
         if match:
             if not self._authorized():
                 return
-            self._serve_file(match.group(1), "stems", "vocals.m4a", "audio/mp4",
-                             ranges=True)
+            source = "vocals.m4a" if match.group(2) in ("lead", "backing") else "drums.m4a"
+            self._serve_file(match.group(1), "stems", source, "audio/mp4", ranges=True)
             return
 
         match = re.fullmatch(r"/songs/([^/]+)/stems/([^/]+)\.m4a", path)
@@ -381,25 +391,28 @@ class Handler(BaseHTTPRequestHandler):
     # ---------------- dosya servisi ----------------
 
     def _finish_sub(self, song_id, song):
-        """Calisan sahte alt ayrimi, bekleme sorgulari bitince sonuclandirir."""
-        sub = song["status"].get("sub") or {}
-        if sub.get("state") != "running":
-            return
-        left = _sub["left"].get(song_id, 0)
-        if left > 0:
-            _sub["left"][song_id] = left - 1
-            return
-        mode = _sub["mode"]
-        base = {"version": int(time.time()), "lead_share": 0.9, "lead_rel_db": -0.5,
-                "backing_rel_db": -12.0, "parts": {"vocals": ["lead", "backing"]}}
-        if mode == "error":
-            _sub["state"][song_id] = {"state": "error", "error": "sahte hata"}
-        elif mode == "unreliable":
-            _sub["state"][song_id] = {"state": "unreliable", "lead_share": 0.02}
-        elif mode == "warn":
-            _sub["state"][song_id] = {**base, "state": "done", "reliability": "warn", "lead_share": 0.3}
-        else:
-            _sub["state"][song_id] = {**base, "state": "done", "reliability": "ok"}
+        """Calisan sahte alt ayrimlari, bekleme sorgulari bitince sonuclandirir."""
+        for group, key in (("vocals", "sub"), ("drums", "sub_drums")):
+            sub = song["status"].get(key) or {}
+            if sub.get("state") != "running":
+                continue
+            left = _sub["left"].get((song_id, group), 0)
+            if left > 0:
+                _sub["left"][(song_id, group)] = left - 1
+                continue
+            mode = _sub["mode"]
+            parts = {"vocals": ["lead", "backing"],
+                     "drums": ["kick", "snare", "toms", "hihat", "cymbals"]}[group]
+            base = {"version": int(time.time()), "lead_share": 0.9, "parts": {group: parts}}
+            if mode == "error":
+                new = {"state": "error", "error": "sahte hata"}
+            elif mode == "unreliable" and group == "vocals":
+                new = {"state": "unreliable", "lead_share": 0.02}
+            elif mode == "warn":
+                new = {**base, "state": "done", "reliability": "warn"}
+            else:
+                new = {**base, "state": "done", "reliability": "ok"}
+            _sub["state"][(song_id, group)] = new
 
     def _serve_file(self, song_id, folder, filename, media, ranges=False, extra=None):
         song = self._song(song_id)

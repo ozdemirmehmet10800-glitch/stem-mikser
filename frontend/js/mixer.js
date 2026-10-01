@@ -16,6 +16,7 @@ const ICONS = {
 // Alt kanallar ana kanalın simgesini kullanıyor.
 ICONS.lead = ICONS.vocals;
 ICONS.backing = ICONS.vocals;
+for (const name of ["kick", "snare", "toms", "hihat", "cymbals"]) ICONS[name] = ICONS.drums;
 
 const DOWNLOAD_FORMATS = [
   ["m4a", "M4A", "oynatma kalitesi, küçük"],

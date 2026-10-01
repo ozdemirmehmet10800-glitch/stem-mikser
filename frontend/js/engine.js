@@ -43,6 +43,11 @@ export const STEM_LABELS = {
   other: "Diğer",
   lead: "Ana vokal",       // alt parçalar (Aşama 10)
   backing: "Arka vokal",
+  kick: "Kick",
+  snare: "Snare",
+  toms: "Tom",
+  hihat: "Hi-hat",
+  cymbals: "Zil",
 };
 
 const START_LEAD = 0.08; // planlama payı (sn)
@@ -1037,11 +1042,24 @@ export class Engine {
     channel.buffer = null;
   }
 
-  /** buffers: Map ad -> AudioBuffer (alt kanallar). Ana kanal tamponu bırakılır. */
-  async expandChannel(parentName, buffers) {
-    const parent = this.channels.get(parentName);
-    if (!parent || !parent.buffer) throw new Error(`${parentName} açılamaz: tamponu yok`);
-    if (this.isExpanded(parentName)) return;
+  /**
+   * Grup değişikliği TEK yeniden başlatmayla (stop + play, ~150 ms):
+   *   collapse: {parent, buffer}   açık grubu kapat, ana tamponu geri koy
+   *   expand:   {parent, buffers}  ana tamponu bırak, alt kanalları kur (Map ad -> AudioBuffer)
+   * İkisi birlikte verilirse (vokal açıkken davulu açmak gibi: "tek ana kanal açık
+   * olabilir") kapatma ve açma AYNI yeniden başlatmada olur. Çözme (ağır iş)
+   * çağıranda, bu çağrıdan ÖNCE yapılır.
+   */
+  async regroup({ collapse = null, expand = null } = {}) {
+    if (!collapse && !expand) return;
+    if (collapse && !this.isExpanded(collapse.parent)) {
+      throw new Error(`${collapse.parent} zaten kapalı`);
+    }
+    if (expand) {
+      const parent = this.channels.get(expand.parent);
+      if (!parent || !parent.buffer) throw new Error(`${expand.parent} açılamaz: tamponu yok`);
+      if (this.isExpanded(expand.parent)) throw new Error(`${expand.parent} zaten açık`);
+    }
     await this.ensureContext();
     const wasPlaying = this.playing;
     if (wasPlaying) {
@@ -1049,42 +1067,43 @@ export class Engine {
       this.stop();
       this.offset = position;
     }
-    this.#releaseChannelAudio(parent);
-    parent.children = [];
-    for (const [name, buffer] of buffers) {
-      this.channels.set(name, {
-        buffer, gainNode: this.#newGain(), fader: 1, solo: false, mute: false,
-        source: null, parent: parentName,
-      });
-      parent.children.push(name);
+    if (collapse) {
+      const parent = this.channels.get(collapse.parent);
+      for (const name of parent.children) {
+        const child = this.channels.get(name);
+        if (child) this.#releaseChannelAudio(child);
+        this.channels.delete(name);
+      }
+      parent.children = null;
+      parent.buffer = collapse.buffer;
+      parent.gainNode = this.#newGain();
+    }
+    if (expand) {
+      const parent = this.channels.get(expand.parent);
+      this.#releaseChannelAudio(parent);
+      parent.children = [];
+      for (const [name, buffer] of expand.buffers) {
+        this.channels.set(name, {
+          buffer, gainNode: this.#newGain(), fader: 1, solo: false, mute: false,
+          source: null, parent: expand.parent,
+        });
+        parent.children.push(name);
+      }
     }
     this.#routeChannels();
     this.#applyAllGains(true);
     if (wasPlaying) await this.play();
   }
 
+  /** buffers: Map ad -> AudioBuffer (alt kanallar). Ana kanal tamponu bırakılır. */
+  async expandChannel(parentName, buffers) {
+    if (this.isExpanded(parentName)) return;
+    await this.regroup({ expand: { parent: parentName, buffers } });
+  }
+
   /** Alt kanalları bırakır, ana kanalın tamponunu (`buffer`) geri koyar. */
   async collapseChannel(parentName, buffer) {
-    const parent = this.channels.get(parentName);
-    if (!parent || !this.isExpanded(parentName)) throw new Error(`${parentName} zaten kapalı`);
-    await this.ensureContext();
-    const wasPlaying = this.playing;
-    if (wasPlaying) {
-      const position = this.currentTime;
-      this.stop();
-      this.offset = position;
-    }
-    for (const name of parent.children) {
-      const child = this.channels.get(name);
-      if (child) this.#releaseChannelAudio(child);
-      this.channels.delete(name);
-    }
-    parent.children = null;
-    parent.buffer = buffer;
-    parent.gainNode = this.#newGain();
-    this.#routeChannels();
-    this.#applyAllGains(true);
-    if (wasPlaying) await this.play();
+    await this.regroup({ collapse: { parent: parentName, buffer } });
   }
 
   // ------------------------------------------------------------ A-B döngü
