@@ -54,6 +54,9 @@ _warm = {"done": False}
 # indirmeye baslamasi baska turlu denenemiyor.
 PENDING_POLLS = 0
 _pending = {"left": 0}
+# Alt ayrim (Asama 10) taklidi: --sub-mode done|warn|unreliable|no_vocals|error,
+# --sub-polls N: POST /sub sonrasi N durum sorgusu boyunca "running" kalir.
+_sub = {"mode": "done", "polls": 0, "left": {}, "state": {}}
 
 # Stem servisini yavaslatma: telefondaki ~0.6-1.2 MB/sn'yi taklit etmek ve
 # ilerleme/duraklatma davranisini gorebilmek icin.
@@ -100,6 +103,8 @@ def find_songs():
         status.setdefault("title", entry.name[:12])
         status["state"] = "done"
         status["progress"] = 100
+        if entry.name in _sub["state"]:
+            status["sub"] = _sub["state"][entry.name]
         status["stems"] = [s for s in STEM_ORDER if s in stems] + \
                           [s for s in stems if s not in STEM_ORDER]
         songs.append({"dir": entry, "status": status, "chords": chords})
@@ -165,19 +170,25 @@ class Handler(BaseHTTPRequestHandler):
 
         match = re.fullmatch(r"/songs/([^/]+)/sub", path)
         if match:
-            # Sahte alt ayrim (Asama 10): vokal m4a'si hem lead hem backing olarak
-            # servis edilir; durum "done" doner. Gercek API'de state running/
-            # no_vocals/unreliable da olabilir.
             if not self._authorized():
                 return
-            song = self._song(match.group(1))
+            song_id = match.group(1)
+            song = self._song(song_id)
             if not song:
                 self._json(404, {"detail": "Sarki bulunamadi"})
                 return
-            song["status"]["sub"] = {"state": "done", "version": int(time.time()),
-                                      "reliability": "ok", "lead_share": 0.9,
-                                      "parts": {"vocals": ["lead", "backing"]}}
-            self._json(200, {"id": match.group(1), "state": "done", "existing": False})
+            current = song["status"].get("sub") or {}
+            if current.get("state") in ("done", "unreliable", "no_vocals"):
+                self._json(200, {"id": song_id, "state": current["state"], "existing": True})
+                return
+            mode = _sub["mode"]
+            if mode == "no_vocals":     # gercek API'de bu kontrol CPU'da, aninda
+                _sub["state"][song_id] = {"state": "no_vocals", "vocal_rms_dbfs": -118.66}
+                self._json(200, {"id": song_id, "state": "no_vocals", "vocal_rms_dbfs": -118.66})
+                return
+            _sub["state"][song_id] = {"state": "running", "started": int(time.time())}
+            _sub["left"][song_id] = _sub["polls"]
+            self._json(200, {"id": song_id, "state": "running"})
             return
 
         if re.fullmatch(r"/songs/[^/]+/download-link", path):
@@ -293,6 +304,8 @@ class Handler(BaseHTTPRequestHandler):
                     "created_at": song["status"].get("created_at"),
                     "stems_version": song["status"].get("stems_version"),
                     "quality": song["status"].get("quality"),
+                    "sub_state": (song["status"].get("sub") or {}).get("state"),
+                    "sub_version": (song["status"].get("sub") or {}).get("version"),
                 }
                 for index, song in enumerate(find_songs())
             ]
@@ -307,6 +320,7 @@ class Handler(BaseHTTPRequestHandler):
             if not song:
                 self._json(404, {"detail": "Sarki bulunamadi"})
                 return
+            self._finish_sub(match.group(1), song)
             self._json(200, {"status": song["status"], "chords": song["chords"]})
             return
 
@@ -366,6 +380,27 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------- dosya servisi ----------------
 
+    def _finish_sub(self, song_id, song):
+        """Calisan sahte alt ayrimi, bekleme sorgulari bitince sonuclandirir."""
+        sub = song["status"].get("sub") or {}
+        if sub.get("state") != "running":
+            return
+        left = _sub["left"].get(song_id, 0)
+        if left > 0:
+            _sub["left"][song_id] = left - 1
+            return
+        mode = _sub["mode"]
+        base = {"version": int(time.time()), "lead_share": 0.9, "lead_rel_db": -0.5,
+                "backing_rel_db": -12.0, "parts": {"vocals": ["lead", "backing"]}}
+        if mode == "error":
+            _sub["state"][song_id] = {"state": "error", "error": "sahte hata"}
+        elif mode == "unreliable":
+            _sub["state"][song_id] = {"state": "unreliable", "lead_share": 0.02}
+        elif mode == "warn":
+            _sub["state"][song_id] = {**base, "state": "done", "reliability": "warn", "lead_share": 0.3}
+        else:
+            _sub["state"][song_id] = {**base, "state": "done", "reliability": "ok"}
+
     def _serve_file(self, song_id, folder, filename, media, ranges=False, extra=None):
         song = self._song(song_id)
         if not song:
@@ -416,11 +451,18 @@ def main():
                         help="ilk istegi bu kadar saniye beklet (soguk baslangic taklidi)")
     parser.add_argument("--pending", type=int, default=0,
                         help="ilk sarki bu kadar listelemede 'isleniyor' gorunsun")
+    parser.add_argument("--sub-mode", default="done",
+                        choices=["done", "warn", "unreliable", "no_vocals", "error"],
+                        help="POST /sub sonucu (Asama 10 taklidi)")
+    parser.add_argument("--sub-polls", type=int, default=0,
+                        help="POST /sub sonrasi kac durum sorgusu 'running' kalsin")
     parser.add_argument("--stem-delay", type=float, default=0.0,
                         help="her stem istegini bu kadar saniye beklet (yavas ag taklidi)")
     args = parser.parse_args()
 
     global COLD_DELAY
+    _sub["mode"] = args.sub_mode
+    _sub["polls"] = args.sub_polls
     COLD_DELAY = args.cold
     _pending["left"] = args.pending
     global STEM_DELAY

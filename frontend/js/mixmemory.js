@@ -30,22 +30,46 @@ export function mixKey(songId) {
 // ÖNCELİKLİ. Aynı kanalda solo ve mute birlikteyse o kanal SUSAR; solo yine de
 // sayılır, yani başka kanallar da solo değilse susar (kullanıcı mute'u
 // kaldırınca solo geri gelir). İki bayrak da kayda olduğu gibi yazılır.
-// channels: Map ad -> {mute, solo}
+//
+// GRUPLAR (Aşama 10 alt parçaları): bir kanalın `parent` alanı ana kanalın adı
+// olabilir (lead/backing -> vocals). Ana kanalın M/S'i TÜM gruba, alt kanalın
+// M/S'i yalnız kendine uygulanır:
+//   - ana susturulmuşsa bütün alt kanallar susar; alt susturulmuşsa yalnız o
+//   - ana solo ise bütün alt kanallar "soloda" sayılır; alt solo ise yalnız o
+//   - herhangi bir yerde solo varsa yalnız soloda olanlar duyulur
+// channels: Map ad -> {mute, solo, parent?, fader?}
 export function audible(channels, name) {
   const channel = channels.get(name);
   if (!channel) return false;
-  if (channel.mute) return false;
+  const parent = channel.parent ? channels.get(channel.parent) : null;
+  if (channel.mute || (parent && parent.mute)) return false;
   for (const other of channels.values()) {
-    if (other.solo) return !!channel.solo;
+    if (other.solo) return !!channel.solo || !!(parent && parent.solo);
   }
   return true;
+}
+
+// Kanalın nihai kazancı: duyulmuyorsa 0; duyuluyorsa kendi fader'ı x grup
+// fader'ı (ana kanalın fader'ı tüm grubun seviyesi).
+export function effectiveGain(channels, name) {
+  if (!audible(channels, name)) return 0;
+  const channel = channels.get(name);
+  const parent = channel.parent ? channels.get(channel.parent) : null;
+  const own = Number.isFinite(channel.fader) ? channel.fader : 1;
+  const group = parent && Number.isFinite(parent.fader) ? parent.fader : 1;
+  return own * group;
 }
 
 // ---------------------------------------------------------------- ön ayarlar
 // Ön ayar TÜM kanalları temiz başlangıca (fader %100, mute/solo yok) çekip
 // yalnız kendi belirttiklerini uygular. Ana ses'e dokunmaz.
 export const PRESETS = [
+  // Karaoke: ana vokal kanalını susturur; alt parçalar açıksa TÜM grup susar
+  // (ana kanalın M/S'i gruba uygulanır).
   { id: "karaoke", label: "Karaoke", mute: ["vocals"] },
+  // Yalnız ANA vokal (lead) susar, arka vokal kalır. Alt parçası olmayan
+  // şarkıda pasif; alt parçalar hazırsa ama kapalıysa uygulama önce açar.
+  { id: "karaoke-backing", label: "Karaoke (arka vokal kalsın)", mute: ["lead"], needsSub: true },
   { id: "no-drums", label: "Davulu ben çalıyorum", mute: ["drums"] },
   { id: "no-bass", label: "Bası ben çalıyorum", mute: ["bass"] },
   { id: "no-guitar", label: "Gitarı ben çalıyorum", mute: ["guitar"] },
@@ -163,10 +187,22 @@ export function readMix(storage, songId) {
 // Varsayılan duruma dönülmüşse (ve saklanacak başka alan yoksa) kayıt SİLİNİR:
 // "geri yüklendi" rozeti boşuna çıkmaz, depo şişmez. Bilinmeyen/yeni alanlar
 // (loop) eski kayıttan korunur.
-export function writeMix(storage, songId, states, master, now = Date.now()) {
+export function writeMix(storage, songId, states, master, now = Date.now(),
+                         options = {}) {
   try {
     const old = readRaw(storage, songId);
     const loop = old && old.v === MIX_VERSION ? validLoop(old.loop) : undefined;
+    // O an şarkıda OLMAYAN kanalların kayıtlı ayarı (alt parçalar kapalıyken
+    // lead/backing) kaybolmasın. Sıfırlamada (`replaceAbsent`) onlar da gider.
+    if (!options.replaceAbsent && old && old.v === MIX_VERSION) {
+      const previous = normalizeRecord(old);
+      if (previous) {
+        states = new Map(states);
+        for (const [name, state] of previous.stems) {
+          if (!states.has(name)) states.set(name, state);
+        }
+      }
+    }
     if (isDefaultMix(states, master) && loop === undefined) {
       storage.removeItem(mixKey(songId));
       return;

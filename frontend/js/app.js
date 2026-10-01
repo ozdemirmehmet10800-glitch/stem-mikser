@@ -18,6 +18,7 @@ import {
   removeMix, writeLoop, isDefaultMix,
 } from "./mixmemory.js";
 import { ChordStrip, formatTime } from "./chords.js";
+import { SUB_GROUPS, SUB_NAMES, subView, subVersion, isRunning } from "./sub.js";
 import { MediaBridge } from "./media.js";
 import { WakeLock } from "./wakelock.js";
 import { StemCache, cacheTag } from "./stemcache.js";
@@ -522,6 +523,7 @@ function renderLibrary(songs) {
 // Açık şarkı silindiyse: çalmayı durdur, kütüphaneye dön.
 function closeCurrentSong() {
   currentSong = null;
+  stopSubPolling();
   // Oynatıcı hâlâ açıksa katmanı düzgün kapat, yoksa (kütüphanedeyiz)
   // yalnızca çalmayı durdur: yığında olmayan bir katmanı geri almaya
   // çalışmak uygulamadan çıkarırdı.
@@ -1094,6 +1096,8 @@ async function openSong(song) {
     pushLayer("view");
     lastPositionSync = -1;
     startLoop();
+    refreshSubUi();
+    ensureSubPolling();
     resumePrefetch();   // hızlı yolda indirme yapılmadı, hemen devam
     timer.done("hizli acilis (bellekte)", {
       source: "bellek", concurrency: 0,
@@ -1128,6 +1132,10 @@ async function openSong(song) {
   flushMixSave();           // önceki şarkının bekleyen ayarı ANINDA yazılsın
   mixSongId = null;
   resetLoopState();         // motor döngüyü releaseStems'te bıraktı
+  stopSubPolling();
+  subStarting = false;
+  subBusy = false;
+  mixer.groupSpecs.clear();
 
   setOverlay(true, "Şarkı bilgileri alınıyor…");
   try {
@@ -1214,7 +1222,10 @@ async function openSong(song) {
     measureAacDelta(detail.status, duration);
 
     mixer.render(stems.filter((name) => engine.channels.has(name)));
+    currentStemTag = cacheKeyTag;
     restoreMix(song.id);
+    refreshSubUi();            // alt parça denetimi (düğme / ok / mesaj)
+    ensureSubPolling();
     strip.build(detail.chords, duration);
 
     const chords = detail.chords;
@@ -1615,9 +1626,14 @@ function masterPercent() {
   return Math.round(Number(el("master").value)) || 0;
 }
 
-function scheduleMixSave() {
+function scheduleMixSave(options = {}) {
   if (!mixSongId) return;
-  mixPending = { id: mixSongId, states: snapshot(engine.channels), master: masterPercent() };
+  mixPending = {
+    id: mixSongId, states: snapshot(engine.channels), master: masterPercent(),
+    // Sıfırlama: kapalı alt kanalların (lead/backing) kayıtlı ayarı da silinsin.
+    replaceAbsent: Boolean(options.replaceAbsent || (mixPending && mixPending.replaceAbsent
+      && mixPending.id === mixSongId)),
+  };
   hideMixNotice();
   clearTimeout(mixTimer);
   mixTimer = setTimeout(flushMixSave, MIX_SAVE_DELAY);
@@ -1629,7 +1645,10 @@ function flushMixSave() {
   const pending = mixPending;
   mixPending = null;
   const storage = mixStorage();
-  if (pending && storage) writeMix(storage, pending.id, pending.states, pending.master);
+  if (pending && storage) {
+    writeMix(storage, pending.id, pending.states, pending.master, Date.now(),
+             { replaceAbsent: pending.replaceAbsent });
+  }
 }
 
 function hideMixNotice() {
@@ -1675,14 +1694,19 @@ function restoreMix(songId) {
 function updatePresetButtons(names) {
   for (const button of document.querySelectorAll("#mix-presets [data-preset]")) {
     const preset = PRESETS.find((item) => item.id === button.dataset.preset);
-    button.disabled = !preset || !applyPreset(preset, names);
+    if (preset && preset.needsSub) {
+      // Alt parçası olmayan (ya da açılamayan) şarkıda pasif.
+      button.disabled = !subUsable();
+    } else {
+      button.disabled = !preset || !applyPreset(preset, names);
+    }
   }
 }
 
-function applyMixStates(states) {
+function applyMixStates(states, options = {}) {
   engine.applyMix(states);
   mixer.syncFromEngine();
-  scheduleMixSave();
+  scheduleMixSave(options);
 }
 
 function buildPresetButtons() {
@@ -1693,26 +1717,257 @@ function buildPresetButtons() {
     button.className = "chip";
     button.dataset.preset = preset.id;
     button.textContent = preset.label;
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
+      if (preset.needsSub && !subExpanded()) {
+        // Alt parçalar hazır ama kapalı: önce aç (kısa yeniden başlatma).
+        await expandSub();
+        if (!subExpanded()) return;
+      }
       const states = applyPreset(preset, [...engine.channels.keys()]);
-      if (states) applyMixStates(states);
+      // Ön ayar "temiz başlangıç": kapalı alt kanalların eski kayıtlı ayarı da gitsin.
+      if (states) applyMixStates(states, { replaceAbsent: true });
     });
     box.append(button);
   }
 }
 
 on("mix-reset", "click", () => {
-  applyMixStates(cleanStates([...engine.channels.keys()]));
+  applyMixStates(cleanStates([...engine.channels.keys()]), { replaceAbsent: true });
 });
 
 on("mix-notice-reset", "click", () => {
-  applyMixStates(cleanStates([...engine.channels.keys()]));
+  applyMixStates(cleanStates([...engine.channels.keys()]), { replaceAbsent: true });
 });
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") flushMixSave();
 });
 window.addEventListener("pagehide", flushMixSave);
+
+// ------------------------------------------------ alt parçalar (Aşama 10)
+// Vokal kanalının altında: "Alt parçaları ayır" -> yoklama -> açma oku. Açınca
+// ana vokal tamponu bellekten bırakılır, lead/backing çalar (seek gibi kısa
+// yeniden başlatma, canlı tampon değişimi YOK). Telefonda aynı anda tek ana
+// kanal açık olabilir (bugün yalnız vokal var). Mantık sub.js'te.
+
+const SUB_POLL_MS = 4000;
+const SUB_PARENT = "vocals";
+let subPollTimer = 0;
+let subStarting = false;     // "ayır" isteği gidiyor
+let subBusy = false;         // açma/kapama sürüyor
+let currentStemTag = 0;      // ana stem önbellek etiketi (kapatırken ana vokal geri gelsin)
+
+function subStatus() {
+  return currentSong && currentSong.status ? currentSong.status.sub : undefined;
+}
+
+function subTag() {
+  return cacheTag(subVersion(subStatus()), "sub");
+}
+
+function subExpanded() {
+  return engine.isExpanded(SUB_PARENT);
+}
+
+function subCached() {
+  return Boolean(currentSong) && stemCache.indexHas(currentSong.id, SUB_NAMES, subTag());
+}
+
+function subViewNow() {
+  return subView({
+    sub: subStatus(),
+    duration: engine.duration || Number(currentSong && currentSong.duration) || 0,
+    mobile: isMobile(),
+    thresholdSec: longSongThresholdSec(),
+    offline: isOffline(),
+    cached: subCached(),
+    expanded: subExpanded(),
+    busy: subBusy,
+    starting: subStarting,
+  });
+}
+
+// Ön ayar "Karaoke (arka vokal kalsın)" için: alt parçalar kullanılabilir mi?
+function subUsable() {
+  if (!currentSong || !engine.channels.has(SUB_PARENT)) return false;
+  if (subExpanded()) return true;
+  const view = subViewNow();
+  return view.kind === "ready" && view.canExpand && !view.disabled;
+}
+
+function refreshSubUi() {
+  if (!currentSong || !engine.channels.has(SUB_PARENT)) {
+    mixer.setGroupControl(SUB_PARENT, null);
+    return;
+  }
+  const view = subViewNow();
+  const text = subBusy ? "Yükleniyor…" : view.text;
+  mixer.setGroupControl(SUB_PARENT, {
+    ...view, text,
+    onButton: startSubSeparation,
+    onToggle: toggleSubExpand,
+  });
+  updatePresetButtons([...engine.channels.keys()]);
+}
+
+function adoptDetail(detail) {
+  if (!currentSong || !detail || !detail.status || detail.status.id !== currentSong.id) return;
+  currentSong = { ...currentSong, ...detail };
+  writeMeta(currentSong.id, detail);     // çevrimdışı açılışta da alt parça bilgisi dursun
+}
+
+async function startSubSeparation() {
+  if (!currentSong || subStarting) return;
+  if (!requireOnline(el("player-message"), "Alt parçaları ayırmak")) return;
+  const songId = currentSong.id;
+  subStarting = true;
+  refreshSubUi();
+  try {
+    await api.startSub(songId);
+    const detail = await api.getSong(songId);       // status.sub'ın tamamı
+    if (currentSong && currentSong.id === songId) adoptDetail(detail);
+  } catch (error) {
+    showMessage(el("player-message"), describeError(error));
+  } finally {
+    subStarting = false;
+    refreshSubUi();
+    ensureSubPolling();
+  }
+}
+
+function stopSubPolling() {
+  clearInterval(subPollTimer);
+  subPollTimer = 0;
+}
+
+// Sürerken 4 sn'de bir durum; bitince durur. Şarkı değişirse / kapanırsa durur.
+function ensureSubPolling() {
+  if (subPollTimer || !currentSong || !isRunning(subStatus())) return;
+  const songId = currentSong.id;
+  subPollTimer = setInterval(async () => {
+    if (!currentSong || currentSong.id !== songId) {
+      stopSubPolling();
+      return;
+    }
+    try {
+      const detail = await api.getSong(songId);
+      adoptDetail(detail);
+    } catch {
+      return;                       // geçici ağ hatası: bir sonraki turda tekrar
+    }
+    if (isRunning(subStatus())) return;
+    stopSubPolling();
+    refreshSubUi();
+    const state = subStatus() && subStatus().state;
+    if (state === "done") prefetchSubStems();
+  }, SUB_POLL_MS);
+}
+
+// Bitince alt parçalar sessizce cihaza iniyor: çevrimdışıyken de açılabilsin.
+async function prefetchSubStems() {
+  if (!currentSong || isOffline()) return;
+  const songId = currentSong.id;
+  const tag = subTag();
+  for (const name of SUB_NAMES) {
+    try {
+      if (await stemCache.get(songId, name, tag)) continue;
+      const buffer = await api.subStemBuffer(songId, name);
+      await stemCache.put(songId, name, buffer, tag);
+    } catch {
+      return;                       // sonra açılırken zaten indirilir
+    }
+  }
+  if (currentSong && currentSong.id === songId) refreshSubUi();
+}
+
+async function subStemBuffer(name) {
+  const songId = currentSong.id;
+  const tag = subTag();
+  let buffer = await stemCache.get(songId, name, tag);
+  if (!buffer) {
+    buffer = await api.subStemBuffer(songId, name);
+    await stemCache.put(songId, name, buffer.slice(0), tag);
+  }
+  return buffer;
+}
+
+async function parentStemBuffer() {
+  const songId = currentSong.id;
+  let buffer = await stemCache.get(songId, SUB_PARENT, currentStemTag);
+  if (!buffer) {
+    buffer = await api.stemBuffer(songId, SUB_PARENT);
+    await stemCache.put(songId, SUB_PARENT, buffer.slice(0), currentStemTag);
+  }
+  return buffer;
+}
+
+// Kanal yapısı değişti (açıldı/kapandı): satırları yeniden kur. Yeniden kurma
+// kayıt tetiklemesin (alt kanallar varsayılanla yazılırdı); kayıtlı alt kanal
+// ayarları açılışta uygulanıyor.
+function rebuildMixer() {
+  const keep = mixSongId;
+  mixSongId = null;
+  const names = [...engine.channels.keys()];
+  const groups = new Map();
+  for (const [parent, children] of Object.entries(SUB_GROUPS)) {
+    if (engine.isExpanded(parent)) groups.set(parent, children.filter((n) => names.includes(n)));
+  }
+  mixer.render(names, groups);
+  if (currentSong && keep) {
+    const storage = mixStorage();
+    const record = storage ? readMix(storage, currentSong.id) : null;
+    const plan = planRestore(record, names);
+    const subNames = new Set(Object.values(SUB_GROUPS).flat());
+    const only = new Map([...plan].filter(([name]) => subNames.has(name)));
+    if (only.size) engine.applyMix(only);
+  }
+  mixer.syncFromEngine();
+  mixSongId = keep;
+  refreshSubUi();
+}
+
+async function expandSub() {
+  if (!currentSong || subBusy || subExpanded()) return;
+  const view = subViewNow();
+  if (view.kind !== "ready" || !view.canExpand) return;
+  subBusy = true;
+  refreshSubUi();
+  try {
+    // Sırayla: her çözme geçici ek bellek açıyor (telefon).
+    const buffers = new Map();
+    for (const name of SUB_GROUPS[SUB_PARENT]) {
+      buffers.set(name, await engine.decode(await subStemBuffer(name)));
+    }
+    await engine.expandChannel(SUB_PARENT, buffers);
+    metronome.resync();
+  } catch (error) {
+    showMessage(el("player-message"), `Alt parçalar açılamadı: ${describeError(error)}`);
+  } finally {
+    subBusy = false;
+    rebuildMixer();
+  }
+}
+
+async function collapseSub() {
+  if (!currentSong || subBusy || !subExpanded()) return;
+  subBusy = true;
+  refreshSubUi();
+  try {
+    const buffer = await engine.decode(await parentStemBuffer());
+    await engine.collapseChannel(SUB_PARENT, buffer);
+    metronome.resync();
+  } catch (error) {
+    showMessage(el("player-message"), `Alt parçalar kapatılamadı: ${describeError(error)}`);
+  } finally {
+    subBusy = false;
+    rebuildMixer();
+  }
+}
+
+async function toggleSubExpand() {
+  if (subExpanded()) await collapseSub();
+  else await expandSub();
+}
 
 // ----------------------------------------------------- A-B döngü (Madde 1)
 // Mantık loop.js'te, ses motorda (native döngü + dikiş çukuru). Burası yalnız

@@ -278,7 +278,7 @@ html, body {
 .mix-bar { display: flex; align-items: center; gap: 8px; padding: 4px 0 6px; }
 .mix-presets { display: flex; gap: 8px; overflow-x: auto; flex: 1; scrollbar-width: none; }
 .mix-presets::-webkit-scrollbar { display: none; }
-.mix-bar .chip, .loop-bar .chip {
+.mix-bar .chip, .loop-bar .chip, .sub-ctl .chip {
   flex: 0 0 auto;
   white-space: nowrap;
   padding: 7px 12px;
@@ -290,8 +290,32 @@ html, body {
   font: inherit;
   font-size: 13px;
 }
-.mix-bar .chip:disabled, .loop-bar .chip:disabled { opacity: 0.35; }
+.mix-bar .chip:disabled, .loop-bar .chip:disabled, .sub-ctl .chip:disabled { opacity: 0.35; }
 .loop-bar .chip[aria-pressed="true"] { background: var(--accent-dim); border-color: var(--accent); }
+
+/* ---------- alt parçalar (Aşama 10) ---------- */
+
+.channel.sub { padding-left: 22px; }
+.channel.sub .channel-name { font-size: 13px; }
+.sub-ctl {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  padding: 0 4px 8px 4px; font-size: 13px; color: var(--text-dim);
+}
+.sub-ctl .sub-text { flex: 0 1 auto; }
+.sub-ctl.no_vocals .sub-text, .sub-ctl.unreliable .sub-text, .sub-ctl.error .sub-text {
+  color: var(--text-faint, var(--text-dim));
+}
+.sub-arrow {
+  min-width: 40px; min-height: 36px; padding: 0 8px;
+  background: transparent; border: 1px solid var(--line); border-radius: 18px;
+  color: var(--text); font-size: 16px;
+}
+.sub-arrow:disabled { opacity: 0.35; }
+.sub-badge {
+  padding: 3px 9px; border-radius: 12px; font-size: 12px;
+  background: rgba(245, 158, 11, 0.16); color: #f5b84a;
+}
+.sub-hint { font-size: 12px; font-style: italic; }
 
 /* ---------- A-B döngü ---------- */
 

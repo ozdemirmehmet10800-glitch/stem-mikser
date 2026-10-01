@@ -520,6 +520,44 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
          Testler: tests/test_sub_gate.py (48), tests/test_sub_api.py (38, gerçek FastAPI
          handler'ları, sahte Modal), stemcache testleri. **GERÇEK HTTP (token'lı) çağrısı
          yapılmadı:** API_TOKEN Modal secret'ında, bende yok.
+     - **GERÇEK HTTP ZİNCİRİ DOĞRULANDI (2026-10-01, token'lı, canlı API):** Zeus POST /sub
+       -> `done` + `existing` (GPU'ya girmedi, 0.55 sn); GET /substems lead 3 690 698 ve
+       backing 3 756 851 bayt (200, audio/mp4, `ftyp`), Range 0-99 -> 206 + Content-Range,
+       son 50 bayt -> 206, aralık dışı -> 416; Final Duet POST /sub -> `no_vocals` (-118.66
+       dBFS), tekrar -> `existing`; /songs ve detay `sub_state` alanları; auth yok -> 401.
+     - **OTURUM 3 (arayüz + motor) YAPILDI (2026-10-01), telefonda doğrulanmadı. SW v31.**
+       * `sub.js` (saf, `tests/sub_test.mjs`): vokal kanalı altındaki denetimin durumu
+         (yok / çalışıyor / vokal yok / ayrılamadı / hata / hazır / açık), tahmin
+         (`~2 dk, ~$0.015`, Zeus ölçümüyle uyumlu), uzun şarkı ve çevrimdışı kuralları.
+       * Mikser: vokalin altında "Alt parçaları ayır" + ipucu; basınca 4 sn'lik yoklama,
+         bitince aynı yerde ▸ oku; açınca Ana vokal / Arka vokal satırları girintili.
+         `reliability: warn` -> "Ayrım güvenilmez olabilir" rozeti; "Bu şarkıda vokal
+         yok", "Bu şarkıda ana vokal ayrılamadı" mesajları. Bitince alt parçalar sessizce
+         cihaza iniyor (çevrimdışı açılabilsin). Uzun şarkıda (telefon, `longSongThreshold`)
+         açma pasif + bellek uyarısı; çevrimdışı + cihazda yoksa açma pasif.
+       * Motor: `expandChannel/collapseChannel/decode`. Canlı tampon değişimi YOK: çalarken
+         `stop` + yeniden `play` (seek gibi ~150 ms), konum ve döngü korunur; çözme
+         yeniden başlatmadan ÖNCE yapılıyor. Açıkken ana vokal tamponu ve gain'i
+         BIRAKILIR (ana kanalın fader/solo/mute durumu kalır, gruba uygulanır).
+         Telefonda aynı anda tek ana kanal (bugün tek grup: vokal). Sızıntı testi: 40
+         açma/kapama, açıkken şarkıdan çıkma.
+       * `mixmemory.audible/effectiveGain` ebeveyn haritasıyla: ana M/S tüm gruba, alt
+         M/S yalnız kendine, mute her zaman kazanır; kazanç = alt fader x ana fader.
+         Mikser hafızası alt adları (lead/backing) kaydeder; ALT KANALLAR KAPALIYKEN
+         yazım onların kayıtlı ayarını KORUR (`replaceAbsent` yalnız "Sıfırla" ve ön
+         ayarlarda). Açık/kapalı durum hatırlanmaz.
+       * Ön ayarlar: "Karaoke" ana vokal kanalını susturur (açıksa tüm grup);
+         "Karaoke (arka vokal kalsın)" yalnız lead'i susturur, alt parçası olmayan
+         şarkıda pasif, parçalar hazır ama kapalıysa önce açar. Ön ayarlar "temiz
+         başlangıç": kapalı alt kanalların eski ayarı da silinir.
+       * Mock sunucu: `--sub-mode done|warn|unreliable|no_vocals|error`, `--sub-polls N`.
+         Yerelde uçtan uca denendi (tarayıcı, gerçek stem'ler): ayır -> yoklama -> ok ->
+         çalarken açma/kapama, S/M kuralları, ön ayarlar, kayıt ve yeniden yükleme,
+         warn/unreliable/no_vocals mesajları. Hiza testi tüm satırlar geçti (döngü ve
+         dikiş dahil), `engine_leak_test` geçti.
+       * Açık/bilinen: alt kanal indirme menüsü yok (indirme ana kanaldan); alt parçalar
+         için ayrı çevrimdışı "indirildi" göstergesi yok; davul (oturum 4) `SUB_GROUPS`'a
+         eklenecek, "tek ana kanal açık" kuralı o zaman devreye girer.
      - **Kulak testi:** kör kesitler kitaplıkta `[X kisa]` (HAZBIN g/q, Below The
        Surface c/w, Zeus a/n), kanallar lead/backing/other; kağıtlar
        `backend/sub_out/sheets/`, anahtar `backend/sub_out/key.json` (gitignore'lı).

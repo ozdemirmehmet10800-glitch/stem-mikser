@@ -13,6 +13,9 @@ const ICONS = {
   piano: '<path d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm1 2v12h2v-5h1V6H5zm5 0v7h1v5h2v-5h1V6h-4zm6 0v7h1v5h2V6h-3z"/>',
   other: '<path d="M12 3v10.6A4 4 0 1 0 14 17V7h4V3h-6z"/>',
 };
+// Alt kanallar ana kanalın simgesini kullanıyor.
+ICONS.lead = ICONS.vocals;
+ICONS.backing = ICONS.vocals;
 
 const DOWNLOAD_FORMATS = [
   ["m4a", "M4A", "oynatma kalitesi, küçük"],
@@ -27,6 +30,8 @@ export class Mixer {
     this.onChange = onChange;
     this.onDownload = onDownload;
     this.rows = new Map();
+    this.groupSpecs = new Map();   // ana kanal -> alt parça denetimi (app.js verir)
+    this.groupCtls = new Map();
     this.openMenu = null;
     // Menü açılıp kapandığında haber veriliyor: geri tuşu katman yığınını
     // buradan öğreniyor (app.js). Mikser history'yi BİLMİYOR.
@@ -86,18 +91,100 @@ export class Mixer {
     return wrap;
   }
 
-  render(stemNames) {
+  /**
+   * Alt parça denetimi (ana kanalın hemen altında): düğme / durum metni / açma
+   * oku / rozet. spec = null ise kaldırılır. Biçim: sub.js::subView çıktısı +
+   * `onButton`, `onToggle`. render() sonrasında da korunur.
+   */
+  setGroupControl(parentName, spec) {
+    if (spec) this.groupSpecs.set(parentName, spec);
+    else this.groupSpecs.delete(parentName);
+    this.#renderGroupControl(parentName);
+  }
+
+  #renderGroupControl(parentName) {
+    const old = this.groupCtls.get(parentName);
+    const parts = this.rows.get(parentName);
+    const spec = this.groupSpecs.get(parentName);
+    if (old) {
+      old.remove();
+      this.groupCtls.delete(parentName);
+    }
+    if (!parts || !spec) return;
+
+    const ctl = document.createElement("div");
+    ctl.className = `sub-ctl ${spec.kind || ""}`;
+    if (spec.arrow) {
+      const arrow = document.createElement("button");
+      arrow.type = "button";
+      arrow.className = "sub-arrow";
+      arrow.textContent = spec.arrow === "open" ? "▾" : "▸";
+      arrow.disabled = Boolean(spec.disabled);
+      arrow.setAttribute("aria-expanded", String(spec.arrow === "open"));
+      arrow.setAttribute("aria-label", spec.arrow === "open"
+        ? "Alt parçaları kapat" : "Alt parçaları aç");
+      arrow.addEventListener("click", () => spec.onToggle && spec.onToggle());
+      ctl.append(arrow);
+    }
+    if (spec.text) {
+      const text = document.createElement("span");
+      text.className = "sub-text";
+      text.textContent = spec.text;
+      ctl.append(text);
+    }
+    if (spec.badge) {
+      const badge = document.createElement("span");
+      badge.className = "sub-badge";
+      badge.textContent = spec.badge;
+      ctl.append(badge);
+    }
+    if (spec.button) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "chip sub-button";
+      button.textContent = spec.button;
+      button.disabled = Boolean(spec.disabled);
+      button.addEventListener("click", () => spec.onButton && spec.onButton());
+      ctl.append(button);
+    }
+    if (spec.hint) {
+      const hint = document.createElement("span");
+      hint.className = "sub-hint";
+      hint.textContent = spec.hint;
+      ctl.append(hint);
+    }
+    parts.row.after(ctl);
+    this.groupCtls.set(parentName, ctl);
+  }
+
+  /**
+   * stemNames: gösterilecek kanallar (ana kanal AÇIKKEN bile listede: grup
+   * başlığı). groups: Map ana -> [alt adlar] (açık gruplar); alt satırlar ana
+   * satırın altında girintili gelir.
+   */
+  render(stemNames, groups = new Map()) {
     this.container.innerHTML = "";
     this.rows.clear();
+    this.groupCtls.clear();
 
-    const ordered = STEM_ORDER.filter((name) => stemNames.includes(name));
+    const childSet = new Set([...groups.values()].flat());
+    const top = STEM_ORDER.filter((name) => stemNames.includes(name));
     for (const name of stemNames) {
-      if (!ordered.includes(name)) ordered.push(name);
+      if (!top.includes(name) && !childSet.has(name)) top.push(name);
+    }
+    const ordered = [];
+    for (const name of top) {
+      ordered.push(name);
+      for (const child of groups.get(name) || []) {
+        if (stemNames.includes(child)) ordered.push(child);
+      }
     }
 
     for (const name of ordered) {
+      const isChild = childSet.has(name);
       const row = document.createElement("div");
-      row.className = "channel";
+      row.className = "channel" + (isChild ? " sub" : "")
+        + (groups.has(name) ? " group" : "");
 
       const label = document.createElement("div");
       label.className = "channel-name";
@@ -142,10 +229,15 @@ export class Mixer {
         this.refresh();
       });
 
-      row.append(label, fader.element, db, solo, mute, this.#buildDownload(name));
+      // Alt kanalın indirme menüsü yok (indirme ana kanaldan).
+      row.append(label, fader.element, db, solo, mute,
+                 isChild ? document.createElement("span") : this.#buildDownload(name));
       this.container.append(row);
       this.rows.set(name, { row, fader, db, solo, mute });
+      // Alt parça denetimi ana satırın hemen altına; alt satırlar ondan SONRA
+      // eklendiği için sıra korunur.
     }
+    for (const parentName of this.groupSpecs.keys()) this.#renderGroupControl(parentName);
     this.refresh();
   }
 
@@ -171,7 +263,12 @@ export class Mixer {
       if (!channel) continue;
       parts.solo.classList.toggle("on-solo", channel.solo);
       parts.mute.classList.toggle("on-mute", channel.mute);
-      parts.row.classList.toggle("audible", this.engine.isAudible(name));
+      // Açık grup başlığı: altındaki herhangi biri duyuluyorsa parlak.
+      const members = channel.children && channel.children.length ? channel.children : null;
+      const heard = members
+        ? members.some((child) => this.engine.isAudible(child))
+        : this.engine.isAudible(name);
+      parts.row.classList.toggle("audible", heard);
     }
     if (notify && this.onChange) this.onChange();
   }

@@ -29,7 +29,7 @@ import {
 } from "./stretch.js";
 import { AUDIO_SAVE, normalizeAudioMode } from "./settings.js";
 import { diag } from "./diag.js";
-import { audible } from "./mixmemory.js";
+import { audible, effectiveGain } from "./mixmemory.js";
 import { mapLoop, turnAt, normalizeLoop, seekClosesLoop } from "./loop.js";
 
 export const STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"];
@@ -41,6 +41,8 @@ export const STEM_LABELS = {
   guitar: "Gitar",
   piano: "Piyano",
   other: "Diğer",
+  lead: "Ana vokal",       // alt parçalar (Aşama 10)
+  backing: "Arka vokal",
 };
 
 const START_LEAD = 0.08; // planlama payı (sn)
@@ -788,6 +790,7 @@ export class Engine {
         solo: false,
         mute: false,
         source: null,
+        parent: null,       // alt parçaysa ana kanalın adı (Aşama 10)
       });
     }
 
@@ -832,9 +835,10 @@ export class Engine {
   }
 
   #effectiveGain(name) {
-    const channel = this.channels.get(name);
-    if (!channel) return 0;
-    return this.isAudible(name) ? channel.fader : 0;
+    // Alt kanalda: kendi fader'ı x ana kanalın (grup) fader'ı; duyulur kuralı
+    // gruba göre (mixmemory.effectiveGain).
+    if (!this.channels.get(name)) return 0;
+    return effectiveGain(this.channels, name);
   }
 
   #applyAllGains(immediate = false) {
@@ -895,6 +899,7 @@ export class Engine {
     // kaynaklarla AYNI ana yazılması gerekiyor; SoundTouch'ta bu no-op.
     startNode(this.stretchNode, startAt, this.#stretchOptions(), this.activeStretcher);
     for (const channel of this.channels.values()) {
+      if (!channel.buffer) continue;   // açılmış ana kanal: sesi alt kanallarda
       const source = this.ctx.createBufferSource();
       source.buffer = channel.buffer;
       // Tempo KAYNAKTAN geliyor, altısı da aynı oranda; esnetici düğümü
@@ -982,6 +987,104 @@ export class Engine {
       this.master = null;
       this.seamGain = null;
     }
+  }
+
+  // ------------------------------------------------- alt kanallar (Aşama 10)
+  //
+  // Ana kanal (vocals) açılınca: ana tampon BELLEKTEN bırakılır, alt kanallar
+  // (lead/backing) çalar. Ana kanalın fader/solo/mute durumu KALIR ve tüm gruba
+  // uygulanır (mixmemory.audible/effectiveGain). Canlı tampon değişimi YOK:
+  // çalıyorsa seek gibi kısa yeniden başlatma (~150 ms), konum korunur.
+  // Çözme (ağır iş) yeniden başlatmadan ÖNCE `decode` ile, çalmayı kesmeden yapılır.
+
+  /** Çözülmüş AudioBuffer (loadStems ile aynı mono indirme kuralı). */
+  async decode(arrayBuffer) {
+    await this.ensureContext();
+    let buffer = await this.ctx.decodeAudioData(arrayBuffer);
+    if (this.monoDownmix) buffer = this.#toMono(buffer);
+    return buffer;
+  }
+
+  isExpanded(parentName) {
+    const channel = this.channels.get(parentName);
+    return Boolean(channel && Array.isArray(channel.children) && channel.children.length);
+  }
+
+  #releaseChannelAudio(channel) {
+    if (channel.source) {
+      try {
+        channel.source.onended = null;
+        channel.source.stop();
+      } catch {
+        /* zaten durmuş olabilir */
+      }
+      try {
+        channel.source.disconnect();
+      } catch {
+        /* bağlı değildi */
+      }
+      channel.source = null;
+    }
+    if (channel.gainNode) {
+      try {
+        channel.gainNode.disconnect();
+      } catch {
+        /* bağlı değildi */
+      }
+      channel.gainNode = null;
+      this.gainsReleased += 1;
+    }
+    channel.buffer = null;
+  }
+
+  /** buffers: Map ad -> AudioBuffer (alt kanallar). Ana kanal tamponu bırakılır. */
+  async expandChannel(parentName, buffers) {
+    const parent = this.channels.get(parentName);
+    if (!parent || !parent.buffer) throw new Error(`${parentName} açılamaz: tamponu yok`);
+    if (this.isExpanded(parentName)) return;
+    await this.ensureContext();
+    const wasPlaying = this.playing;
+    if (wasPlaying) {
+      const position = this.currentTime;
+      this.stop();
+      this.offset = position;
+    }
+    this.#releaseChannelAudio(parent);
+    parent.children = [];
+    for (const [name, buffer] of buffers) {
+      this.channels.set(name, {
+        buffer, gainNode: this.#newGain(), fader: 1, solo: false, mute: false,
+        source: null, parent: parentName,
+      });
+      parent.children.push(name);
+    }
+    this.#routeChannels();
+    this.#applyAllGains(true);
+    if (wasPlaying) await this.play();
+  }
+
+  /** Alt kanalları bırakır, ana kanalın tamponunu (`buffer`) geri koyar. */
+  async collapseChannel(parentName, buffer) {
+    const parent = this.channels.get(parentName);
+    if (!parent || !this.isExpanded(parentName)) throw new Error(`${parentName} zaten kapalı`);
+    await this.ensureContext();
+    const wasPlaying = this.playing;
+    if (wasPlaying) {
+      const position = this.currentTime;
+      this.stop();
+      this.offset = position;
+    }
+    for (const name of parent.children) {
+      const child = this.channels.get(name);
+      if (child) this.#releaseChannelAudio(child);
+      this.channels.delete(name);
+    }
+    parent.children = null;
+    parent.buffer = buffer;
+    parent.gainNode = this.#newGain();
+    this.#routeChannels();
+    this.#applyAllGains(true);
+    if (wasPlaying) await this.play();
   }
 
   // ------------------------------------------------------------ A-B döngü

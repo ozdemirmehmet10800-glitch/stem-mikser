@@ -266,6 +266,81 @@ const near = (x, y, eps = 1e-6) => Math.abs(x - y) <= eps;
   e.dispose();
 }
 
+// ------------------------------------------------- alt kanallar (Asama 10)
+{
+  const e = new Engine();
+  await e.loadStems(STEMS, provide, { concurrency: 3 });
+  const bufs = async () => new Map([
+    ["lead", await e.decode(new ArrayBuffer(8))],
+    ["backing", await e.decode(new ArrayBuffer(8))],
+  ]);
+  check("baslangic: bagli gain = 6, kapali", liveGains(e) === 6 && !e.isExpanded("vocals"));
+
+  // Ana kanalin ayari acarken KALIR ve tum gruba uygulanir.
+  e.setFader("vocals", 0.5);
+  await e.expandChannel("vocals", await bufs());
+  check("acik: lead/backing kanallari var, ana tampon yok",
+    e.isExpanded("vocals") && e.channels.has("lead") && e.channels.has("backing")
+    && e.channels.get("vocals").buffer === null && e.channels.get("vocals").gainNode === null);
+  check("acik: bagli gain = 7 (ana kanalin gain'i birakildi: 5 + 2)", liveGains(e) === 7, `(${liveGains(e)})`);
+  check("acik: ana fader gruba uygulanir (lead kazanci 0.5)", e.channels.get("lead").gainNode.gain.value === 0.5);
+  check("acik: alt kanal parent alani", e.channels.get("lead").parent === "vocals");
+  e.toggleMute("vocals");
+  check("acik: ANA mute -> alt kanallar sessiz (duyulur kurali)",
+    !e.isAudible("lead") && !e.isAudible("backing") && e.isAudible("drums"));
+  e.toggleMute("vocals");
+  e.toggleMute("lead");
+  check("acik: ALT mute -> yalniz lead sessiz",
+    !e.isAudible("lead") && e.isAudible("backing"));
+  e.toggleMute("lead");
+
+  // Calarken acma/kapama: konum korunur, calma surer, kaynaklar yalniz tamponlulardan.
+  await e.play();
+  e.ctx.currentTime = e.startedAt + 3;
+  const before = e.currentTime;
+  await e.collapseChannel("vocals", await e.decode(new ArrayBuffer(8)));
+  check("calarken kapatma: calma surer, konum korunur",
+    e.playing && Math.abs(e.offset - before) < 1e-6 && !e.isExpanded("vocals"), `(${e.offset} vs ${before})`);
+  check("kapali: 6 kanal, 6 canli kaynak, bagli gain 6", e.channels.size === 6 && liveSources(e) === 6 && liveGains(e) === 6,
+    `(${e.channels.size}/${liveSources(e)}/${liveGains(e)})`);
+  check("kapaninca alt kanallar silindi", !e.channels.has("lead") && !e.channels.has("backing"));
+  check("kapaninca ana fader durdu", e.channels.get("vocals").fader === 0.5);
+  e.ctx.currentTime = e.startedAt + 4;
+  await e.expandChannel("vocals", await bufs());
+  check("calarken acma: calma surer, 7 canli kaynak (ana kaynak durduruldu)",
+    e.playing && liveSources(e) === 7 && e.channels.get("vocals").source === null, `(${liveSources(e)})`);
+
+  // Dongu acikken acma/kapama: dongu korunur, yeni kaynaklar dongulu.
+  await e.setLoop(2, 6);
+  await e.collapseChannel("vocals", await e.decode(new ArrayBuffer(8)));
+  check("dongu + kapatma: dongu korundu, kaynaklar dongulu",
+    e.loop && e.loop.a === 2 && [...e.channels.values()].every((c) => c.source && c.source.loop === true));
+  await e.expandChannel("vocals", await bufs());
+  check("dongu + acma: kaynaklar dongulu", [...e.channels.values()].filter((c) => c.source).every((c) => c.source.loop === true));
+  e.clearLoop();
+  e.pause();
+
+  // Sizinti: 40 acma/kapama (calarken ve calmazken)
+  for (let i = 0; i < 40; i += 1) {
+    if (e.isExpanded("vocals")) await e.collapseChannel("vocals", await e.decode(new ArrayBuffer(8)));
+    if (i % 2 === 0) await e.play();
+    await e.expandChannel("vocals", await bufs());
+    await e.collapseChannel("vocals", await e.decode(new ArrayBuffer(8)));
+    e.pause();
+  }
+  check("40 acma/kapama: bagli gain = 6 (sizinti yok)", liveGains(e) === 6, `(${liveGains(e)})`);
+  check("40 acma/kapama: canli kaynak yok", liveSources(e) === 0, `(${liveSources(e)})`);
+  check("40 acma/kapama: sayac tutarli (yaratilan - birakilan = canli)",
+    e.diagnostics().liveGains === 6, `(${e.diagnostics().liveGains})`);
+
+  // Acikken sarkidan cik: hepsi birakilir.
+  await e.expandChannel("vocals", await bufs());
+  e.releaseStems();
+  check("acikken releaseStems: kanal, kaynak, gain yok",
+    e.channels.size === 0 && liveGains(e) === 0 && liveSources(e) === 0);
+  e.dispose();
+}
+
 if (failed) {
   console.log(`\n${failed} test BASARISIZ`);
   process.exit(1);

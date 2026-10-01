@@ -5,7 +5,7 @@
 import {
   audible, PRESETS, applyPreset, cleanStates, normalizeRecord, planRestore,
   isDefaultMix, snapshot, readMix, writeMix, removeMix, mixKey, MIX_PREFIX,
-  MIX_LIMIT, writeLoop, validLoop,
+  MIX_LIMIT, writeLoop, validLoop, effectiveGain,
 } from "../frontend/js/mixmemory.js";
 
 let failed = 0;
@@ -149,6 +149,92 @@ check("loop varken varsayilan mikser kaydi silmez", s4.getItem(mixKey("lp")) !==
   check("kayittaki gecersiz loop yok sayilir", bad && bad.loop === undefined);
   check("stems_version/pipeline anahtarda yok: loop sarki kimligine bagli",
     mixKey("L1") === MIX_PREFIX + "L1");
+}
+
+// --- GRUPLAR (Asama 10 alt parcalari): ana kanal M/S'i gruba, alt kanalinki yalniz kendine
+{
+  const group = (over = {}) => {
+    const m = new Map();
+    const base = { fader: 1, mute: false, solo: false };
+    for (const n of ["drums", "bass"]) m.set(n, { ...base, ...(over[n] || {}) });
+    m.set("vocals", { ...base, ...(over.vocals || {}) });                       // grup basligi (tamponsuz)
+    m.set("lead", { ...base, parent: "vocals", ...(over.lead || {}) });
+    m.set("backing", { ...base, parent: "vocals", ...(over.backing || {}) });
+    return m;
+  };
+  const heardG = (c) => [...c.keys()].filter((n) => !["vocals"].includes(n) && audible(c, n));
+
+  check("grup: hicbiri yok -> hepsi", heardG(group()).join() === "drums,bass,lead,backing");
+  check("ana MUTE -> tum alt kanallar susar, digerleri calar",
+    heardG(group({ vocals: { mute: true } })).join() === "drums,bass");
+  check("alt MUTE -> yalniz o susar",
+    heardG(group({ lead: { mute: true } })).join() === "drums,bass,backing");
+  check("ana SOLO -> yalniz alt kanallar (ikisi de)",
+    heardG(group({ vocals: { solo: true } })).join() === "lead,backing");
+  check("alt SOLO -> yalniz o",
+    heardG(group({ backing: { solo: true } })).join() === "backing");
+  check("ana solo + alt mute -> mute kazanir: yalniz digeri",
+    heardG(group({ vocals: { solo: true }, lead: { mute: true } })).join() === "backing");
+  check("ana mute + alt solo -> mute kazanir, hicbiri",
+    heardG(group({ vocals: { mute: true }, lead: { solo: true } })).length === 0);
+  check("baska kanal solo -> alt kanallar susar",
+    heardG(group({ drums: { solo: true } })).join() === "drums");
+  check("ana solo+mute: grup susar", heardG(group({ vocals: { solo: true, mute: true } })).length === 0);
+  check("alt kanal solo + baska kanal solo: ikisi",
+    heardG(group({ lead: { solo: true }, drums: { solo: true } })).join() === "drums,lead");
+  // Alt kanalsiz (kapali) durum eskisiyle ayni
+  const flat = new Map([["vocals", { fader: 1, mute: false, solo: true }], ["drums", { fader: 1, mute: false, solo: false }]]);
+  check("kapali grup: ana kanal normal kanal gibi", audible(flat, "vocals") && !audible(flat, "drums"));
+
+  // nihai kazanc: kendi x grup
+  const g = group({ vocals: { fader: 0.5 }, lead: { fader: 1.2 } });
+  check("kazanc: alt fader x ana fader", Math.abs(effectiveGain(g, "lead") - 0.6) < 1e-9
+    && Math.abs(effectiveGain(g, "backing") - 0.5) < 1e-9);
+  check("kazanc: grupta olmayan kanal etkilenmez", effectiveGain(g, "drums") === 1);
+  check("kazanc: sessiz kanal 0", effectiveGain(group({ lead: { mute: true } }), "lead") === 0);
+  check("kazanc: ana mute -> alt 0", effectiveGain(group({ vocals: { mute: true } }), "backing") === 0);
+  check("kazanc: olmayan kanal 0", effectiveGain(g, "kick") === 0);
+
+  // Kayit: alt adlar kaydedilir; kapaliyken (kanallar yok) kayit KAYBOLMAZ
+  const st = new FakeStorage();
+  const open = snapshot(new Map([
+    ["vocals", ch({ mute: false })], ["drums", ch()],
+    ["lead", ch({ fader: 0.4, mute: true, parent: "vocals" })], ["backing", ch({ fader: 1.3 })],
+  ]));
+  writeMix(st, "G1", open, 100, 1);
+  const r1 = readMix(st, "G1");
+  check("alt adlar kaydedilir", r1.stems.get("lead").mute && r1.stems.get("lead").fader === 40
+    && r1.stems.get("backing").fader === 130);
+  const collapsed = snapshot(new Map([["vocals", ch({ solo: true })], ["drums", ch()]]));
+  writeMix(st, "G1", collapsed, 100, 2);
+  const r2 = readMix(st, "G1");
+  check("kapaliyken yazim: alt kanallarin kaydi KORUNUR", r2.stems.get("lead").mute && r2.stems.get("backing").fader === 130);
+  check("kapaliyken yazim: ana kanal yeni degeri alir", r2.stems.get("vocals").solo === true);
+  writeMix(st, "G1", collapsed, 100, 3, { replaceAbsent: true });
+  const r3 = readMix(st, "G1");
+  check("replaceAbsent (sifirla): kapali alt kanallarin kaydi da gider", !r3.stems.has("lead") && !r3.stems.has("backing"));
+  writeMix(st, "G2", snapshot(new Map([["vocals", ch()], ["lead", ch({ mute: true, parent: "vocals" })]])), 100, 1);
+  writeMix(st, "G2", snapshot(new Map([["vocals", ch()]])), 100, 2, { replaceAbsent: true });
+  check("sifirlama + varsayilan: kayit tamamen silinir", st.getItem(mixKey("G2")) === null);
+  // Restore: alt kanallari olmayan sarkida bilinmeyen adlar atlanir
+  const plan = planRestore(r1, ["vocals", "drums"]);
+  check("alt kanallar kapaliyken restore: lead/backing atlanir", plan.size === 2 && !plan.has("lead"));
+  const planOpen = planRestore(r1, ["vocals", "drums", "lead", "backing"]);
+  check("alt kanallar aciliyken restore: kayitli ayar gelir", planOpen.get("lead").mute && planOpen.get("backing").fader === 130);
+
+  // On ayarlar
+  const NAMES_G = ["vocals", "drums", "bass", "lead", "backing"];
+  const karaokeG = applyPreset(preset("karaoke"), NAMES_G);
+  check("Karaoke acik grupta: ANA vokal susar (grup)", karaokeG.get("vocals").mute && !karaokeG.get("lead").mute);
+  const karaokeClosed = new Map([...karaokeG].map(([n, v]) => [n, { ...v, ...(n === "lead" || n === "backing" ? { parent: "vocals" } : {}) }]));
+  check("Karaoke: grup susunca lead+backing duyulmaz", !audible(karaokeClosed, "lead") && !audible(karaokeClosed, "backing") && audible(karaokeClosed, "drums"));
+  const kb = preset("karaoke-backing");
+  check("Karaoke (arka vokal kalsin) tanimli, needsSub", kb && kb.needsSub === true && kb.mute.join() === "lead");
+  const kbStates = applyPreset(kb, NAMES_G);
+  check("arka vokal kalsin: yalniz lead susar", kbStates.get("lead").mute && !kbStates.get("backing").mute && !kbStates.get("vocals").mute);
+  const kbAudible = new Map([...kbStates].map(([n, v]) => [n, { ...v, ...(n === "lead" || n === "backing" ? { parent: "vocals" } : {}) }]));
+  check("arka vokal kalsin: lead susar, backing + muzik calar", !audible(kbAudible, "lead") && audible(kbAudible, "backing") && audible(kbAudible, "drums"));
+  check("alt parcasi olmayan sarkida pasif (null)", applyPreset(kb, ["vocals", "drums", "bass"]) === null);
 }
 
 // --- LRU
