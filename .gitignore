@@ -22,3 +22,9 @@ Thumbs.db
 # Madde 7 deney ciktilari (anahtar dosyasi dahil)
 backend/pd_out/
 backend/sub_out/
+
+# Soz deneyi: gercek sozler ve ham Whisper ciktilari TELIFLI, depo public: ASLA commit edilmez
+backend/lyrics_ref/
+backend/lyrics_out/
+*.lyrics.txt
+lyrics.json
