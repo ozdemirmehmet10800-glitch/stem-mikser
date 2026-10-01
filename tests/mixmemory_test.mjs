@@ -5,7 +5,7 @@
 import {
   audible, PRESETS, applyPreset, cleanStates, normalizeRecord, planRestore,
   isDefaultMix, snapshot, readMix, writeMix, removeMix, mixKey, MIX_PREFIX,
-  MIX_LIMIT,
+  MIX_LIMIT, writeLoop, validLoop,
 } from "../frontend/js/mixmemory.js";
 
 let failed = 0;
@@ -117,6 +117,39 @@ writeMix(s4, "lp", snapshot(chans({ bass: { mute: true } })), 100, 5);
 check("loop alani yeniden yazimda korunur", JSON.parse(s4.getItem(mixKey("lp"))).loop.b === 9);
 writeMix(s4, "lp", snapshot(chans()), 100, 6);
 check("loop varken varsayilan mikser kaydi silmez", s4.getItem(mixKey("lp")) !== null);
+
+
+// --- loop alani (Madde 1): kaydedilir, okunur, silinince alan da silinir
+{
+  const s6 = new FakeStorage();
+  writeLoop(s6, "L1", { a: 12.5, b: 20 }, 10);
+  const rec1 = readMix(s6, "L1");
+  check("loop yazilir ve okunur", rec1 && rec1.loop.a === 12.5 && rec1.loop.b === 20);
+  check("yalniz loop: mikser varsayilan", isDefaultMix(planRestore(rec1, NAMES), rec1.master));
+  writeMix(s6, "L1", snapshot(chans({ drums: { mute: true } })), 90, 20);
+  const rec2 = readMix(s6, "L1");
+  check("mikser yazimi loop'u korur", rec2.loop.b === 20 && rec2.stems.get("drums").mute && rec2.master === 90);
+  writeLoop(s6, "L1", null, 30);
+  const rec3 = readMix(s6, "L1");
+  check("loop silinince alan gider, mikser kalir", rec3 && rec3.loop === undefined && rec3.stems.get("drums").mute);
+  writeLoop(s6, "L2", { a: 1, b: 3 }, 40);
+  writeLoop(s6, "L2", null, 50);
+  check("loop silinince mikser de varsayilansa kayit tamamen silinir", s6.getItem(mixKey("L2")) === null);
+  writeLoop(s6, "yok", null, 60);
+  check("kayit yokken loop silmek kayit yaratmaz", s6.getItem(mixKey("yok")) === null);
+  writeLoop(s6, "L3", { a: 5, b: 5 }, 70);
+  check("gecersiz loop (b <= a) yazilmaz", s6.getItem(mixKey("L3")) === null);
+  s6.setItem(mixKey("fut"), JSON.stringify({ v: 2, stems: {}, loop: { a: 1, b: 2 } }));
+  writeLoop(s6, "fut", null, 80);
+  check("uyumsuz surumlu kayda dokunulmaz", JSON.parse(s6.getItem(mixKey("fut"))).v === 2);
+  check("validLoop", validLoop({ a: 1, b: 2 }).b === 2 && validLoop({ a: -1, b: 2 }) === undefined &&
+    validLoop({ a: 3, b: 2 }) === undefined && validLoop({ a: "x", b: 2 }) === undefined &&
+    validLoop(null) === undefined && validLoop("x") === undefined);
+  const bad = normalizeRecord({ v: 1, master: 100, stems: {}, loop: { a: 9, b: 1 } });
+  check("kayittaki gecersiz loop yok sayilir", bad && bad.loop === undefined);
+  check("stems_version/pipeline anahtarda yok: loop sarki kimligine bagli",
+    mixKey("L1") === MIX_PREFIX + "L1");
+}
 
 // --- LRU
 const s5 = new FakeStorage();

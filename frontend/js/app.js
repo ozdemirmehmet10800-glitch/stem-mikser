@@ -11,11 +11,11 @@ import {
 } from "./engine.js";
 import { Mixer } from "./mixer.js";
 import {
-  snapPoint, barLoop, hasBars, BAR_CHOICES, MIN_LOOP,
+  snapPoint, barLoop, hasBars, BAR_CHOICES, minLoopLength, dragPoint, normalizeLoop,
 } from "./loop.js";
 import {
   PRESETS, applyPreset, cleanStates, snapshot, planRestore, readMix, writeMix,
-  removeMix,
+  removeMix, writeLoop, isDefaultMix,
 } from "./mixmemory.js";
 import { ChordStrip, formatTime } from "./chords.js";
 import { MediaBridge } from "./media.js";
@@ -1649,10 +1649,20 @@ function restoreMix(songId) {
   const names = [...engine.channels.keys()];
   updatePresetButtons(names);
   if (record) {
-    engine.applyMix(planRestore(record, names));
+    const plan = planRestore(record, names);
+    engine.applyMix(plan);
     setMasterPercent(record.master);
     mixer.syncFromEngine();
-    el("mix-notice").hidden = false;
+    // Yalnız döngü kayıtlıysa "ayar geri yüklendi" rozeti boşuna çıkmasın.
+    el("mix-notice").hidden = isDefaultMix(plan, record.master);
+    // Döngü KAPALI gelir, uçlar yerinde görünür, tek dokunuşla açılır.
+    const saved = record.loop ? normalizeLoop(record.loop.a, record.loop.b, engine.duration) : null;
+    if (saved) {
+      loopA = saved.a;
+      loopB = saved.b;
+      loopOn = false;
+      refreshLoopUi();
+    }
   }
   mixSongId = songId;
 }
@@ -1763,8 +1773,85 @@ function refreshLoopUi() {
   for (const button of el("loop-bars").children) {
     button.disabled = !ready || !hasBars(loopGrid);
   }
+  el("loop-clear").disabled = !ready || (loopA === null && loopB === null);
   el("loop-range").textContent =
     `A ${loopA === null ? "—" : formatPoint(loopA)} · B ${loopB === null ? "—" : formatPoint(loopB)}`;
+  layoutHandles();
+}
+
+// ---- seek çubuğundaki tutamaçlar
+// Konum: range thumb'ı 13 px, merkezi [6.5, W-6.5] arasında gezer.
+const THUMB = 13;
+
+function layoutHandles() {
+  const duration = engine.duration;
+  const on = loopOn && loopA !== null && loopB !== null;
+  for (const [which, t] of [["a", loopA], ["b", loopB]]) {
+    const handle = el(`loop-handle-${which}`);
+    handle.hidden = t === null || !(duration > 0);
+    if (handle.hidden) continue;
+    handle.style.left = `calc(${THUMB / 2}px + (100% - ${THUMB}px) * ${t / duration})`;
+    handle.classList.toggle("off", !on);
+    handle.setAttribute("aria-valuetext", formatPoint(t));
+  }
+  const region = el("loop-region");
+  region.hidden = loopA === null || loopB === null || !(duration > 0);
+  if (!region.hidden) {
+    region.style.left = `calc(${THUMB / 2}px + (100% - ${THUMB}px) * ${loopA / duration})`;
+    region.style.width = `calc((100% - ${THUMB}px) * ${(loopB - loopA) / duration})`;
+    region.classList.toggle("off", !on);
+  }
+}
+
+function saveLoopPoints() {
+  const storage = mixStorage();
+  if (!storage || !mixSongId) return;
+  writeLoop(storage, mixSongId, loopA !== null && loopB !== null ? { a: loopA, b: loopB } : null);
+}
+
+// Sürükleme: uç yapışma kipine yapışır; bırakınca motora iletilir (döngü
+// çalıyorsa ve konum dışarıda kaldıysa motor A'ya alır). Tutamaç seek çubuğunun
+// ÜSTÜNDE ayrı bir eleman ve olayı yuttuğu için seek tetiklenmez.
+function bindHandle(which) {
+  const handle = el(`loop-handle-${which}`);
+  let dragging = false;
+  let grab = 0;
+  const pointX = () => {
+    const rect = el("seek").getBoundingClientRect();
+    const t = which === "a" ? loopA : loopB;
+    return rect.left + THUMB / 2 + (rect.width - THUMB) * (t / engine.duration);
+  };
+  handle.addEventListener("pointerdown", (event) => {
+    if (!(engine.duration > 0)) return;
+    dragging = true;
+    grab = event.clientX - pointX();     // tutamacın gövdesine bastık, noktaya değil
+    handle.setPointerCapture(event.pointerId);
+    handle.classList.add("drag");
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  handle.addEventListener("pointermove", (event) => {
+    if (!dragging) return;
+    const rect = el("seek").getBoundingClientRect();
+    const fraction = (event.clientX - grab - rect.left - THUMB / 2) / (rect.width - THUMB);
+    const time = Math.min(Math.max(fraction, 0), 1) * engine.duration;
+    const other = which === "a" ? loopB : loopA;
+    const point = dragPoint(which, time, other, loopGrid, loopGrid ? loopSnap : "free", engine.duration);
+    if (point === null) return;
+    if (which === "a") loopA = point;
+    else loopB = point;
+    refreshLoopUi();
+  });
+  const finish = async (event) => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove("drag");
+    try { handle.releasePointerCapture(event.pointerId); } catch { /* bırakılmıştı */ }
+    await applyLoop();
+    saveLoopPoints();
+  };
+  handle.addEventListener("pointerup", finish);
+  handle.addEventListener("pointercancel", finish);
 }
 
 // İşaretleri motora iletir. Konum döngü dışındaysa motor A'ya alır.
@@ -1800,6 +1887,7 @@ function buildLoopButtons() {
       loopB = found.b;
       loopOn = true;
       await applyLoop();
+      saveLoopPoints();
       if (found.clipped) loopNotice("Döngü şarkı sonuna kırpıldı.");
     });
     el("loop-bars").append(button);
@@ -1808,11 +1896,12 @@ function buildLoopButtons() {
 
 on("loop-a", "click", async () => {
   loopA = snapTime(engine.visualTime);
-  if (loopB !== null && loopB - loopA < MIN_LOOP) {
+  if (loopB !== null && loopB - loopA < minLoopLength(loopGrid)) {
     loopB = null;
     loopOn = false;
   }
   await applyLoop();
+  saveLoopPoints();
 });
 
 on("loop-b", "click", async () => {
@@ -1821,13 +1910,22 @@ on("loop-b", "click", async () => {
     return;
   }
   const point = snapTime(engine.visualTime);
-  if (point - loopA < MIN_LOOP) {
-    loopNotice("B, A'dan sonra olmalı.");
+  if (point - loopA < 0.75 * minLoopLength(loopGrid)) {
+    loopNotice("B, A'dan en az bir vuruş sonra olmalı.");
     return;
   }
   loopB = point;
   loopOn = true;      // B işaretlenince döngü başlar
   await applyLoop();
+  saveLoopPoints();
+});
+
+on("loop-clear", "click", async () => {
+  loopA = null;
+  loopB = null;
+  loopOn = false;
+  await applyLoop();
+  saveLoopPoints();        // uçlar silinince kayıttaki alan da silinir
 });
 
 on("loop-toggle", "click", async () => {
@@ -1838,6 +1936,10 @@ on("loop-toggle", "click", async () => {
   loopOn = !loopOn;
   await applyLoop();
 });
+
+bindHandle("a");
+bindHandle("b");
+window.addEventListener("resize", layoutHandles);
 
 on("loop-snap", "click", () => {
   loopSnap = loopSnap === "bar" ? "beat" : "bar";

@@ -4,7 +4,8 @@
 
 import {
   nearestIndex, floorIndex, snapPoint, barLoop, normalizeLoop, mapLoop, turnAt,
-  seamRaw, inside, seekClosesLoop, MIN_LOOP, hasGrid, hasBars,
+  seamRaw, inside, seekClosesLoop, MIN_LOOP, hasGrid, hasBars, beatInterval,
+  minLoopLength, dragPoint, FREE_MIN,
 } from "../frontend/js/loop.js";
 
 let failed = 0;
@@ -95,6 +96,35 @@ check("seek: a'dan once kapatir", seekClosesLoop(1, L));
 check("seek: b ve sonrasi kapatir", seekClosesLoop(6, L) && seekClosesLoop(30, L));
 check("seek: a'nin 5 ms altinda tolerans", !seekClosesLoop(1.996, L));
 check("seek: dongu yokken kapatacak bir sey yok", !seekClosesLoop(3, null));
+
+
+// --- en kisa dongu ve tutamac surukleme
+check("beatInterval 0.5", near(beatInterval(grid), 0.5) && beatInterval(null) === null);
+check("minLoopLength: 1 vurus", near(minLoopLength(grid), 0.5));
+check("minLoopLength: izgarasiz 0.5 sn", minLoopLength(null) === FREE_MIN && FREE_MIN === 0.5);
+{
+  const D = 100;
+  const drag = (w, t, other, g = grid, mode = "beat") => dragPoint(w, t, other, g, mode, D);
+  check("surukle: vurusa yapisir", drag("a", 4.18, 10) === 4.0);
+  check("surukle: olcu kipinde olcu basina", drag("a", 3.9, 10, grid, "bar") === 4.5);
+  check("A, B'yi gecemez (en az 1 vurus)", drag("a", 12, 10) === 9.5);
+  check("A, B'nin tam uzerine cikamaz", drag("a", 10, 10) === 9.5);
+  check("B, A'dan once inemez", drag("b", 2, 6) === 6.5);
+  check("B, A'nin 1 vurus sonrasinda kalabilir", drag("b", 6.3, 6) === 6.5);
+  check("A sifirin altina inmez", drag("a", -5, 10) === 0.5 || drag("a", -5, 10) === 0);
+  check("B sarki sonunu asmaz", drag("b", 500, 6, grid, "beat") <= D);
+  check("olcu yapismasi siniri asarsa icerideki vurusa duser",
+    drag("a", 9.9, 10.1, grid, "bar") <= 10.1 - 0.5 + 1e-9 && drag("a", 9.9, 10.1, grid, "bar") >= 9.0);
+  check("izgarasiz: serbest saniye", drag("a", 4.1837, 10, null, "beat") === 4.18);
+  check("izgarasiz: en az 0.5 sn", drag("b", 6.2, 6, null) === 6.5);
+  check("izgarasiz: A, B'yi gecemez", drag("a", 11, 10, null) === 9.5);
+  check("diger uc yoksa sinir yalniz sarki", drag("a", 30.2, null) === 30.0 && drag("b", 30.1, null) === 30.0);
+  check("siginca null (uzunluk < 1 vurus)", dragPoint("b", 5, 4.9, grid, "beat", 5) === null);
+  check("sonuc hep sinirlar icinde", [0, 1.3, 7.7, 40, 99].every((t) => {
+    const p = drag("a", t, 20);
+    return p >= 0 && p <= 20 - 0.5 + 1e-9;
+  }));
+}
 
 // --- 8-15 ms erken izgara: telafi YOK (uclar izgara noktasinda kalir)
 {

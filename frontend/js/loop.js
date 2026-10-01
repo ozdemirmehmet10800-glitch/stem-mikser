@@ -16,7 +16,8 @@
 // uçlar ızgara noktasında kalınca iki uç da atağın hemen öncesine düşüyor;
 // telafi eklemek ucu ataklara taşırdı.
 
-export const MIN_LOOP = 0.25;        // sn: bundan kısa döngü kurulmaz
+export const MIN_LOOP = 0.1;         // sn: motorun kabul ettiği mutlak alt sınır
+export const FREE_MIN = 0.5;         // ızgarasız şarkıda en kısa döngü (sn)
 export const BAR_CHOICES = [1, 2, 4, 8];
 
 // Sıralı bir diziden t'ye en yakın elemanın indeksi (boş dizide -1).
@@ -84,6 +85,51 @@ export function barLoop(grid, t, bars, duration) {
     if (b - a >= MIN_LOOP) return { a, b, clipped: end === undefined || end > duration };
   }
   return null;
+}
+
+// Medyan vuruş aralığı (sn); ızgara yoksa null.
+export function beatInterval(grid) {
+  if (!hasGrid(grid)) return null;
+  const beats = numbers(grid.beats);
+  const gaps = [];
+  for (let i = 1; i < beats.length; i += 1) gaps.push(beats[i] - beats[i - 1]);
+  gaps.sort((x, y) => x - y);
+  return gaps[Math.floor(gaps.length / 2)];
+}
+
+// Arayüzün izin verdiği en kısa döngü: 1 vuruş (ızgarasızda 0,5 sn).
+export function minLoopLength(grid) {
+  const interval = beatInterval(grid);
+  return interval ? Math.max(interval, MIN_LOOP) : FREE_MIN;
+}
+
+/**
+ * Tutamaç sürüklemesi. which: "a" | "b"; t: parmağın gösterdiği zaman;
+ * other: diğer uç (null olabilir). Dönüş: yeni uç ya da null (sığmıyor).
+ * A, B'yi geçemez; en kısa döngü minLoopLength. Yapışma kipine uyar; yapışan
+ * nokta sınırın dışına düşerse sınırın İÇİNDEKİ en yakın vuruşa çekilir.
+ */
+export function dragPoint(which, t, other, grid, mode, duration) {
+  const min = minLoopLength(grid);
+  let lo = 0;
+  let hi = duration;
+  if (other !== null && other !== undefined) {
+    if (which === "a") hi = other - min;
+    else lo = other + min;
+  }
+  if (!(hi >= lo - 0.25 * min)) return null;
+  const clamped = Math.min(Math.max(t, lo), hi);
+  const snapped = snapPoint(grid, clamped, mode);
+  // Vuruşlar tam eşit aralıklı değil (beat_this); sınırdaki vuruş %25 payla kabul.
+  const tol = 0.25 * min;
+  if (snapped >= lo - tol && snapped <= hi + tol) return snapped;
+  // Ölçü yapışması sınırı aştı: sınır içindeki en yakın vuruşa düş.
+  if (grid && grid.beats && grid.beats.length) {
+    const inRange = numbers(grid.beats).filter((b) => b >= lo - tol && b <= hi + tol);
+    const index = nearestIndex(inRange, clamped);
+    if (index >= 0) return inRange[index];
+  }
+  return clamped;
 }
 
 // Geçerli döngüyü üretir: sıralar, [0, duration]'a kırpar, çok kısaysa null.

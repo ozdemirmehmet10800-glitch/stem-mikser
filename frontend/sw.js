@@ -9,7 +9,7 @@
 // yeni worker beklemeden devralıyor (skipWaiting + clients.claim), yoksa
 // GitHub Pages'e atılan bir düzeltme kullanıcıya günlerce ulaşmayabiliyor.
 
-const VERSION = "v28";
+const VERSION = "v29";
 const CACHE = `stem-mikser-${VERSION}`;
 
 // Göreli yollar: site /stem-mikser/ alt yolunda yayınlanıyor, kökte değil.

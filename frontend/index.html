@@ -102,6 +102,7 @@
         <button type="button" class="chip" id="loop-b" disabled>B burada</button>
         <button type="button" class="chip" id="loop-toggle" aria-pressed="false" disabled>Döngü</button>
         <button type="button" class="chip" id="loop-snap" disabled>Yapış: vuruş</button>
+        <button type="button" class="chip" id="loop-clear" disabled>Temizle</button>
       </div>
       <div class="loop-row">
         <span class="loop-range" id="loop-range">A — · B —</span>
@@ -115,8 +116,15 @@
     <footer class="transport">
       <div class="seek-row">
         <span class="time" id="time-current">0:00</span>
-        <input type="range" class="seek" id="seek" min="0" max="1000" value="0" step="1"
-               aria-label="Şarkı konumu">
+        <div class="seek-wrap" id="seek-wrap">
+          <input type="range" class="seek" id="seek" min="0" max="1000" value="0" step="1"
+                 aria-label="Şarkı konumu">
+          <div class="loop-region" id="loop-region" hidden></div>
+          <div class="loop-handle loop-handle-a" id="loop-handle-a" role="slider" hidden
+               aria-label="Döngü başlangıcı (A)"><span>A</span></div>
+          <div class="loop-handle loop-handle-b" id="loop-handle-b" role="slider" hidden
+               aria-label="Döngü bitişi (B)"><span>B</span></div>
+        </div>
         <span class="time time-remaining" id="time-remaining">-0:00</span>
       </div>
       <div class="transport-row">

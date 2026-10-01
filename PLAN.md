@@ -349,9 +349,11 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      kayıt silinir; `loop` alanı yeniden yazımda korunur (Madde 1 ekleyecek;
      geri yüklenince döngü KAPALI, A-B işaretleri görünür, tek dokunuşla açılır).
      SW v27.
-   - **Madde 1, ilk yarı (A-B döngü ÇEKİRDEĞİ) YAPILDI (2026-10-01), telefonda
-     doğrulanmadı.** Sürüklemeli tutamaçlar, mikser kaydına `loop` alanı ve
-     arayüz cilası SONRAKİ tur. SW v28.
+   - **Madde 1, ilk yarı (A-B döngü ÇEKİRDEĞİ) YAPILDI ve TELEFONDA DOĞRULANDI
+     (2026-10-01, SW v28):** hiza testinin tüm satırları yeşil (dikiş çukuru
+     −0.2 / −0.6 / −0.3 ms, esnetici gecikmesi 120 ms tutarlı); kulakla dikişte
+     tık yok, metronom birkaç dakikada kaymıyor, %80'de de temiz. Mikser ön
+     ayarları ekrana sığıyor ve çalışıyor (Madde 4 de telefonda doğrulandı).
      - `loop.js` (saf, `tests/loop_test.mjs`): vuruşa/ölçü başına yapışma, 1/2/4/8
        ölçü (şarkı sonuna kırpılır), sarmal zaman eşlemesi. Model: motor HAM
        (sarılmamış) zamanı tutuyor; konum = `r < b ? r : a + (r - a) mod (b - a)`.
@@ -390,6 +392,29 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
        (native döngü yine kesintisiz). Telefonda Bluetooth çıkışında çukur,
        `outputLatency` Android'de 0 raporlandığı için etkilenmez (çukur motor
        çıkışında, kulakta değil: iki tarafı aynı gecikiyor).
+   - **Madde 1, ikinci yarı (tutamaçlar + döngü hafızası) YAPILDI (2026-10-01),
+     telefonda doğrulanmadı. SW v29.**
+     - Seek çubuğunda sürüklenebilir A ve B tutamaçları (`#seek-wrap`, ayrı
+       elemanlar, pointer capture, `touch-action:none`): seek tetiklemez. 40x44 px
+       dokunma alanı; A'nın gövdesi noktasının SOLUNDA, B'ninki SAĞINDA, yani
+       yakın olsalar da üst üste binmez. Yeşil bölge döngüyü gösterir, döngü
+       kapalıyken soluk. Sürüklerken seçili kipe (vuruş/ölçü; ızgarasızda serbest
+       saniye) yapışır, bırakınca motora iletilir; konum dışarıda kalırsa
+       `setLoop` A'ya yeniden başlatır.
+     - `loop.js::dragPoint`: A, B'yi geçemez, en kısa döngü 1 vuruş (medyan
+       vuruş aralığı; ızgarasızda 0,5 sn), sınırdaki vuruşa %25 pay (beat_this
+       aralıkları tam eşit değil), ölçü yapışması sınırı aşarsa içerideki en
+       yakın vuruşa düşer. Motorun mutlak alt sınırı `MIN_LOOP` 0,1 sn.
+     - **Mikser hafızasında `loop: {a, b}`** (`writeLoop`, mikser ayarına
+       dokunmaz). Şarkı açılınca döngü KAPALI gelir, tutamaçlar yerinde, tek
+       dokunuşla açılır. "Temizle" düğmesi uçları siler: alan da silinir, mikser
+       varsayılansa kaydın tamamı silinir. Geçersiz (b <= a) loop yazılmaz/okunmaz,
+       uyumsuz sürümlü kayda dokunulmaz.
+     - **Dikiş çukuru ufku 2,5 → 30 sn.** Bekleyenler döngü/uç/hız değişince
+       iptal edilip yeniden yazılıyor (zaten `#startSeams` yapıyordu). Sorun
+       çıkmadı: 0,5 sn'lik en kısa döngüde bile 30 sn = ~60 çukur = ~180 olay.
+       Arka planda timer tamamen durursa 30 sn'den sonrası yazılamaz (native
+       döngü yine kesintisiz). Test: `engine_leak_test` (ufuk ve iptal/yeniden yazım).
    - **NOT (Madde 1):** dikiş gain çukuru esneticiden SONRA olduğu için girişteki
      dikiş anına değil, ÇIKIŞTAKİ dikiş anına (`songToCtx` ile, D dahil) zamanlanmalı.
      Bypass'ta D = 0. Hiza testinde çukurun gerçek dikişe denk geldiği ölçülsün.

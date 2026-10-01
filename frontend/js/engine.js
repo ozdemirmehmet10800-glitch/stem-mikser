@@ -116,9 +116,10 @@ function clamp(value, min, max) {
 // 1 -> 0 -> 1 (üçgen, toplam ~12 ms). Esnetici gecikmesi ölçümü birkaç ms
 // oynadığı için çukur dar tutulursa dikişi kaçırır; ızgara davuldan ~10 ms önde
 // olduğundan çukur atağın başlangıcını yemiyor. Zamanlayıcı arka planda
-// kısılabildiği için dikişler SEAM_HORIZON sn önceden yazılıyor.
+// kısılabildiği için dikişler SEAM_HORIZON sn önceden yazılıyor (döngü, uç ya
+// da hız değişince bekleyenler iptal edilip yeniden yazılıyor).
 const SEAM_HALF = 0.006;
-const SEAM_HORIZON = 2.5;
+const SEAM_HORIZON = 30;
 const SEAM_EVERY = 100;
 // Çalarken döngü kurulurken kaynak b'ye bu kadar (ses saniyesi) yakınsa canlı
 // uygulanmaz (kaynak b'yi çoktan geçmiş olabilir, geçince döngüye girmez):

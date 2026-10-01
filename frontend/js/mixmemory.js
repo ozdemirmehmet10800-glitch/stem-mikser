@@ -7,7 +7,7 @@
 //   stem-mikser.mix.<songId> = {
 //     v: 1, savedAt, master: 0-150,
 //     stems: { "<stem adı>": { fader: 0-150, mute: bool, solo: bool } }
-//     loop?: ...   (Madde 1'de eklenecek; bilinmeyen üst alanlar korunur)
+//     loop?: {a, b}   döngü uçları (sn). Şarkı açılınca döngü KAPALI gelir.
 //   }
 // Biçim "stem adı -> ayar". Kayıtta olmayan kanal varsayılan kalır, şarkıda
 // olmayan ad sessizce atlanır: Aşama 10'un alt kanalları (kick, snare, ana/arka
@@ -79,6 +79,14 @@ function clampFader(value) {
   return Math.min(Math.max(Math.round(number), FADER_MIN), FADER_MAX);
 }
 
+// Döngü uçları: sonlu, a >= 0, b > a; değilse yok sayılır.
+export function validLoop(raw) {
+  if (!raw || typeof raw !== "object") return undefined;
+  const a = Number(raw.a);
+  const b = Number(raw.b);
+  return Number.isFinite(a) && Number.isFinite(b) && a >= 0 && b > a ? { a, b } : undefined;
+}
+
 // Ham (JSON'dan gelen) kaydı doğrular. Bozuk/uyumsuz sürüm -> null (yok sayılır,
 // SİLİNMEZ: ileride daha yeni bir sürüm aynı kaydı okuyabilir).
 export function normalizeRecord(raw) {
@@ -99,7 +107,8 @@ export function normalizeRecord(raw) {
     master: clampFader(raw.master),
     savedAt: Number(raw.savedAt) || 0,
   };
-  if (raw.loop !== undefined) record.loop = raw.loop;
+  const loop = validLoop(raw.loop);
+  if (loop) record.loop = loop;
   return record;
 }
 
@@ -157,7 +166,7 @@ export function readMix(storage, songId) {
 export function writeMix(storage, songId, states, master, now = Date.now()) {
   try {
     const old = readRaw(storage, songId);
-    const loop = old && old.v === MIX_VERSION ? old.loop : undefined;
+    const loop = old && old.v === MIX_VERSION ? validLoop(old.loop) : undefined;
     if (isDefaultMix(states, master) && loop === undefined) {
       storage.removeItem(mixKey(songId));
       return;
@@ -170,6 +179,32 @@ export function writeMix(storage, songId, states, master, now = Date.now()) {
     pruneMix(storage);
   } catch {
     // Kota dolduysa önemli değil: ayar hatırlanmaz, uygulama bozulmaz.
+  }
+}
+
+// Yalnız döngü alanını yazar/siler (loop null = sil). Mikser ayarına dokunmaz.
+// Döngü yok ve mikser de varsayılansa kaydın TAMAMI silinir. Uyumsuz sürümlü
+// kayda dokunulmaz.
+export function writeLoop(storage, songId, loop, now = Date.now()) {
+  try {
+    const old = readRaw(storage, songId);
+    if (old && old.v !== MIX_VERSION) return;
+    const record = old && old.stems && typeof old.stems === "object"
+      ? { ...old } : { v: MIX_VERSION, master: 100, stems: {} };
+    record.v = MIX_VERSION;
+    record.savedAt = now;
+    const clean = validLoop(loop);
+    if (clean) record.loop = clean;
+    else delete record.loop;
+    const norm = normalizeRecord(record);
+    if (!clean && norm && isDefaultMix(norm.stems, norm.master)) {
+      storage.removeItem(mixKey(songId));
+      return;
+    }
+    storage.setItem(mixKey(songId), JSON.stringify(record));
+    pruneMix(storage);
+  } catch {
+    /* kota: önemli değil */
   }
 }
 

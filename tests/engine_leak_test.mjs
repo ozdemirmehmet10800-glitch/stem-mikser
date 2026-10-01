@@ -184,8 +184,8 @@ const near = (x, y, eps = 1e-6) => Math.abs(x - y) <= eps;
   check("cukur 1 -> 0 -> 1 ve dikisi ortalar", gainEvents.some(
     (ev) => ev[0] === "set" && ev[1] === 1 && ev[2] < dipAt) && gainEvents.some(
     (ev) => ev[0] === "ramp" && ev[1] === 1 && ev[2] > dipAt));
-  check("ufuk icinde birden cok dikis onceden yazildi",
-    gainEvents.filter((ev) => ev[0] === "ramp" && ev[1] === 0).length >= 2);
+  const dips = gainEvents.filter((ev) => ev[0] === "ramp" && ev[1] === 0).length;
+  check("ufuk 30 sn: 1 sn'lik dongude ~30 dikis onceden yazildi", dips >= 28 && dips <= 31, `(${dips})`);
 
   // Esnetici gecikmesi dikis zamanina eklenir (D dahil); degisince yeniden yazilir.
   e.latency = 0.12;
@@ -200,6 +200,16 @@ const near = (x, y, eps = 1e-6) => Math.abs(x - y) <= eps;
   e.ctx.currentTime = e.startedAt + 1;
   const before = e.epoch;
   check("setLoop calarken icerde -> 'live'", (await e.setLoop(1.5, 7)) === "live");
+  {
+    const ramps = e.seamGain.gain.events.filter((ev) => ev[0] === "ramp" && ev[1] === 0);
+    const L = 7 - 1.5;
+    check("live: eski dikisler iptal, yenileri yazildi (30 sn / yeni uzunluk)",
+      ramps.length >= 4 && ramps.length <= 7, `(${ramps.length})`);
+    check("live: tum cukurlar yeni dikis zamanlarinda", ramps.every((ev) => {
+      const k = Math.round((ev[2] - e.songToCtx(1.5, 0)) / (L / e.rate));
+      return near(ev[2], e.songToCtx(1.5, k), 1e-6);
+    }));
+  }
   check("live: epoch artti, kaynaklar yeni sinirlarda", e.epoch > before &&
     [...e.channels.values()].every((c) => c.source.loopStart === 1.5 && c.source.loopEnd === 7));
   check("live: konum surekli (kaymadi)", near(e.currentTime, 3, 0.011), String(e.currentTime));
