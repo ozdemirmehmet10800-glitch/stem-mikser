@@ -83,6 +83,8 @@ html, body {
 }
 .btn:hover { background: var(--panel-2); }
 .btn:disabled { opacity: 0.5; cursor: default; }
+/* display:inline-flex, hidden niteliğinin display:none'ını EZER: gizli düğmeler (Hi-Fi'a yükselt, Devam, ...) görünürdü. */
+.btn[hidden] { display: none; }
 .btn-primary { border-color: transparent; }
 .btn-small { padding: 8px 14px; font-size: 13px; font-weight: 500; }
 .btn svg { width: 18px; height: 18px; fill: currentColor; }
@@ -112,6 +114,48 @@ html, body {
   border: 1px solid var(--line); border-radius: 999px; cursor: pointer; white-space: nowrap;
 }
 .lib-chip[aria-pressed="true"] { background: var(--accent-dim); border-color: var(--accent); }
+/* Çalma listeleri (prova modu) */
+.topbar-link {
+  margin-left: auto; padding: 8px 14px; font: inherit; font-size: 14px; color: var(--text); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 999px; cursor: pointer;
+}
+.select-bar { flex-wrap: wrap; }
+.plain-list { list-style: none; margin: 0; padding: 0 0 24px; }
+.list-row {
+  display: flex; align-items: center; gap: 12px; padding: 12px 8px; border-radius: var(--radius); cursor: pointer;
+  border-bottom: 1px solid var(--line);
+}
+.list-row:hover { background: var(--panel); }
+.list-row .list-no { flex: 0 0 26px; text-align: center; font-size: 13px; color: var(--text-faint); }
+.list-row.current .list-no { color: var(--accent); }
+.list-row .list-info { flex: 1; min-width: 0; }
+.list-row .list-name { font-size: 16px; word-break: break-word; }
+.list-row .list-sub { font-size: 13px; color: var(--text-faint); margin-top: 2px; }
+.list-row.unplayable { opacity: 0.45; }
+.list-row.editing { cursor: default; }
+.list-row .list-btn {
+  flex: 0 0 auto; width: 44px; height: 44px; display: grid; place-items: center; padding: 0; font: inherit; font-size: 18px;
+  color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 50%; cursor: pointer;
+}
+.list-row .list-btn:disabled { opacity: 0.3; cursor: default; }
+.list-row .list-btn.remove { color: var(--danger); }
+.list-chevron { flex: 0 0 auto; color: var(--text-faint); font-size: 20px; }
+.list-meta { font-size: 13px; color: var(--text-dim); margin: -4px 0 12px; }
+.list-create { display: flex; gap: 8px; margin-bottom: 12px; }
+.list-create[hidden] { display: none; }
+.list-create input {
+  flex: 1; min-width: 0; padding: 10px 12px; font: inherit; font-size: 15px; color: var(--text); background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.list-manage { display: flex; gap: 10px; margin-bottom: 12px; }
+.list-manage[hidden] { display: none; }
+.plist-choices { display: flex; flex-direction: column; gap: 8px; max-height: 40vh; overflow-y: auto; }
+.plist-choice {
+  display: flex; justify-content: space-between; gap: 10px; padding: 12px 14px; font: inherit; font-size: 15px; color: var(--text);
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); cursor: pointer; text-align: left;
+}
+.plist-choice small { color: var(--text-dim); }
+#list-edit[aria-pressed="true"] { background: var(--accent-dim); border-color: var(--accent); }
 /* Satırdaki etiket çipleri (en çok 2 + "+N") */
 .song-tags { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
 .song-tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); color: var(--text-dim); border: 1px solid var(--line); }

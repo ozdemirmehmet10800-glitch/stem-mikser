@@ -60,6 +60,9 @@ import {
 } from "./share.js";
 import { Collection, safeStorage } from "./collection.js";
 import { filterSongs, isFiltering, separatorIndex } from "./songfilter.js";
+import {
+  itemState, startIndex, anyPlayable, totalDuration, alreadyInList,
+} from "./playlist.js";
 
 const POLL_MS = 3000;
 
@@ -81,6 +84,8 @@ function on(id, event, handler) {
 
 const views = {
   library: el("view-library"),
+  lists: el("view-lists"),
+  list: el("view-list"),
   player: el("view-player"),
   settings: el("view-settings"),
 };
@@ -198,6 +203,7 @@ const LONG_PRESS_MS = 500;
 let selectMode = false;
 const selectedIds = new Set();
 let librarySongs = [];
+let playlistCtx = null;         // çalma listesinden açılan oynatıcı: {lid, iid}; kitaplıktan açılınca null
 // Kitaplık verisi (favori, etiket): telefonda, TEK anahtar (js/collection.js). Süzme durumu yalnız bellekte.
 const collection = new Collection(safeStorage().storage);
 const libraryFilter = { query: "", fav: false, tag: null };
@@ -442,6 +448,13 @@ const layerClosers = {
   panel: closePanelsDom,
   export: () => closeExportDom(),
   tags: () => closeTagSheetDom(),
+  plist: () => closePlistDom(),
+  lists: () => showView("library"),
+  list: () => {
+    playlistCtx = null;
+    showView("lists");
+    renderListsScreen();
+  },
   fx: () => closeFxDom(),
   "lyrics-full": () => { if (lyricsScreen) lyricsScreen.close(); },
   select: closeSelectModeDom,
@@ -454,6 +467,12 @@ const layerClosers = {
     }
     stopPlayback();
     stopLoop();
+    // Oynatıcı bir listeden açıldıysa geri liste ekranına dönülür (liste bağlamı bellekte kalır).
+    if (playlistCtx) {
+      showView("list");
+      renderListDetail();
+      return;
+    }
     showView("library");
     refreshLibrary();
   },
@@ -673,6 +692,7 @@ function renderLibrary(songs) {
         return;
       }
       if (song.state === "done") {
+        playlistCtx = null;
         openSong(song);
       } else if (song.state === "error") {
         showMessage(el("library-message"), `${song.title || song.id}: işlenemedi.`);
@@ -745,7 +765,7 @@ async function deleteSelected() {
     if (gone.length) {
       freed = await stemCache.removeSongs(gone);
       dropMeta(gone);            // cihazdaki durum/akor kopyası da gitsin
-      collection.removeSongs(gone);   // favori/etiket kayıtları da HEMEN gitsin
+      collection.removeSongs(gone);   // favori/etiket kayıtları ve liste öğeleri de HEMEN gitsin
       if (mixStorage()) removeMix(mixStorage(), gone);
     }
 
@@ -4176,6 +4196,361 @@ on("refresh-list", "click", refreshLibrary);
 // --- seçim modu düğmeleri ---
 on("select-cancel", "click", exitSelectMode);
 on("select-delete", "click", deleteSelected);
+// ---------------------------------------------------------------- çalma listeleri (prova modu)
+//
+// Listeler ekranı (kitaplık üst çubuğundaki "Listeler"), liste ayrıntısı (sıra, Düzenle: ↑ ↓ ✕, ad, sil) ve seçim
+// modundan "Listeye ekle". Veri js/collection.js (lists), çalma kuralları js/playlist.js. Sıra değiştirme ↑/↓ düğmeleri
+// ("Düzenle" modunda): telefonda sürüklemeye göre çok daha sağlam (kaydırma ve uzun basmayla çakışmıyor).
+
+const listView = { lid: null, edit: false, renaming: false };
+
+function librarySongMap() {
+  const source = librarySongs.length ? librarySongs : (readLibraryCache() || []);
+  return new Map(source.map((song) => [song.id, song]));
+}
+
+function listContext(map = librarySongMap()) {
+  const offline = isOffline();
+  const index = offline ? stemCache.indexSnapshot() : null;
+  return {
+    songById: (id) => map.get(id) || null,
+    offline,
+    offlineReady: (song) => isOfflineReady(song, index),
+  };
+}
+
+function itemTitle(item, map) {
+  const song = map.get(item.song);
+  return song ? (song.title || song.id.slice(0, 12)) : "Şarkı bulunamadı";
+}
+
+function listMessage(id, text, tone = "warn") {
+  if (text) showMessage(el(id), text, tone);
+  else hideMessage(el(id));
+}
+
+function openListsScreen() {
+  listMessage("lists-message", "");
+  el("lists-create").hidden = true;
+  renderListsScreen();
+  showView("lists");
+  pushLayer("lists");
+}
+
+function renderListsScreen() {
+  const box = el("lists-list");
+  const map = librarySongMap();
+  const lists = collection.listSummaries();
+  box.replaceChildren();
+  if (!lists.length) {
+    const none = document.createElement("li");
+    none.className = "list-row";
+    none.style.cursor = "default";
+    none.textContent = "Henüz liste yok. Yukarıdan oluştur ya da kitaplıkta şarkılara uzun basıp \"Listeye ekle\" de.";
+    box.append(none);
+    return;
+  }
+  for (const entry of lists) {
+    const list = collection.getList(entry.id);
+    const total = totalDuration(list.items, (item) => (map.get(item.song) || {}).duration);
+    const row = document.createElement("li");
+    row.className = "list-row";
+    const info = document.createElement("div");
+    info.className = "list-info";
+    const name = document.createElement("div");
+    name.className = "list-name";
+    name.textContent = list.name;
+    const sub = document.createElement("div");
+    sub.className = "list-sub";
+    sub.textContent = `${list.items.length} şarkı${total ? ` · ${formatTime(total)}` : ""}`;
+    info.append(name, sub);
+    const chevron = document.createElement("span");
+    chevron.className = "list-chevron";
+    chevron.textContent = "›";
+    row.append(info, chevron);
+    row.addEventListener("click", () => openListDetail(entry.id));
+    box.append(row);
+  }
+}
+
+function createListFromInput() {
+  const input = el("lists-new-name");
+  const result = collection.createList(input.value);
+  if (!result.ok) {
+    listMessage("lists-message", result.error === "empty" ? "Liste adı boş olamaz." : collectionError(result));
+    return;
+  }
+  input.value = "";
+  el("lists-create").hidden = true;
+  listMessage("lists-message", result.created ? "" : "Bu adda bir liste zaten var.", "ok");
+  renderListsScreen();
+  openListDetail(result.id);
+}
+
+on("open-lists", "click", openListsScreen);
+on("lists-back", "click", () => requestBack("lists"));
+on("lists-new", "click", () => {
+  el("lists-create").hidden = false;
+  el("lists-new-name").focus();
+});
+on("lists-new-cancel", "click", () => { el("lists-create").hidden = true; el("lists-new-name").value = ""; });
+on("lists-new-go", "click", createListFromInput);
+on("lists-new-name", "keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); createListFromInput(); }
+});
+
+function openListDetail(lid) {
+  if (!collection.getList(lid)) return;
+  listView.lid = lid;
+  listView.edit = false;
+  listView.renaming = false;
+  listMessage("list-message", "");
+  renderListDetail();
+  showView("list");
+  pushLayer("list");
+}
+
+function renderListDetail() {
+  const list = listView.lid ? collection.getList(listView.lid) : null;
+  if (!list) {
+    // Liste (başka yerden) gitmişse listeler ekranına dön
+    showView("lists");
+    renderListsScreen();
+    return;
+  }
+  const map = librarySongMap();
+  const ctx = listContext(map);
+  el("list-title").textContent = list.name;
+  const total = totalDuration(list.items, (item) => (map.get(item.song) || {}).duration);
+  const blocked = list.items.filter((item) => itemState(item, ctx) !== "ok").length;
+  el("list-meta").textContent = `${list.items.length} şarkı${total ? ` · ${formatTime(total)}` : ""}`
+    + (blocked ? ` · ${blocked} tanesi şu an çalınamıyor` : "");
+  el("list-play").disabled = !anyPlayable(list.items, ctx);
+  const cur = list.cur ? list.items.findIndex((item) => item.iid === list.cur) : -1;
+  const cont = el("list-continue");
+  cont.hidden = cur <= 0;
+  if (!cont.hidden) {
+    const full = itemTitle(list.items[cur], map);
+    cont.textContent = `Devam: ${cur + 1}. ${full.length > 22 ? `${full.slice(0, 21)}…` : full}`;
+    cont.title = full;
+  }
+  el("list-edit").setAttribute("aria-pressed", String(listView.edit));
+  el("list-edit").textContent = listView.edit ? "Bitti" : "Düzenle";
+  el("list-manage").hidden = !listView.edit;
+  el("list-rename").hidden = !listView.renaming;
+
+  const box = el("list-items");
+  box.replaceChildren();
+  if (!list.items.length) {
+    const none = document.createElement("li");
+    none.className = "list-row";
+    none.style.cursor = "default";
+    none.textContent = "Liste boş. Kitaplıkta şarkılara uzun basıp \"Listeye ekle\" de.";
+    box.append(none);
+  }
+  list.items.forEach((item, index) => {
+    const state = itemState(item, ctx);
+    const row = document.createElement("li");
+    row.className = "list-row" + (state === "ok" ? "" : " unplayable") + (listView.edit ? " editing" : "")
+      + (item.iid === list.cur ? " current" : "");
+    const no = document.createElement("span");
+    no.className = "list-no";
+    no.textContent = item.iid === list.cur && !listView.edit ? "▶" : String(index + 1);
+    const info = document.createElement("div");
+    info.className = "list-info";
+    const name = document.createElement("div");
+    name.className = "list-name";
+    name.textContent = itemTitle(item, map);
+    const sub = document.createElement("div");
+    sub.className = "list-sub";
+    const song = map.get(item.song);
+    const stateText = { ok: "", missing: "şarkı bulunamadı", notready: "henüz hazır değil", offline: "telefonda kayıtlı değil" }[state];
+    sub.textContent = [song && song.duration ? formatTime(song.duration) : "", stateText].filter(Boolean).join(" · ");
+    info.append(name, sub);
+    row.append(no, info);
+    if (listView.edit) {
+      const button = (label, aria, handler, disabled, extra = "") => {
+        const node = document.createElement("button");
+        node.type = "button";
+        node.className = `list-btn ${extra}`.trim();
+        node.textContent = label;
+        node.setAttribute("aria-label", aria);
+        node.disabled = disabled;
+        node.addEventListener("click", (event) => { event.stopPropagation(); handler(); });
+        return node;
+      };
+      row.append(
+        button("↑", "Yukarı taşı", () => moveListItem(item.iid, -1), index === 0),
+        button("↓", "Aşağı taşı", () => moveListItem(item.iid, 1), index === list.items.length - 1),
+        button("✕", "Listeden çıkar", () => removeListItem(item.iid), false, "remove"),
+      );
+    } else {
+      row.addEventListener("click", () => playListItem(index));
+    }
+    box.append(row);
+  });
+}
+
+function moveListItem(iid, delta) {
+  const result = collection.moveItem(listView.lid, iid, delta);
+  listMessage("list-message", result.ok ? "" : collectionError(result));
+  renderListDetail();
+}
+
+function removeListItem(iid) {
+  const result = collection.removeItem(listView.lid, iid);
+  listMessage("list-message", result.ok ? "" : collectionError(result));
+  renderListDetail();
+}
+
+on("list-back", "click", () => requestBack("list"));
+on("list-edit", "click", () => {
+  listView.edit = !listView.edit;
+  if (!listView.edit) listView.renaming = false;
+  renderListDetail();
+});
+on("list-rename-open", "click", () => {
+  const list = collection.getList(listView.lid);
+  if (!list) return;
+  listView.renaming = true;
+  el("list-rename-name").value = list.name;
+  renderListDetail();
+  el("list-rename-name").focus();
+  el("list-rename-name").select();
+});
+function commitListRename() {
+  const result = collection.renameList(listView.lid, el("list-rename-name").value);
+  if (!result.ok) {
+    listMessage("list-message", result.error === "empty" ? "Liste adı boş olamaz." : collectionError(result));
+    return;
+  }
+  listView.renaming = false;
+  listMessage("list-message", "");
+  renderListDetail();
+}
+on("list-rename-go", "click", commitListRename);
+on("list-rename-cancel", "click", () => { listView.renaming = false; renderListDetail(); });
+on("list-rename-name", "keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); commitListRename(); }
+});
+on("list-delete", "click", () => {
+  const list = collection.getList(listView.lid);
+  if (!list) return;
+  const sure = window.confirm(`"${list.name}" listesi silinecek (${list.items.length} şarkı listeden kalkar; şarkıların kendisi silinmez). Silinsin mi?`);
+  if (!sure) return;
+  const result = collection.deleteList(listView.lid);
+  if (!result.ok) {
+    listMessage("list-message", collectionError(result));
+    return;
+  }
+  listView.lid = null;
+  requestBack("list");
+});
+
+// Listeden şarkı aç: oynatıcı bu listenin bağlamında açılır (geri tuşu liste ekranına döner).
+async function playListItem(index) {
+  const list = collection.getList(listView.lid);
+  if (!list || !list.items[index]) return;
+  const map = librarySongMap();
+  const ctx = listContext(map);
+  const item = list.items[index];
+  const state = itemState(item, ctx);
+  if (state !== "ok") {
+    listMessage("list-message", {
+      missing: "Bu şarkı bulunamadı.", notready: "Bu şarkı henüz hazır değil.", offline: "İnternet yok, bu şarkı telefonda kayıtlı değil.",
+    }[state]);
+    return;
+  }
+  playlistCtx = { lid: list.id, iid: item.iid };
+  collection.setCur(list.id, item.iid);
+  await openSong(map.get(item.song));
+}
+
+on("list-play", "click", () => {
+  const list = collection.getList(listView.lid);
+  if (!list) return;
+  const found = startIndex(list.items, null, listContext());
+  if (found.index >= 0) playListItem(found.index);
+});
+on("list-continue", "click", () => {
+  const list = collection.getList(listView.lid);
+  if (!list) return;
+  const found = startIndex(list.items, list.cur, listContext());
+  if (found.index >= 0) playListItem(found.index);
+});
+
+// ---- Listeye ekle (seçim modundan)
+function renderPlistSheet() {
+  const ids = [...selectedIds];
+  el("plist-sub").textContent = `${ids.length} şarkı seçili; seçim sırasıyla listenin sonuna eklenir.`;
+  const box = el("plist-choices");
+  box.replaceChildren();
+  for (const entry of collection.listSummaries()) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "plist-choice";
+    const name = document.createElement("span");
+    name.textContent = entry.name;
+    const count = document.createElement("small");
+    count.textContent = `${entry.count} şarkı`;
+    button.append(name, count);
+    button.addEventListener("click", () => addSelectionToList(entry.id));
+    box.append(button);
+  }
+}
+
+function openPlistSheet() {
+  if (!selectedIds.size) return;
+  listMessage("plist-message", "");
+  el("plist-new").value = "";
+  renderPlistSheet();
+  el("plist-sheet").hidden = false;
+  pushLayer("plist");
+  el("plist-close").focus();
+}
+
+function closePlistDom() {
+  el("plist-sheet").hidden = true;
+}
+
+function addSelectionToList(lid) {
+  const ids = [...selectedIds];
+  const list = collection.getList(lid);
+  if (!list || !ids.length) return false;
+  const dup = alreadyInList(list.items, ids);
+  if (dup.length) {
+    const map = librarySongMap();
+    const first = (map.get(dup[0]) || {}).title || "Bu şarkı";
+    const text = dup.length === 1 ? `"${first}" zaten listede.` : `${dup.length} şarkı zaten listede ("${first}", ...).`;
+    if (!window.confirm(`${text} Yine de tekrar eklensin mi?`)) return false;
+  }
+  const result = collection.addToList(lid, ids);
+  if (!result.ok) {
+    listMessage("plist-message", result.error === "full" ? "Bir listede en çok 100 şarkı olabilir." : collectionError(result));
+    return false;
+  }
+  requestBack("plist");
+  showMessage(el("library-message"), `${result.added} şarkı "${list.name}" listesine eklendi.`, "ok");
+  return true;
+}
+
+function createListAndAdd() {
+  const created = collection.createList(el("plist-new").value);
+  if (!created.ok) {
+    listMessage("plist-message", created.error === "empty" ? "Liste adı boş olamaz." : collectionError(created));
+    return;
+  }
+  addSelectionToList(created.id);
+}
+
+on("select-plist", "click", openPlistSheet);
+on("plist-close", "click", () => requestBack("plist"));
+on("plist-backdrop", "click", () => requestBack("plist"));
+on("plist-new-go", "click", createListAndAdd);
+on("plist-new", "keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); createListAndAdd(); }
+});
+
 // ---------------------------------------------------------------- etiket sayfası
 //
 // Seçili şarkılara etiket ekle/çıkar (çip: hepsinde = dolu, bazılarında = kesikli, hiçbirinde = boş) ve "Etiketleri yönet"

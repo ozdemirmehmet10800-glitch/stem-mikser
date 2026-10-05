@@ -31,6 +31,7 @@
       <button class="icon-btn" id="open-settings" title="Ayarlar" aria-label="Ayarlar">
         <svg viewBox="0 0 24 24"><path d="M12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5zm7.4-2.6l1.8-1.4-1.9-3.3-2.1.8a7.4 7.4 0 0 0-1.6-.9L15.2 6h-3.8l-.4 2.1a7.4 7.4 0 0 0-1.6.9l-2.1-.8-1.9 3.3 1.8 1.4a7.6 7.6 0 0 0 0 1.8l-1.8 1.4 1.9 3.3 2.1-.8c.5.4 1 .7 1.6.9l.4 2.1h3.8l.4-2.1c.6-.2 1.1-.5 1.6-.9l2.1.8 1.9-3.3-1.8-1.4a7.6 7.6 0 0 0 0-1.8z"/></svg>
       </button>
+      <button type="button" class="topbar-link" id="open-lists">Listeler</button>
     </header>
 
     <div class="library-actions">
@@ -69,6 +70,7 @@
       </button>
       <span class="select-count" id="select-count">0 seçili</span>
       <button class="btn btn-small" id="select-all">Tümünü seç</button>
+      <button class="btn btn-small" id="select-plist">Listeye ekle</button>
       <button class="btn btn-small" id="select-tags">Etiketler</button>
       <button class="btn btn-small btn-danger" id="select-delete" disabled>
         Sil (0)
@@ -101,6 +103,53 @@
     </div>
     <div id="library-message" class="message" hidden></div>
     <ul class="song-list" id="song-list"></ul>
+  </section>
+
+  <!-- ============ LİSTELER (çalma listeleri, prova modu) ============ -->
+  <section class="view" id="view-lists" hidden>
+    <header class="topbar">
+      <button class="icon-btn" id="lists-back" title="Kitaplığa dön" aria-label="Kitaplığa dön">
+        <svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4-4.6-4.6z"/></svg>
+      </button>
+      <h1>Listeler</h1>
+    </header>
+    <div class="library-actions">
+      <button class="btn btn-primary" id="lists-new">+ Yeni liste</button>
+    </div>
+    <div class="list-create" id="lists-create" hidden>
+      <input type="text" id="lists-new-name" placeholder="Liste adı (ör. Cuma provası)" maxlength="40" autocomplete="off"
+             autocapitalize="sentences" spellcheck="false" enterkeyhint="done" aria-label="Yeni liste adı">
+      <button type="button" class="btn btn-small btn-primary" id="lists-new-go">Oluştur</button>
+      <button type="button" class="btn btn-small" id="lists-new-cancel">İptal</button>
+    </div>
+    <div id="lists-message" class="message" hidden></div>
+    <ul class="song-list plain-list" id="lists-list"></ul>
+  </section>
+
+  <section class="view" id="view-list" hidden>
+    <header class="topbar">
+      <button class="icon-btn" id="list-back" title="Listelere dön" aria-label="Listelere dön">
+        <svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4-4.6-4.6z"/></svg>
+      </button>
+      <h1 id="list-title">Liste</h1>
+    </header>
+    <div class="list-meta" id="list-meta"></div>
+    <div class="library-actions">
+      <button class="btn btn-primary" id="list-play">Baştan çal</button>
+      <button class="btn" id="list-continue" hidden>Devam</button>
+      <button class="btn" id="list-edit" aria-pressed="false">Düzenle</button>
+    </div>
+    <div class="list-create" id="list-rename" hidden>
+      <input type="text" id="list-rename-name" maxlength="40" autocomplete="off" spellcheck="false" enterkeyhint="done" aria-label="Liste adı">
+      <button type="button" class="btn btn-small btn-primary" id="list-rename-go">Kaydet</button>
+      <button type="button" class="btn btn-small" id="list-rename-cancel">İptal</button>
+    </div>
+    <div class="list-manage" id="list-manage" hidden>
+      <button type="button" class="btn btn-small" id="list-rename-open">Adı değiştir</button>
+      <button type="button" class="btn btn-small btn-danger" id="list-delete">Listeyi sil</button>
+    </div>
+    <div id="list-message" class="message" hidden></div>
+    <ol class="song-list plain-list" id="list-items"></ol>
   </section>
 
   <!-- ============ OYNATICI ============ -->
@@ -447,6 +496,27 @@
         <small class="fx-note">Yankı kanal başına "Yankı" ayarıyla gönderilir; burası ortak odanın sesi.</small>
         <button type="button" class="btn btn-small" id="fx-room-reset">Odayı sıfırla</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Listeye ekle: seçili şarkıları (seçim sırasıyla) bir listenin sonuna ekler -->
+  <div class="export-sheet" id="plist-sheet" hidden>
+    <div class="export-backdrop" id="plist-backdrop"></div>
+    <div class="export-box" role="dialog" aria-modal="true" aria-labelledby="plist-title">
+      <div class="export-head">
+        <h2 id="plist-title">Listeye ekle</h2>
+        <button type="button" class="icon-btn" id="plist-close" aria-label="Kapat">
+          <svg viewBox="0 0 24 24"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
+        </button>
+      </div>
+      <div class="tag-sub" id="plist-sub"></div>
+      <div class="plist-choices" id="plist-choices"></div>
+      <div class="tag-add">
+        <input type="text" id="plist-new" placeholder="Yeni liste (ör. Cuma provası)" maxlength="40" autocomplete="off"
+               autocapitalize="sentences" spellcheck="false" enterkeyhint="done" aria-label="Yeni liste adı">
+        <button type="button" class="btn btn-small btn-primary" id="plist-new-go">Oluştur ve ekle</button>
+      </div>
+      <div class="message" id="plist-message" hidden></div>
     </div>
   </div>
 
