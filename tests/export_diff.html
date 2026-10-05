@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Dışa aktarma fark ölçümü</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; padding: 16px; background: #0b0d12; color: #dfe3ea; }
+  pre { white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Tarayıcı tarafı: GERÇEK Engine + OfflineAudioContext</h1>
+<p>Sunucuyla karşılaştırma: <code>tests\export_diff.py</code> sunucusu + <code>modal run backend/app.py::export_validate</code>.</p>
+<pre id="log">başlıyor…</pre>
+<script type="module">
+// Her senaryoda GERÇEK frontend/js/engine.js (şerit fabrikası, bypass, yankı, plak gibi kipi) bir OfflineAudioContext
+// üzerinde çalışır: Engine yalnız window.AudioContext'i kuruyor, biz ona çevrimdışı bağlamı veriyoruz.
+// Çıkış (seamGain -> destination) çalma başlangıcı (START_LEAD) atılarak sunucuya POST edilir.
+import { Engine } from "../frontend/js/engine.js";
+import { DEFAULT_ROOM } from "../frontend/js/fx.js";
+
+const logEl = document.getElementById("log");
+const say = (text) => { logEl.textContent += `\n${text}`; console.log(text); };
+
+async function post(name, floats) {
+  const response = await fetch(`/__result/${name}`, { method: "POST", body: floats });
+  if (!response.ok) throw new Error(`sonuç yollanamadı: ${name} ${response.status}`);
+}
+
+// soundfile'ın yazdığı float WAV'dan ham örnekler (decodeAudioData ile birebir mi diye bakmak için)
+function wavSamples(arrayBuffer) {
+  const view = new DataView(arrayBuffer);
+  let pos = 12;
+  while (pos + 8 <= view.byteLength) {
+    const id = String.fromCharCode(view.getUint8(pos), view.getUint8(pos + 1), view.getUint8(pos + 2), view.getUint8(pos + 3));
+    const size = view.getUint32(pos + 4, true);
+    if (id === "data") return new Float32Array(arrayBuffer.slice(pos + 8, pos + 8 + size));
+    pos += 8 + size + (size % 2);
+  }
+  throw new Error("WAV data yok");
+}
+
+async function runScenario(config, sc) {
+  const rate = config.rate;
+  const lead = 0.08;                                              // engine.js START_LEAD
+  const leadFrames = Math.round(lead * rate);
+  const keep = Math.ceil((sc.seconds / sc.rate) * rate);
+  const offline = new OfflineAudioContext({ numberOfChannels: 2, length: leadFrames + keep + rate, sampleRate: rate });
+  offline.resume = async () => {};                                // çevrimdışı bağlam resume()/close() kabul etmez
+  offline.close = async () => {};
+  window.AudioContext = function OfflineHolder() { return offline; };
+  const engine = new Engine();
+  const raw = {};
+  await engine.loadStems(sc.channels, async (name) => {
+    const bytes = await (await fetch(`export_diff_out/inputs/${name}.wav`, { cache: "no-store" })).arrayBuffer();
+    raw[name] = wavSamples(bytes.slice(0));
+    return bytes;
+  });
+  const first = sc.channels[0];
+  const decoded = engine.channels.get(first).buffer;
+  let decodeErr = 0;
+  const n = Math.min(decoded.length, raw[first].length / 2);
+  const left = decoded.getChannelData(0);
+  const right = decoded.getChannelData(1);
+  for (let i = 0; i < n; i += 1) {
+    decodeErr = Math.max(decodeErr, Math.abs(left[i] - raw[first][2 * i]), Math.abs(right[i] - raw[first][2 * i + 1]));
+  }
+  const states = new Map();
+  for (const name of sc.channels) {
+    const fx = (sc.body.fx || {})[name] || {};
+    states.set(name, { fader: (sc.body.gains[name] ?? 0) * 100, mute: false, solo: false,
+                       pan: fx.pan || 0, eq: fx.eq || [0, 0, 0], send: fx.send || 0 });
+  }
+  engine.applyMix(states);
+  engine.setRoom(sc.body.room || DEFAULT_ROOM);
+  if (sc.vinyl) await engine.setTempoAndPitch(sc.rate, 0, 0, true);
+  await engine.play();
+  const started = Math.round(engine.startedAt * rate);
+  const rendered = await offline.startRendering();
+  const out = new Float32Array(2 * keep);
+  out.set(rendered.getChannelData(0).subarray(started, started + keep), 0);
+  out.set(rendered.getChannelData(1).subarray(started, started + keep), keep);
+  const diag = engine.diagnostics ? engine.diagnostics() : {};
+  engine.dispose();
+  return { out, decodeErr, started, keep, nodes: diag && diag.liveFxNodes };
+}
+
+(async () => {
+  try {
+    const config = await (await fetch("export_diff_out/scenarios.json", { cache: "no-store" })).json();
+    let worstDecode = 0;
+    for (const sc of config.scenarios) {
+      const t0 = performance.now();
+      const { out, decodeErr, started, keep } = await runScenario(config, sc);
+      worstDecode = Math.max(worstDecode, decodeErr);
+      await post(sc.name, out);
+      say(`${sc.name}: ${keep} örnek, başlangıç ${started}, giriş çözme hatası ${decodeErr.toExponential(1)}, ${(performance.now() - t0).toFixed(0)} ms`);
+    }
+    await post("_decode", new Float32Array([worstDecode]));
+    say("bitti");
+    document.title = "bitti";
+  } catch (error) {
+    say(`HATA: ${error && error.stack || error}`);
+    document.title = "hata";
+  }
+})();
+</script>
+</body>
+</html>

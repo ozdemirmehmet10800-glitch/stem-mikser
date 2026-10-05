@@ -204,6 +204,24 @@ node tests\engine_leak_test.mjs
 sızıntıyı ve söküm sayaçlarını denetler. CPU: `frontend/bench.html` içinde "Şerit + yankı ölçümü" (telefonda da koşturulur).
 Hiza testi (Ayarlar) plak gibi ve EQ+pan+yankı satırlarını da içerir.
 
+**Dışa aktarma: pan / EQ / yankı (Aşama 15, 3. oturum):** istek doğrulama, hash, ffmpeg zinciri ve impuls yanıtının
+JS<->Python eşitliği (Modal/ffmpeg gerekmez), gerçek sesle ve gerçek tarayıcıyla ölçüm (canlı ffmpeg):
+
+```powershell
+.\.venv\Scripts\python.exe tests\test_export_gate.py
+.\.venv\Scripts\python.exe tests\test_export_api.py
+```
+
+Tarayıcı<->sunucu farkı: önce yerel sunucu (sentetik giriş üretir, tarayıcı sonucunu toplar), sonra tarayıcıda
+`http://127.0.0.1:8765/tests/export_diff.html` ("bitti" yazınca), sonra Modal'da karşılaştırma:
+
+```powershell
+.\.venv\Scripts\python.exe tests\export_diff.py
+.\.venv\Scripts\python.exe -m modal run backend/app.py::export_validate
+```
+
+Tarayıcı verisi yoksa `export_validate` yalnız sunucu satırlarını koşar (J satırları "ATLANDI").
+
 **Söz çevirisi (Aşama 14):** arayüz mantığı (node) ve sunucu (Python, Modal'a/ağa bağlanmaz, Gemini sahte HTTP ile):
 
 ```powershell

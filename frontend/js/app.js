@@ -35,7 +35,7 @@ import { LyricsScreen, ROWS_MIN, ROWS_MAX, normalizeRows } from "./lyricsscreen.
 import * as TR from "./translation.js";
 import { vinylPitch, nearestSemitone, keyShift, formatPitch } from "./vinyl.js";
 import {
-  normalizeFx, neutralFx, isNeutralFx, DEFAULT_ROOM, ROOM_PRESETS, normalizeRoom, roomPresetId, isDefaultRoom,
+  normalizeFx, neutralFx, DEFAULT_ROOM, ROOM_PRESETS, normalizeRoom, roomPresetId,
   DECAY_MIN, DECAY_MAX,
 } from "./fx.js";
 import {
@@ -1910,7 +1910,7 @@ function exportInputs() {
     channels: engine.channels, masterPercent: masterPercent(),
     rate: options.rate, semitones: options.semis, vinyl: options.vinyl,
     loop: options.hasLoop ? { a: loopA, b: loopB } : null,
-    options, labels: EXPORT_LABELS,
+    options, labels: EXPORT_LABELS, room: roomState,
   };
 }
 
@@ -1932,9 +1932,7 @@ function exportRefreshForm() {
   const busy = exportWorking();
 
   el("export-preset").textContent = presetLabel(engine.channels);
-  // Pan/EQ/yankı henüz dışa aktarmaya girmiyor (Aşama 15, 3. oturum): sessizce farklı duyulmasın diye söyle.
-  const hasFx = [...engine.channels.values()].some((c) => !isNeutralFx(c)) || !isDefaultRoom(roomState);
-  el("export-summary-text").textContent = summarizeExport(input) + (hasFx ? " · pan/EQ/yankı henüz dahil değil" : "");
+  el("export-summary-text").textContent = summarizeExport(input);
 
   el("export-tempo").disabled = busy || !options.tempoChanged;
   el("export-tempo-row").classList.toggle("disabled", !options.tempoChanged);

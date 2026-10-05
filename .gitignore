@@ -28,3 +28,6 @@ backend/lyrics_ref/
 backend/lyrics_out/
 *.lyrics.txt
 lyrics.json
+
+# Dis aktarma tarayici<->sunucu fark olcumu ciktilari (sentetik, buyuk)
+tests/export_diff_out/

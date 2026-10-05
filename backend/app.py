@@ -6364,6 +6364,167 @@ EXPORT_PARENT = {part: group_name for group_name, cfg in SUB_GROUP_CFG.items()
                  for part in cfg["parts"]}
 
 
+# --- Kanal şeridi + ortak yankı (Aşama 15, 3. oturum) ---------------------------------------
+# frontend/js/fx.js ile AYNI sabitler ve AYNI impuls yanıtı algoritması (Python portu; numpy yok:
+# light_image'da yok). Uygulamadaki Web Audio zinciri: fader -> bas rafı (lowshelf 120 Hz, slope 1) ->
+# orta (peaking 1 kHz, Q 0,9) -> tiz rafı (highshelf 6 kHz, slope 1) -> StereoPanner -> hedef; panner
+# çıkışından gönderim gain'i -> TEK ortak bara -> ConvolverNode(normalize=false) -> dönüş gain'i (seviye).
+FX_VERSION = 1                     # impuls yanıtı/zincir değişirse artar (hash'e girer: eski önbellek geçersiz)
+FX_EQ_LIMIT = 12.0                 # dB
+FX_EQ_BANDS = (("lowshelf", 120.0, None), ("equalizer", 1000.0, 0.9), ("highshelf", 6000.0, None))
+FX_DEFAULT_ROOM = {"size": 0.5, "decay": 1.6, "level": 0.5}
+FX_DECAY_MIN = 0.4
+FX_DECAY_MAX = 3.0
+FX_IR_RATE = 44100
+FX_IR_MAX_SECONDS = 3.5
+FX_IR_SEEDS = (0x9E3779B1, 0x85EBCA6B)
+# ffmpeg 5.1.9 afir (Debian), canlı konteynerde ölçüldü: çıkış = 2 x dry x wet x (giriş * IR); `dry` karışıma
+# EKLENMİYOR (yalnız çarpan) ve 2x sabit bir çarpan var. Bu yüzden dry=wet=1 ve çıkış 0,5 ile ölçeklenir;
+# export_validate "afir birim kazanç" satırı bunu her seferinde sınar (ffmpeg sürümü değişirse yakalar).
+FX_AFIR_COMPENSATION = 0.5
+
+
+def _fx_round_half_up(value: float) -> int:
+    """JavaScript Math.round (yarım yukarı); Python round() bankacı yuvarlaması yapar."""
+    import math
+
+    return int(math.floor(value + 0.5))
+
+
+def _fx_mulberry32(seed: int):
+    state = seed & 0xFFFFFFFF
+
+    def rand() -> float:
+        nonlocal state
+        state = (state + 0x6D2B79F5) & 0xFFFFFFFF
+        t = state
+        t = ((t ^ (t >> 15)) * (t | 1)) & 0xFFFFFFFF
+        t ^= (t + (((t ^ (t >> 7)) * (t | 61)) & 0xFFFFFFFF)) & 0xFFFFFFFF
+        return ((t ^ (t >> 14)) & 0xFFFFFFFF) / 4294967296.0
+
+    return rand
+
+
+def _fx_impulse(size: float, decay: float):
+    """frontend/js/fx.js `makeImpulse`in birebir portu: (left, right) = float32 örnek listeleri, 44100 Hz.
+
+    Ön gecikme + 8 erken yansıma + RT60'a göre sönen gürültü + zamanla kararan alçak geçiren; kanal başına
+    ayrı PRNG akışı, kanal başına BİRİM enerji. JS<->Python eşitliği tests/test_export_gate.py'de sınanır.
+    """
+    import math
+    from array import array
+
+    s = min(max(float(size), 0.0), 1.0)
+    d = min(max(float(decay), FX_DECAY_MIN), FX_DECAY_MAX)
+    count = _fx_round_half_up(min(d * 1.15 + 0.05, FX_IR_MAX_SECONDS) * FX_IR_RATE)
+    predelay = 0.004 + 0.036 * s
+    late_start = _fx_round_half_up((predelay + 0.012) * FX_IR_RATE)
+    out = []
+    for channel in range(2):
+        rand = _fx_mulberry32(FX_IR_SEEDS[channel])
+        data = [0.0] * count
+        lp = 0.0
+        for i in range(late_start, count):
+            t = (i - late_start) / FX_IR_RATE
+            x = (rand() * 2 - 1) * math.exp((-6.907755 * t) / d)
+            lp += (0.18 + 0.8 * math.exp(-t / 0.35)) * (x - lp)
+            data[i] = lp
+        for k in range(8):
+            when = predelay + k * (0.009 + 0.018 * s) + rand() * 0.004
+            index = _fx_round_half_up(when * FX_IR_RATE)
+            sign = -1 if rand() < 0.5 else 1
+            if index < count:
+                data[index] += sign * 0.6 * 0.78 ** k
+        energy = sum(value * value for value in data)
+        scale = 1 / math.sqrt(energy) if energy > 0 else 0.0
+        out.append(array("f", (value * scale for value in data)))
+    return out[0], out[1]
+
+
+def _fx_impulse_wav(size: float, decay: float) -> bytes:
+    """IR'yi 2 kanallı, 32-bit float WAV baytlarına çevirir (ffmpeg afir'in ikinci girişi)."""
+    import struct
+    import sys
+    from array import array
+
+    left, right = _fx_impulse(size, decay)
+    inter = array("f", bytes(8 * len(left)))
+    inter[0::2] = left
+    inter[1::2] = right
+    if sys.byteorder == "big":
+        inter.byteswap()
+    payload = inter.tobytes()
+    header = (b"RIFF" + struct.pack("<I", 36 + len(payload)) + b"WAVE"
+              + b"fmt " + struct.pack("<IHHIIHH", 16, 3, 2, FX_IR_RATE, FX_IR_RATE * 8, 8, 32)
+              + b"data" + struct.pack("<I", len(payload)))
+    return header + payload
+
+
+def _fx_pan_gains(pan: float):
+    """Web Audio StereoPanner (stereo girdi): (L<-L, L<-R, R<-L, R<-R) katsayıları."""
+    import math
+
+    if pan <= 0:
+        x = pan + 1
+        return 1.0, math.cos(x * math.pi / 2), 0.0, math.sin(x * math.pi / 2)
+    x = pan
+    return math.cos(x * math.pi / 2), 0.0, math.sin(x * math.pi / 2), 1.0
+
+
+def _export_fx_check(body, gains: dict) -> tuple:
+    """`fx` {kanal: {pan, eq:[bas,orta,tiz], send}} ve `room` {size, decay, level} doğrular.
+
+    Dönen: (fx, room, hata). fx yalnız nötr OLMAYAN kanalları tutar (nötr = pan 0, EQ 0, gönderim 0 = eski
+    davranış), kanallar `gains`te olmalı. room yalnız bir gönderim varsa anlamlı: yoksa None (hash değişmez);
+    gönderim var ama room verilmediyse varsayılan oda. İstemci değerleri zaten sınırlıyor; burada SINIR AŞILIRSA
+    400 (sessizce kırpmak farklı sesi gizlerdi).
+    """
+    raw_fx = body.get("fx")
+    raw_room = body.get("room")
+    if raw_fx is None and raw_room is None:
+        return None, None, None
+    if raw_fx is not None and not isinstance(raw_fx, dict):
+        return None, None, "fx {kanal: {pan, eq, send}} olmali"
+    fx = {}
+    for name, entry in (raw_fx or {}).items():
+        if not isinstance(name, str) or name not in gains:
+            return None, None, f"fx icin bilinmeyen ya da sessiz kanal: {str(name)[:30]}"
+        if not isinstance(entry, dict):
+            return None, None, f"fx ({name}) nesne olmali"
+        pan, problem = _export_number(entry.get("pan", 0), -1.0, 1.0, f"pan ({name})")
+        if problem:
+            return None, None, problem
+        send, problem = _export_number(entry.get("send", 0), 0.0, 1.0, f"send ({name})")
+        if problem:
+            return None, None, problem
+        eq_raw = entry.get("eq", [0, 0, 0])
+        if not isinstance(eq_raw, list) or len(eq_raw) != 3:
+            return None, None, f"eq ({name}) 3 sayi olmali"
+        eq = []
+        for index, value in enumerate(eq_raw):
+            number, problem = _export_number(value, -FX_EQ_LIMIT, FX_EQ_LIMIT, f"eq ({name})")
+            if problem:
+                return None, None, problem
+            eq.append(round(number, 1))
+        item = {"pan": round(pan, 2), "eq": eq, "send": round(send, 2)}
+        if item["pan"] != 0 or item["send"] != 0 or any(gain != 0 for gain in eq):
+            fx[name] = item
+    sending = any(item["send"] > 0 for item in fx.values())
+    room = None
+    if sending:
+        source = raw_room if raw_room is not None else {}
+        if not isinstance(source, dict):
+            return None, None, "room {size, decay, level} olmali"
+        values = {}
+        for key, low, high in (("size", 0.0, 1.0), ("decay", FX_DECAY_MIN, FX_DECAY_MAX), ("level", 0.0, 1.0)):
+            number, problem = _export_number(source.get(key, FX_DEFAULT_ROOM[key]), low, high, f"room.{key}")
+            if problem:
+                return None, None, problem
+            values[key] = round(number, 2)
+        room = values
+    return (dict(sorted(fx.items())) or None), room, None
+
+
 def _export_is_running(status) -> bool:
     record = (status or {}).get("export") or {}
     if record.get("state") != "running":
@@ -6474,6 +6635,14 @@ def _export_check(body, status) -> tuple:
     }
     if vinyl and spec["rate"] != 1.0:
         spec["vinyl"] = True          # YALNIZ açıkken anahtar var: eski ayarların hash'i (önbellek) değişmez
+    fx, room, problem = _export_fx_check(body, gains)
+    if problem:
+        return None, problem
+    if fx:
+        spec["fx"] = fx               # yalnız nötr olmayan kanallar; yoksa anahtar da yok (eski hash'ler değişmez)
+        spec["fx_v"] = FX_VERSION
+        if room:
+            spec["room"] = room
     return spec, None
 
 
@@ -6511,13 +6680,44 @@ def _export_filename(title: str, spec: dict) -> str:
     return f"{head} - {tail}.{spec['format']}"
 
 
-def _export_command(spec: dict, paths: dict, out_path, title: str = "") -> list:
+def _export_limit_tail(spec: dict) -> list:
+    """Her zincirin sonu: güvenlik sınırlayıcı + gecikme telafisi (+ wav için dither)."""
+    limit = EXPORT_LIMIT_BY_FORMAT[spec["format"]]
+    tail = [f"alimiter=limit={limit}:attack={EXPORT_LIMITER_ATTACK_MS}:release=50:level=0"]
+    tail += [f"atrim=start_sample={EXPORT_LIMITER_DELAY_SAMPLES}", "asetpts=PTS-STARTPTS"]
+    if spec["format"] == "wav":
+        tail.append("aresample=osf=s16:dither_method=triangular")
+    return tail
+
+
+def _export_finish(cmd: list, chains: list, spec: dict, title: str, out_path) -> list:
+    """Filtre grafiğini, metadata'yı ve kodlayıcıyı komuta ekler."""
+    cmd += ["-filter_complex", ";".join(chains), "-map", "[out]", "-map_metadata", "-1"]
+    cmd += ["-metadata", f"title={title or 'Stem Mikser'}", "-metadata", "album=Stem Mikser",
+            "-metadata", f"comment={_export_tail(spec)}"]
+    if spec["format"] == "m4a":
+        cmd += ["-c:a", "aac", "-b:a", AAC_BITRATE, "-ar", str(EXPORT_SAMPLE_RATE),
+                "-movflags", "+faststart"]
+    else:
+        cmd += ["-c:a", "pcm_s16le", "-ar", str(EXPORT_SAMPLE_RATE)]
+    cmd.append(str(out_path))
+    return cmd
+
+
+def _export_needs_ir(spec: dict) -> bool:
+    return bool(spec.get("room"))
+
+
+def _export_command(spec: dict, paths: dict, out_path, title: str = "", ir_path=None) -> list:
     """Tek ffmpeg çağrısı. paths: kanal -> YEREL dosya yolu.
 
     Zincir: dosya başına `volume` -> `amix` (normalize=0: kazançlar toplanır, bölünmez)
     -> ana ses -> [A-B kırpma + 15 ms fade] -> [rubberband: hız/ton] -> alimiter (-0,1 dBFS).
     Kırpma esnetmeden ÖNCE: bölge şarkı saniyesi, çıktı süresi bölge / hız.
+    Kanal şeridi (pan/EQ/yankı) varsa `_export_command_fx` (uygulamadaki sıra: hız -> şerit -> yankı -> ton).
     """
+    if spec.get("fx"):
+        return _export_command_fx(spec, paths, out_path, title, ir_path)
     names = list(spec["gains"])
     cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y"]
     for name in names:
@@ -6554,23 +6754,111 @@ def _export_command(spec: dict, paths: dict, out_path, title: str = "") -> list:
         if spec["semitones"]:
             stretch += ":formant=preserved"     # ton kaydırmada vokal tınısı çok değişmesin
         tail.append(stretch)
-    limit = EXPORT_LIMIT_BY_FORMAT[spec["format"]]
-    tail.append(f"alimiter=limit={limit}:attack={EXPORT_LIMITER_ATTACK_MS}:release=50:level=0")
-    tail += [f"atrim=start_sample={EXPORT_LIMITER_DELAY_SAMPLES}", "asetpts=PTS-STARTPTS"]
-    if spec["format"] == "wav":
-        tail.append("aresample=osf=s16:dither_method=triangular")
+    tail += _export_limit_tail(spec)
     chains.append("[mix]" + ",".join(tail) + "[out]")
+    return _export_finish(cmd, chains, spec, title, out_path)
 
-    cmd += ["-filter_complex", ";".join(chains), "-map", "[out]", "-map_metadata", "-1"]
-    cmd += ["-metadata", f"title={title or 'Stem Mikser'}", "-metadata", "album=Stem Mikser",
-            "-metadata", f"comment={_export_tail(spec)}"]
-    if spec["format"] == "m4a":
-        cmd += ["-c:a", "aac", "-b:a", AAC_BITRATE, "-ar", str(EXPORT_SAMPLE_RATE),
-                "-movflags", "+faststart"]
+
+def _export_strip_chain(spec: dict, name: str) -> tuple:
+    """Bir kanalın şerit zinciri (giriş etiketi hariç) ve gönderim var mı. Sıra uygulamadakiyle aynı:
+    [A-B kırpma] -> [hız: asetrate+aresample] -> fader -> bas -> orta -> tiz -> pan."""
+    parts = []
+    region = spec["region"]
+    if region:
+        parts += [f"atrim=start={region['a']:.3f}:end={region['b']:.3f}", "asetpts=PTS-STARTPTS"]
+    if spec["rate"] != 1.0:
+        # Uygulamada kaynaklar playbackRate ile çalıyor ve EQ/pan/yankı HIZLANMIŞ sinyali işliyor; sunucu da
+        # kanal başına önce hızı uygular (EQ frekansları ve yankı gerçek saniyede kalır).
+        parts += [f"asetrate={EXPORT_SAMPLE_RATE * spec['rate']:.4f}", f"aresample={EXPORT_SAMPLE_RATE}"]
+    parts.append(f"volume={spec['gains'][name]:.4f}")
+    fx = spec["fx"].get(name)
+    if fx:
+        parts.append("aformat=sample_fmts=dblp:channel_layouts=stereo")      # çift duyarlıklı biquad
+        for (kind, frequency, q), gain in zip(FX_EQ_BANDS, fx["eq"]):
+            if gain == 0:
+                continue                                                     # 0 dB = kimlik filtresi
+            if q is None:
+                parts.append(f"{kind}=f={frequency:g}:t=s:w=1:g={gain:g}")   # slope 1 (Web Audio ile aynı RBJ S=1)
+            else:
+                parts.append(f"{kind}=f={frequency:g}:t=q:w={q:g}:g={gain:g}")
+        if fx["pan"] != 0:
+            ll, lr, rl, rr = _fx_pan_gains(fx["pan"])
+            parts.append(f"pan=stereo|c0={ll:.10f}*c0+{lr:.10f}*c1|c1={rl:.10f}*c0+{rr:.10f}*c1")
+    return parts, bool(fx and fx["send"] > 0)
+
+
+def _export_command_fx(spec: dict, paths: dict, out_path, title: str = "", ir_path=None) -> list:
+    """Kanal şeridi (pan/EQ/gönderim) + ortak yankı olan zincir. Uygulamadaki sıra:
+
+      kanal başına: [A-B kırpma] -> [asetrate+aresample hız] -> volume -> lowshelf -> equalizer -> highshelf -> pan
+        -> kuru toplama   +   gönderim: volume=send -> gönderim toplamı -> afir(IR) -> volume=seviye -> ıslak
+      kuru + ıslak -> ana ses -> [15 ms fade] -> [rubberband YALNIZ ton düzeltmesi: pitch = 2^(ton/12)/hız, tempo 1]
+      -> alimiter.
+
+    Plak gibi kipte rubberband HİÇ yok. Yankı kuyruğu hızlandırılmış sinyale gerçek saniyede uygulanır (IR
+    ölçeklenmez) ve çıktı süresi girişle aynı (kuyruk son örnekten sonra uzatılmaz).
+    """
+    names = list(spec["gains"])
+    cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y"]
+    for name in names:
+        cmd += ["-i", str(paths[name])]
+    room = spec.get("room")
+    if room:
+        if ir_path is None:
+            raise ValueError("yankı için IR dosyası gerekli")
+        cmd += ["-i", str(ir_path)]
+    chains = []
+    dry_labels = []
+    send_labels = []
+    for i, name in enumerate(names):
+        parts, sending = _export_strip_chain(spec, name)
+        if sending:
+            chains.append(f"[{i}:a]" + ",".join(parts) + f",asplit=2[d{i}][s{i}]")
+            chains.append(f"[s{i}]volume={spec['fx'][name]['send']:.4f}[w{i}]")
+            send_labels.append(f"[w{i}]")
+        else:
+            chains.append(f"[{i}:a]" + ",".join(parts) + f"[d{i}]")
+        dry_labels.append(f"[d{i}]")
+
+    def summed(labels, out):
+        if len(labels) > 1:
+            return f"{''.join(labels)}amix=inputs={len(labels)}:normalize=0:duration=longest[{out}]"
+        return f"{labels[0]}anull[{out}]"
+
+    chains.append(summed(dry_labels, "dry"))
+    if send_labels:
+        chains.append(summed(send_labels, "sendsum"))
+        # Ölçüm (canlı ffmpeg 5.1.9, `export_validate` I/J satırları): afir çıkışı girişten en çok bir bölüm
+        # (partition) kısa kalıyor ve PTS'i kaymış; amix ile toplayınca dosyanın SON ~1000 örneği bozuldu (kuru
+        # katlandı: sıfır seviyeli yankıda bile en büyük fark 0,29) ve rubberband "Cannot process again after final
+        # chunk" ile çöktü. Çözüm: afir girişi 2048 örnek sessizlikle uzatılır (ıslak, kuru uzunluğunu aşar), PTS
+        # onarılır, ıslak sonsuza uzatılır (apad) ve kuruyla `amerge` + `pan` (birim katsayılı toplama) ile toplanır:
+        # amerge en KISA girişte biter = kuru, yani çıktı süresi ve içerik kuruyla birebir (sıfır seviyede fark 0).
+        stereo = "aformat=sample_fmts=fltp:channel_layouts=stereo"
+        chains.append(f"[sendsum]apad=pad_len=2048[sendpad]")
+        chains.append(f"[sendpad][{len(names)}:a]afir=dry=1:wet=1:gtype=none:minp=1024:maxp=1024[conv]")
+        chains.append(f"[conv]asetpts=PTS-STARTPTS,volume={room['level'] * FX_AFIR_COMPENSATION:.6f},apad,{stereo}[wet]")
+        chains.append(f"[dry]{stereo}[dryf]")
+        chains.append("[dryf][wet]amerge=inputs=2,pan=stereo|c0=c0+c2|c1=c1+c3[mix]")
     else:
-        cmd += ["-c:a", "pcm_s16le", "-ar", str(EXPORT_SAMPLE_RATE)]
-    cmd.append(str(out_path))
-    return cmd
+        chains.append("[dry]anull[mix]")
+
+    tail = [f"volume={spec['master']:.4f}"]
+    if spec["region"]:
+        length = (spec["region"]["b"] - spec["region"]["a"]) / spec["rate"]
+        tail += [f"afade=t=in:d={EXPORT_FADE_SECONDS}",
+                 f"afade=t=out:st={max(length - EXPORT_FADE_SECONDS, 0):.3f}:d={EXPORT_FADE_SECONDS}"]
+    if not spec.get("vinyl") and (spec["rate"] != 1.0 or spec["semitones"]):
+        pitch = 2 ** (spec["semitones"] / 12) / spec["rate"]
+        if abs(pitch - 1.0) > 1e-6:
+            stretch = (f"rubberband=tempo=1:pitch={pitch:.6f}:pitchq=quality:"
+                       "channels=together:transients=smooth")
+            if spec["semitones"]:
+                stretch += ":formant=preserved"
+            tail.append(stretch)
+    tail += _export_limit_tail(spec)
+    chains.append("[mix]" + ",".join(tail) + "[out]")
+    return _export_finish(cmd, chains, spec, title, out_path)
 
 
 _VOLUMEDETECT_MAX = re.compile(r"max_volume:\s*(-?[\d.]+|-?inf)\s*dB")
@@ -6628,8 +6916,15 @@ def _export_sources(song_dir: pathlib.Path, spec: dict) -> dict:
 
 
 def _export_render(spec: dict, local_paths: dict, out_path, title: str = "") -> dict:
-    """ffmpeg'i çalıştırıp çıktıyı ölçer. local_paths yerel dosyalar olmalı."""
-    _run(_export_command(spec, local_paths, out_path, title))
+    """ffmpeg'i çalıştırıp çıktıyı ölçer. local_paths yerel dosyalar olmalı.
+
+    Yankı varsa impuls yanıtı (uygulamayla aynı prosedürden) çıktının yanına geçici WAV olarak yazılır.
+    """
+    ir_path = None
+    if _export_needs_ir(spec):
+        ir_path = pathlib.Path(out_path).with_name("room_ir.wav")
+        ir_path.write_bytes(_fx_impulse_wav(spec["room"]["size"], spec["room"]["decay"]))
+    _run(_export_command(spec, local_paths, out_path, title, ir_path))
     return _export_measure(out_path)
 
 
@@ -6714,6 +7009,260 @@ def export_sweep() -> dict:
     return {"removed": removed}
 
 
+# --------------------------------------------------------------------------
+# Tarayıcı <-> sunucu fark ölçümü için SENTETİK girişler (Aşama 15, 3. oturum). Gerçek şarkı/söz YOK.
+# Yerelde `tests/export_diff.py` bunlardan WAV üretir ve tarayıcıdaki GERÇEK Engine çıktısını toplar; Modal'da
+# `export_diff_case` AYNI girişleri yeniden üretir (yalnız tarayıcı sonucu yüklenir: Modal'ın 2 MiB satır içi
+# sınırı ve yerel TLS ara yazılımı büyük yüklemeleri engelliyor). Gürültü mulberry32 tabanlı: örnek i, i'nin saf
+# fonksiyonu (vektörel), yani numpy sürümüne bağlı değil.
+# --------------------------------------------------------------------------
+
+EXPORT_DIFF_RATE = 44100
+EXPORT_DIFF_STEMS = ["vocals", "drums", "bass", "guitar", "piano", "other"]
+
+
+def _export_diff_uniform(np, seed: int, count: int):
+    """[0,1) düzgün, mulberry32 (frontend/js/fx.js ile aynı karıştırma), örnek başına bağımsız hesap."""
+    mask = np.uint64(0xFFFFFFFF)
+    index = np.arange(1, count + 1, dtype=np.uint64)
+    t = (np.uint64(seed & 0xFFFFFFFF) + index * np.uint64(0x6D2B79F5)) & mask
+    t = ((t ^ (t >> np.uint64(15))) * (t | np.uint64(1))) & mask
+    t = t ^ ((t + (((t ^ (t >> np.uint64(7))) * (t | np.uint64(61))) & mask)) & mask)
+    return ((t ^ (t >> np.uint64(14))) & mask).astype(np.float64) / 4294967296.0
+
+
+def _export_diff_build():
+    """(senaryolar, girişler): girişler ad -> float32 (örnek, 2) dizisi. Senaryo gövdesi hem tarayıcıya
+    (Engine çağrıları) hem sunucuya (dışa aktarma isteği) aynen verilir."""
+    import math
+
+    import numpy as np
+
+    rate = EXPORT_DIFF_RATE
+    streams = [0]
+
+    def noise(seconds, sigma, lowpass=0.0):
+        count = int(seconds * rate)
+        data = np.empty((count, 2))
+        for channel in range(2):
+            streams[0] += 1
+            data[:, channel] = (_export_diff_uniform(np, 0x1234567 + streams[0] * 0x9E3779B1, count) * 2 - 1) * math.sqrt(3) * sigma
+        if lowpass > 0:
+            # iki tek kutuplu alçak geçiren art arda (kesim ~ lowpass x 7 kHz): HF az, yeniden örnekleme çekirdeği farkı
+            # (tarayıcı doğrusal aradeğerleme <-> ffmpeg sinc) ölçümü bozmasın; sonunda rms = sigma
+            for channel in range(2):
+                column = data[:, channel].tolist()
+                for _ in range(2):
+                    state = 0.0
+                    for i, value in enumerate(column):
+                        state += lowpass * (value - state)
+                        column[i] = state
+                data[:, channel] = column
+            data *= sigma / float(np.sqrt(np.mean(data ** 2)))
+        return data
+
+    def tones(seconds, base, level):
+        t = np.arange(int(seconds * rate)) / rate
+        left = sum(np.sin(2 * np.pi * base * k * t) / k for k in (1, 2, 3))
+        right = sum(np.sin(2 * np.pi * base * 1.5 * k * t + 0.5) / k for k in (1, 2, 3))
+        return np.stack([left, right], axis=1) * level
+
+    seconds = 6.0
+    scenarios = []
+    inputs = {"A": noise(seconds, 0.1).astype(np.float32)}
+
+    def add(name, kind, channels, body, rate_=1.0, vinyl=False, seconds_=seconds, pair=None):
+        # pair: gönderimleri kapalı İKİZ senaryo; fark = yalnız ıslak (yankı) kısım
+        scenarios.append({"name": name, "kind": kind, "channels": list(channels), "body": body, "rate": rate_,
+                          "vinyl": vinyl, "seconds": seconds_, "pair": pair})
+
+    for name, fx in (
+        ("eq_hi_lo", {"pan": 0, "eq": [8, -6, 9], "send": 0}),
+        ("eq_mid", {"pan": 0, "eq": [0, 10, 0], "send": 0}),
+        ("pan_left", {"pan": -0.35, "eq": [0, 0, 0], "send": 0}),
+        ("pan_right", {"pan": 0.6, "eq": [0, 0, 0], "send": 0}),
+        ("combined", {"pan": 0.6, "eq": [-7, 4, -11], "send": 0}),
+    ):
+        add(f"A_{name}", "response", ["A"], {"gains": {"A": 1.0}, "fx": {"A": fx}})
+
+    for i, stem in enumerate(EXPORT_DIFF_STEMS):
+        inputs[stem] = (noise(seconds, 0.05) + tones(seconds, 110 * (i + 1), 0.015)).astype(np.float32)
+    mix_fx = {
+        "vocals": {"pan": 0.0, "eq": [0, 3, 4], "send": 0.65},
+        "drums": {"pan": -0.25, "eq": [4, 0, 0], "send": 0.5},
+        "bass": {"pan": 0, "eq": [5, -2, -4], "send": 0.3},
+        "guitar": {"pan": -0.8, "eq": [0, 0, 0], "send": 0.5},
+        "piano": {"pan": 0.7, "eq": [-3, 2, 6], "send": 0.5},
+        "other": {"pan": 0.2, "eq": [0, -5, 0], "send": 0.0},
+    }
+    gains = {"vocals": 1.0, "drums": 0.9, "bass": 0.8, "guitar": 1.0, "piano": 0.7, "other": 1.0}
+    add("B_mix_room", "mix", EXPORT_DIFF_STEMS,
+        {"gains": gains, "fx": mix_fx, "room": {"size": 0.7, "decay": 2.2, "level": 0.8}}, pair="B_mix_dry")
+    add("B_mix_dry", "mix", EXPORT_DIFF_STEMS,
+        {"gains": gains, "fx": {key: dict(value, send=0) for key, value in mix_fx.items()}})
+
+    click = np.zeros((int(4.0 * rate), 2), dtype=np.float32)
+    click[rate, 0] = 1.0
+    click[rate, 1] = 0.7
+    inputs["C"] = click
+    add("C_click_room", "reverb", ["C"],
+        {"gains": {"C": 1.0}, "fx": {"C": {"pan": 0, "eq": [0, 0, 0], "send": 1.0}},
+         "room": {"size": 0.5, "decay": 1.6, "level": 1.0}}, seconds_=4.0)
+
+    for stem in ("vocals", "drums", "piano"):
+        inputs[f"V_{stem}"] = (noise(seconds, 0.05, lowpass=0.06) + tones(seconds, 220, 0.02)).astype(np.float32)
+    add("D_vinyl", "vinyl", ["V_vocals", "V_drums", "V_piano"],
+        {"gains": {"V_vocals": 1.0, "V_drums": 1.0, "V_piano": 0.9},
+         "fx": {"V_vocals": {"pan": 0.0, "eq": [0, 3, 0], "send": 0.65},
+                "V_drums": {"pan": -0.4, "eq": [3, 0, 0], "send": 0.5},
+                "V_piano": {"pan": 0.5, "eq": [0, 0, 4], "send": 0.5}},
+         "room": {"size": 0.7, "decay": 2.2, "level": 0.8}, "rate": 0.85, "vinyl": True},
+        rate_=0.85, vinyl=True, pair="D_vinyl_dry")
+    vfx = scenarios[-1]["body"]["fx"]
+    add("D_vinyl_dry", "vinyl", ["V_vocals", "V_drums", "V_piano"],
+        {"gains": scenarios[-1]["body"]["gains"], "fx": {key: dict(value, send=0) for key, value in vfx.items()},
+         "rate": 0.85, "vinyl": True}, rate_=0.85, vinyl=True)
+    add("D_vinyl_plain", "vinyl", ["V_vocals", "V_drums", "V_piano"],
+        {"gains": scenarios[-1]["body"]["gains"], "fx": {"V_vocals": {"pan": 0, "eq": [0, 0, 0], "send": 0}},
+         "rate": 0.85, "vinyl": True}, rate_=0.85, vinyl=True)
+    return scenarios, inputs
+
+
+def _xd_spec(channels, body, seconds, fmt="wav"):
+    """Sentetik kanallar için dışa aktarma spec'i (gerçek şarkı durumu yok)."""
+    status = {"stems": list(channels), "duration": float(seconds), "stems_version": 1}
+    spec, problem = _export_check(dict({"format": fmt}, **body), status)
+    if problem:
+        raise ValueError(problem)
+    return spec
+
+
+def _xd_bands_db(np, a, b):
+    """İki sinyalin 1/3 oktav bant enerji farkları (dB), 39 Hz .. 16 kHz: (en kötü fark, merkez Hz)."""
+    size = 1 << int(np.ceil(np.log2(len(a))))
+    window = np.hanning(len(a))
+    spec_a = np.abs(np.fft.rfft(a * window, n=size)) ** 2
+    spec_b = np.abs(np.fft.rfft(b * window, n=size)) ** 2
+    freqs = np.fft.rfftfreq(size, 1 / 44100)
+    worst, where = 0.0, 0.0
+    for k in range(-14, 5):
+        center = 1000.0 * 2 ** (k / 3)
+        mask = (freqs >= center / 2 ** (1 / 6)) & (freqs < center * 2 ** (1 / 6))
+        ratio = 10 * np.log10((spec_a[mask].sum() + 1e-30) / (spec_b[mask].sum() + 1e-30))
+        if abs(ratio) > abs(worst):
+            worst, where = float(ratio), center
+    return worst, where
+
+
+def _xd_lag(np, a, b, span=300):
+    """a'nın b'ye göre kayması (örnek): çapraz ilinti tepesi. 0 = hizalı."""
+    size = 1 << int(np.ceil(np.log2(len(a) + len(b))))
+    corr = np.fft.irfft(np.fft.rfft(a, n=size) * np.conj(np.fft.rfft(b, n=size)), n=size)
+    lags = np.concatenate([np.arange(0, span + 1), np.arange(-span, 0)])
+    values = np.concatenate([corr[:span + 1], corr[size - span:]])
+    return int(lags[int(np.argmax(values))])
+
+
+def _xd_lowpass(np, x, cutoff_hz):
+    """Ani kesimli (FFT maskesi) alçak geçiren: yeniden örnekleme çekirdeği farkının HF'ten geldiğini ayırmak için."""
+    spectrum = np.fft.rfft(x)
+    spectrum[np.fft.rfftfreq(len(x), 1 / 44100) > cutoff_hz] = 0
+    return np.fft.irfft(spectrum, n=len(x))
+
+
+def _xd_residual_db(np, a, b):
+    n = min(a.shape[-1], b.shape[-1])
+    rms = lambda x: float(np.sqrt(np.mean(np.asarray(x, dtype=np.float64) ** 2)) + 1e-12)
+    return 20 * np.log10(rms(a[..., :n] - b[..., :n])) - 20 * np.log10(rms(a[..., :n]))
+
+
+@app.function(image=sub_cpu_image, timeout=900, memory=4096)
+def export_diff_case(name: str, result: bytes, twin_left: bytes = None) -> list:
+    """Tek senaryo: tarayıcıdaki GERÇEK Engine çıktısı (int16 LE, önce sol sonra sağ) <-> sunucu zinciri (ffmpeg).
+
+    Girişler `_export_diff_build` ile yeniden üretilir. `twin_left`: gönderimleri kapalı ikiz senaryonun tarayıcı
+    çıktısı (yalnız sol kanal, int16): fark = YALNIZ ıslak (yankı) kısım, hizası ve enerjisi ayrıca ölçülür.
+    Dönen: [{name, ok, detail}].
+    """
+    import numpy as np
+    import soundfile as sf
+
+    scenarios, inputs = _export_diff_build()
+    sc = next(item for item in scenarios if item["name"] == name)
+    browser = np.frombuffer(result, dtype="<i2").astype(np.float64) / 32768.0
+    half = len(browser) // 2
+    browser = np.stack([browser[:half], browser[half:]])
+    with tempfile.TemporaryDirectory() as workdir:
+        work = pathlib.Path(workdir)
+        paths = {}
+        for channel in sc["channels"]:
+            paths[channel] = work / f"{channel}.wav"
+            sf.write(str(paths[channel]), inputs[channel], EXPORT_DIFF_RATE, subtype="FLOAT")
+        spec = _xd_spec(sc["channels"], dict(sc["body"]), sc["seconds"])
+        out = work / "out.wav"
+        started = time.time()
+        measured = _export_render(spec, paths, out, "diff")
+        render_s = round(time.time() - started, 1)
+        server, _ = sf.read(str(out), dtype="float64", always_2d=True)
+        server = server.T
+        server_twin = None
+        if twin_left is not None and sc.get("pair"):
+            twin = next(item for item in scenarios if item["name"] == sc["pair"])
+            twin_paths = {}
+            for channel in twin["channels"]:
+                twin_paths[channel] = paths.get(channel) or work / f"{channel}.wav"
+            twin_out = work / "twin.wav"
+            _export_render(_xd_spec(twin["channels"], dict(twin["body"]), twin["seconds"]), twin_paths, twin_out, "diff")
+            server_twin, _ = sf.read(str(twin_out), dtype="float64", always_2d=True)
+            server_twin = server_twin.T
+    n = min(browser.shape[1], server.shape[1])
+    residual = _xd_residual_db(np, browser, server)
+    lag = _xd_lag(np, browser[0, :n], server[0, :n])
+    kind = sc["kind"]
+    limit_db = 20 * np.log10(EXPORT_LIMIT_BY_FORMAT["wav"])
+    wet_ok, wet_note = True, ""
+    if server_twin is not None:
+        twin_b = np.frombuffer(twin_left, dtype="<i2").astype(np.float64) / 32768.0
+        m = min(n, len(twin_b), server_twin.shape[1])
+        wet_b = browser[0, :m] - twin_b[:m]
+        wet_s = server[0, :m] - server_twin[0, :m]
+        wet_lag = _xd_lag(np, wet_b, wet_s, 300)
+        wet_energy = 10 * np.log10((wet_b ** 2).sum() / ((wet_s ** 2).sum() + 1e-30))
+        wet_res = _xd_residual_db(np, wet_b, wet_s)
+        wet_low = _xd_residual_db(np, _xd_lowpass(np, wet_b, 3000.0), _xd_lowpass(np, wet_s, 3000.0))
+        wet_ok = wet_lag == 0 and abs(wet_energy) < 0.5
+        wet_note = (f"; islak kisim: hiza {wet_lag} ornek, enerji {wet_energy:+.3f} dB, kalinti {wet_res:.1f} dB "
+                    f"(3 kHz alti {wet_low:.1f} dB)")
+    if kind == "response":
+        worst = max((_xd_bands_db(np, browser[c, :n], server[c, :n]) for c in (0, 1)), key=lambda item: abs(item[0]))
+        ok = abs(worst[0]) <= 0.1 and lag == 0
+        detail = f"en kotu {worst[0]:+.3f} dB @ {worst[1]:.0f} Hz, kalinti {residual:.1f} dB, hiza {lag} ornek"
+        label = "frekans yaniti farki <= 0,1 dB (1/3 oktav, L ve R)"
+    elif kind == "mix":
+        ok = residual < -40.0 and lag == 0 and wet_ok
+        detail = (f"kalinti {residual:.1f} dB, hiza {lag} ornek, sunucu tepe {measured['peak_db']} dB "
+                  f"(sinir {limit_db:.1f}), {render_s} sn{wet_note}")
+        label = "tam miks null-testi kalintisi < -40 dB, hiza 0"
+    elif kind == "reverb":
+        start = EXPORT_DIFF_RATE + 200
+        tail_b, tail_s = browser[:, start:n], server[:, start:n]
+        energy = 10 * np.log10((tail_b ** 2).sum() / ((tail_s ** 2).sum() + 1e-30))
+        lag_tail = _xd_lag(np, tail_b[0], tail_s[0], 100)
+        ok = lag_tail == 0 and abs(energy) < 0.5
+        detail = f"hiza {lag_tail} ornek, kuyruk enerji farki {energy:+.3f} dB, kalinti {residual:.1f} dB"
+        label = "yanki hizasi 0 ornek, kuyruk enerji farki < 0,5 dB"
+    else:
+        # Tarayıcı kaynak hızıyla (playbackRate) çalıyor, sunucu asetrate + aresample: iki yeniden örnekleme çekirdeği
+        # HF'te ayrışır, bu yüzden giriş HF'ten arındırılmış (ölçülen: ~ -50 dB). Islak kısım da kendi içinde tutmalı.
+        ok = residual < -45.0
+        ok = (ok and abs(lag) <= 1 and wet_ok
+              and 0 <= browser.shape[1] - server.shape[1] <= EXPORT_LIMITER_DELAY_SAMPLES + 4)
+        detail = (f"kalinti {residual:.1f} dB, hiza {lag} ornek, uzunluk {browser.shape[1]} vs {server.shape[1]}"
+                  f"{wet_note}")
+        label = "plak gibi 0,85 + fx (yeniden ornekleme cekirdegi farki dahil) null-testi, sure"
+    return _assert_plain([{"name": f"J) {name}: {label}", "ok": bool(ok), "detail": detail}])
+
+
 @app.function(image=sub_cpu_image, volumes={DATA_DIR: volume}, timeout=1200, memory=8192)
 def export_validate_run(song_id: str) -> dict:
     """Dışa aktarma çıktısını GERÇEK sesle ölçer (ffmpeg gerçek, Volume'a YAZMAZ).
@@ -6721,7 +7270,9 @@ def export_validate_run(song_id: str) -> dict:
     Kaynak FLAC'lar yerel dizine kopyalanır; çıktılar da yerelde. Ton testi sentetik 440 Hz
     sinüsle. Kontroller: (A) tüm kazançlar 1 iken orijinal karışımdan fark, (B) vokal 0
     iken çıkan enerji = vokal stem enerjisi, (C) A-B süresi, (D) A-B + hız, (E) tam hız
-    çarpanı, (F) ton ve hız (sinüsle), (G) tepe sınırı (WAV ve m4a), (H) m4a kodu çözülür.
+    çarpanı, (F) ton ve hız (sinüsle), (G) tepe sınırı (WAV ve m4a), (H) m4a kodu çözülür,
+    (I) kanal şeridi + yankı (afir birim kazancı, fx + hız/ton, Slowed + reverb). Tarayıcı <-> sunucu fark ölçümü (J)
+    ayrı: `export_diff_case` (senaryo başına bir çağrı).
     """
     import numpy as np
     import soundfile as sf
@@ -6882,15 +7433,115 @@ def export_validate_run(song_id: str) -> dict:
                abs(decoded.shape[1] / 44100 - m["duration"]) <= 0.1 and m["bytes"] > 10000,
                f"{m['duration']} sn, {m['bytes']} bayt, {m['render_s']} sn")
 
+        # ---- I) kanal seridi (pan/EQ) + ortak yanki (Asama 15, 3. oturum) --------------------------------
+        # I0) afir birim kazanc: tek tik + IR -> kuyruk = IR (giris x IR x seviye), ffmpeg surumune karsi koruma
+        rate_hz = 44100
+        click = np.zeros((rate_hz * 4, 2), dtype=np.float32)
+        click[rate_hz, 0] = 0.5
+        click[rate_hz, 1] = 0.25
+        click_path = work / "click.flac"
+        sf.write(str(click_path), click, rate_hz, subtype="PCM_24", format="FLAC")
+        click_spec = _xd_spec(["C"], {"gains": {"C": 1.0}, "fx": {"C": {"send": 1.0}},
+                                        "room": {"size": 0.5, "decay": 1.6, "level": 1.0}}, 4.0)
+        out, m = render(click_spec, "click", {"C": click_path})
+        wet, _ = read_wav(out)
+        ir_left, ir_right = _fx_impulse(0.5, 1.6)
+        ir_left = np.asarray(ir_left, dtype=np.float64)
+        ir_right = np.asarray(ir_right, dtype=np.float64)
+        span = len(ir_left) - 300
+        tail_l = wet[0, rate_hz + 200:rate_hz + 200 + span].astype(np.float64)
+        tail_r = wet[1, rate_hz + 200:rate_hz + 200 + span].astype(np.float64)
+        gain_l = 10 * np.log10((tail_l ** 2).sum() / ((0.5 * ir_left[200:200 + span]) ** 2).sum())
+        gain_r = 10 * np.log10((tail_r ** 2).sum() / ((0.25 * ir_right[200:200 + span]) ** 2).sum())
+        lag_wet = _xd_lag(np, wet[0, rate_hz:rate_hz + 20000].astype(np.float64), (0.5 * ir_left[:20000]), 100)
+        record("I0) yanki: afir birim kazanc (kuyruk = giris x IR x seviye) ve IR hizasi",
+               abs(gain_l) <= 0.1 and abs(gain_r) <= 0.1 and lag_wet == 0,
+               f"sol {gain_l:+.3f} dB, sag {gain_r:+.3f} dB, hiza {lag_wet} ornek (FX_AFIR_COMPENSATION={FX_AFIR_COMPENSATION})")
+
+        # I1) fx + hiz/ton: tek ton ile (frekans = beklenen, sure dogru)
+        tone_fx = {"vocals": {"pan": -0.3, "eq": [0, 3, 0], "send": 0.5}}
+        tone_cases = (
+            ("I1) fx + bagimsiz 0.8x + ton +2 (rubberband yalniz ton duzeltmesi)",
+             {"rate": 0.8, "semitones": 2}, 440.0 * 2 ** (2 / 12), 12.5),
+            ("I2) fx + plak gibi 0.8x (352 Hz, rubberband yok)", {"rate": 0.8, "vinyl": True}, 352.0, 12.5),
+            ("I3) fx + yalniz hiz 0.8x bagimsiz (ton ayni 440 Hz)", {"rate": 0.8}, 440.0, 12.5),
+            ("I4) fx + ton -3 (hiz 1)", {"semitones": -3}, 440.0 * 2 ** (-3 / 12), 10.0),
+        )
+        for name, over, expect_hz, expect_len in tone_cases:
+            body = {"gains": {"vocals": 1.0}, "fx": tone_fx, "room": {"size": 0.4, "decay": 1.2, "level": 0.5}}
+            body.update(over)
+            out, m = render(_xd_spec(["vocals"], body, 10.0), "tone_fx", tone_paths)
+            hz = peak_hz(out)
+            ok = abs(hz - expect_hz) <= max(3.0, expect_hz * 0.006) and abs(m["duration"] - expect_len) <= 0.2
+            record(name, ok, f"{hz:.1f} Hz (beklenen {expect_hz:.1f}), {m['duration']} sn (beklenen {expect_len}), {m['render_s']} sn")
+        body = {"gains": {"vocals": 1.0}, "fx": tone_fx, "region": {"a": 2.0, "b": 6.0}, "rate": 0.8}
+        out, m = render(_xd_spec(["vocals"], body, 10.0), "region_fx", tone_paths)
+        record("I5) fx + A-B + 0.8x suresi", abs(m["duration"] - 5.0) <= 0.15, f"{m['duration']} sn (beklenen 5.0)")
+
+        # I6) gercek sarki: Slowed + reverb ayari (wav ve m4a): sure, tepe sinir, render suresi, kod cozulur
+        slowed_fx = {name: {"pan": 0, "eq": [0, 0, 0], "send": 0.65 if name == "vocals" else 0.5} for name in stems}
+        slowed_body = {"fx": slowed_fx, "room": {"size": 0.7, "decay": 2.2, "level": 0.8}, "rate": 0.85, "vinyl": True}
+        for fmt in ("wav", "m4a"):
+            spec = make_spec(slowed_body, fmt=fmt)
+            out, m = render(spec, f"slowed_{fmt}")
+            limit_db = 20 * np.log10(EXPORT_LIMIT_BY_FORMAT[fmt])
+            tolerance = 0.1 if fmt == "wav" else 0.3
+            decoded = _decode_pcm(out, 44100, 2)
+            ok = (abs(m["duration"] - duration / 0.85) <= 0.3 and m["peak_db"] <= limit_db + tolerance
+                  and abs(decoded.shape[1] / 44100 - m["duration"]) <= 0.1)
+            record(f"I6) Slowed + reverb ({fmt}): sure, tepe sinir, kod cozulur", ok,
+                   f"{m['duration']} sn (beklenen {duration / 0.85:.2f}), tepe {m['peak_db']} dB, ort {m['mean_db']} dB, "
+                   f"{m['bytes']} bayt, {m['render_s']} sn")
+        dry_slow = make_spec({"rate": 0.85, "vinyl": True})
+        out, m_dry = render(dry_slow, "slowed_dry")
+        out, m_wet = render(make_spec(slowed_body), "slowed_wet")
+        record("I7) Slowed + reverb: yanki enerji ekler (ortalama seviye >= yankisiz)",
+               m_wet["mean_db"] is not None and m_wet["mean_db"] >= m_dry["mean_db"] - 0.2,
+               f"yankili {m_wet['mean_db']} dB, yankisiz {m_dry['mean_db']} dB")
+
     return _assert_plain({"title": str(status.get("title") or ""), "duration": duration,
                           "results": results})
 
 
 @app.local_entrypoint()
-def export_validate(song: str = "Zeus"):
-    """Dışa aktarma ölçümleri (gerçek ses, CPU, Volume'a yazmaz): modal run backend/app.py::export_validate"""
+def export_validate(song: str = "Zeus", diff_dir: str = ""):
+    """Dışa aktarma ölçümleri (gerçek ses, CPU, Volume'a yazmaz): modal run backend/app.py::export_validate
+
+    Tarayıcı<->sunucu (J) satırları için önce `tests\\export_diff.py` + tarayıcı sayfası çalıştırılmış olmalı
+    (çıktı tests/export_diff_out/results); `--diff-dir` başka bir klasörü gösterir, yoksa o satırlar atlanır.
+    """
     song_id, title = _resolve_title_cli(song)
+    folder = pathlib.Path(diff_dir) if diff_dir else pathlib.Path(__file__).resolve().parent.parent / "tests" / "export_diff_out"
+    cases = []
+    decode_error = None
+    if (folder / "results" / "_decode.f32").is_file():
+        import numpy as np
+
+        decode_error = float(np.frombuffer((folder / "results" / "_decode.f32").read_bytes(), dtype="<f4")[0])
+        scenarios, _ = _export_diff_build()
+        for sc in scenarios:
+            path = folder / "results" / f"{sc['name']}.f32"
+            if path.is_file():
+                floats = np.frombuffer(path.read_bytes(), dtype="<f4")
+                twin = None
+                twin_path = folder / "results" / f"{sc['pair']}.f32" if sc.get("pair") else None
+                if twin_path is not None and twin_path.is_file():
+                    twin_floats = np.frombuffer(twin_path.read_bytes(), dtype="<f4")
+                    twin = (np.clip(twin_floats[:len(twin_floats) // 2], -1.0, 1.0) * 32767.0).round().astype("<i2").tobytes()
+                cases.append((sc["name"], (np.clip(floats, -1.0, 1.0) * 32767.0).round().astype("<i2").tobytes(), twin))
+        print(f"tarayici verisi: {len(cases)} senaryo ({folder}), giris cozme hatasi {decode_error:.1e}")
+    else:
+        print("tarayici verisi yok: J satirlari atlanacak (tests\\export_diff.py + export_diff.html)")
+    pending = list(export_diff_case.starmap(cases)) if cases else []
     report = export_validate_run.remote(song_id)
+    if decode_error is not None:
+        report["results"].append({"name": "J0) tarayici: giris cozme (decodeAudioData float WAV) birebir",
+                                  "ok": decode_error == 0.0, "detail": f"en buyuk hata {decode_error:.1e}"})
+    else:
+        report["results"].append({"name": "J) tarayici <-> sunucu fark olcumu", "ok": True,
+                                  "detail": "ATLANDI: tests/export_diff_out yok"})
+    for rows in pending:
+        report["results"].extend(rows)
     failed = 0
     print(f"\n{title} ({report['duration']} sn)")
     for item in report["results"]:
@@ -8074,3 +8725,4 @@ def _run_analysis(song_id: str, out: str, beats_source: str = "auto"):
     chords_file = dest_root / "chords.json"
     print("\n===== akor cizelgesi =====")
     print(_format_chord_chart(json.loads(chords_file.read_text(encoding="utf-8"))))
+

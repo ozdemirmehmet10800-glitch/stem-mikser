@@ -132,6 +132,11 @@ def main():
         ("ton sinir disi", dict(karaoke, semitones=9)),
         ("bolge sarki disinda", dict(karaoke, region={"a": 500, "b": 600})),
         ("bilinmeyen kanal", dict(karaoke, gains={"hayalet": 1})),
+        ("fx: pan sinir disi", dict(karaoke, fx={"drums": {"pan": 2}})),
+        ("fx: eq sinir disi", dict(karaoke, fx={"drums": {"eq": [13, 0, 0]}})),
+        ("fx: gonderim > 1", dict(karaoke, fx={"drums": {"send": 1.2}})),
+        ("fx: bilinmeyen kanal", dict(karaoke, fx={"hayalet": {"pan": 0.5}})),
+        ("fx: oda suresi sinir disi", dict(karaoke, fx={"drums": {"send": 0.5}}, room={"decay": 9})),
     ):
         response = post(LIVE, payload)
         check(f"gecersiz istek -> 400: {name}", response.status_code == 400, response.text[:100])

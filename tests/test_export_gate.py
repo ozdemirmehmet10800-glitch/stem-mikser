@@ -199,6 +199,156 @@ def main():
     check("vinyl + oran 1: etkisiz, anahtar yok", "vinyl" not in chk(body(vinyl=True))[0])
     check("dosya adi kuyrugu: '0.85x plak'", "0.85x plak" in app._export_filename("Sarki", dict(vspec, label="Miks")))
 
+    # --- kanal şeridi (pan/EQ/gönderim) + ortak yankı (Aşama 15, 3. oturum)
+    fxbody = body(fx={"drums": {"pan": -0.5, "eq": [3, 0, -2.5], "send": 0.4},
+                      "bass": {"pan": 0, "eq": [0, 0, 0], "send": 0},          # nötr: atılır
+                      "other": {"pan": 0.3, "eq": [0, 6, 0], "send": 0}},
+                  room={"size": 0.7, "decay": 2.2, "level": 0.8})
+    fspec, fproblem = chk(fxbody)
+    check("fx: kabul, yalniz notr olmayan kanallar spec'te", fproblem is None and sorted(fspec["fx"]) == ["drums", "other"],
+          str(fproblem))
+    check("fx: oda spec'te, surum anahtari var", fspec["room"] == {"size": 0.7, "decay": 2.2, "level": 0.8}
+          and fspec["fx_v"] == app.FX_VERSION)
+    plain0 = chk(body())[0]
+    check("fx yokken anahtar YOK (eski hash'ler korunur)", not any(k in plain0 for k in ("fx", "room", "fx_v")))
+    allneutral = chk(body(fx={"drums": {"pan": 0, "eq": [0, 0, 0], "send": 0}}, room={"size": 1, "decay": 3, "level": 1}))[0]
+    check("fx hepsi notr + oda: anahtar YOK (hash ayni)", app._export_hash(allneutral) == app._export_hash(plain0))
+    nosend = chk(body(fx={"drums": {"pan": 0.5, "eq": [0, 0, 0], "send": 0}}, room={"size": 1, "decay": 3, "level": 1}))[0]
+    check("gonderim yokken oda atilir (IR uretilmez)", "room" not in nosend and nosend["fx"]["drums"]["pan"] == 0.5
+          and not app._export_needs_ir(nosend))
+    defroom = chk(body(fx={"drums": {"send": 0.5}}))[0]
+    check("gonderim var, oda verilmedi: varsayilan oda", defroom["room"] == app.FX_DEFAULT_ROOM
+          and defroom["fx"]["drums"]["eq"] == [0, 0, 0])
+    check("fx degisince hash degisir", app._export_hash(fspec) != app._export_hash(
+        chk(body(fx=dict(fxbody["fx"], drums={"pan": -0.5, "eq": [3, 0, -2.4], "send": 0.4}), room=fxbody["room"]))[0]))
+    check("oda degisince hash degisir", app._export_hash(fspec) != app._export_hash(
+        chk(body(fx=fxbody["fx"], room={"size": 0.7, "decay": 2.3, "level": 0.8}))[0]))
+    bad_fx = {
+        "fx nesne degil": body(fx=[1]),
+        "fx bilinmeyen kanal": body(fx={"vocals": {"pan": 0.1}}),
+        "fx girdisi nesne degil": body(fx={"drums": 3}),
+        "pan sinir disi": body(fx={"drums": {"pan": 1.01}}),
+        "pan metin": body(fx={"drums": {"pan": "sol"}}),
+        "eq sinir disi": body(fx={"drums": {"eq": [12.1, 0, 0]}}),
+        "eq 2 eleman": body(fx={"drums": {"eq": [1, 2]}}),
+        "eq NaN": body(fx={"drums": {"eq": [float("nan"), 0, 0]}}),
+        "send > 1": body(fx={"drums": {"send": 1.5}}),
+        "send negatif": body(fx={"drums": {"send": -0.1}}),
+        "oda nesne degil": body(fx={"drums": {"send": 0.5}}, room=3),
+        "oda suresi cok uzun": body(fx={"drums": {"send": 0.5}}, room={"decay": 3.5}),
+        "oda suresi cok kisa": body(fx={"drums": {"send": 0.5}}, room={"decay": 0.1}),
+        "oda boyutu": body(fx={"drums": {"send": 0.5}}, room={"size": 2}),
+        "oda seviyesi": body(fx={"drums": {"send": 0.5}}, room={"level": -1}),
+    }
+    for label, payload in bad_fx.items():
+        check(f"fx reddi: {label}", chk(payload)[1] is not None)
+    silent = chk(body(gains={"drums": 1, "bass": 0}, fx={"bass": {"pan": 0.5}}))[1]
+    check("fx: sessiz (kazanc 0) kanal icin fx reddedilir", silent is not None)
+
+    fpaths = {name: f"/w/{name}.flac" for name in fspec["gains"]}
+    fcmd = app._export_command(fspec, fpaths, "/w/out.wav", ir_path="/w/ir.wav")
+    fg = fcmd[fcmd.index("-filter_complex") + 1]
+    check("fx komutu: IR ikinci girdi olarak eklenir (-i ir.wav, kanallardan sonra)",
+          fcmd.count("-i") == len(fspec["gains"]) + 1 and fcmd[len(fcmd) - 1 - fcmd[::-1].index("-i") + 1] == "/w/ir.wav")
+    check("fx komutu: bas rafi slope 1 -> orta Q 0.9 -> tiz rafi sirasi",
+          "lowshelf=f=120:t=s:w=1:g=3" in fg and "highshelf=f=6000:t=s:w=1:g=-2.5" in fg
+          and fg.index("lowshelf") < fg.index("highshelf"), fg)
+    check("fx komutu: orta cani (Q 0.9) yalniz ayarli kanalda", fg.count("equalizer=f=1000:t=q:w=0.9:g=6") == 1
+          and fg.count("equalizer") == 1)
+    check("fx komutu: notr kanal (bass) sirasi: yalniz volume", "[1:a]volume=1.0000[d1]" in fg, fg)
+    check("fx komutu: gonderim = asplit + volume + amix + afir + seviye, IR girdisi",
+          "asplit=2[d2][s2]" in fg and "[s2]volume=0.4000[w2]" in fg and "[w2]anull[sendsum]" in fg
+          and "[sendsum]apad=pad_len=2048[sendpad]" in fg
+          and f"[sendpad][{len(fspec['gains'])}:a]afir=dry=1:wet=1:gtype=none:minp=1024:maxp=1024[conv]" in fg
+          and f"[conv]asetpts=PTS-STARTPTS,volume={0.8 * app.FX_AFIR_COMPENSATION:.6f},apad," in fg, fg)
+    check("fx komutu: kuru + islak amerge + pan (birim toplama, cikti suresi = kuru)",
+          "[dryf][wet]amerge=inputs=2,pan=stereo|c0=c0+c2|c1=c1+c3[mix]" in fg and ",apad," in fg, fg)
+    check("fx komutu: afir limiter'dan ONCE", fg.index("afir") < fg.index("alimiter"))
+    check("fx komutu: pan kati sayilari sabit (-0.5 -> L<-R cos(pi/4), R<-R sin(pi/4))",
+          "pan=stereo|c0=1.0000000000*c0+0.7071067812*c1|c1=0.0000000000*c0+0.7071067812*c1" in fg, fg)
+    check("fx komutu: rate 1, ton 0 -> hiz adimi ve rubberband YOK",
+          "asetrate" not in fg and "rubberband" not in fg)
+    check("fx yoksa eski zincir (kanal sirasi/IR yok)", "afir" not in g and "asplit" not in g and "pan=" not in g)
+    near = lambda got, want: all(abs(x - y) < 1e-12 for x, y in zip(got, want))
+    check("pan formulu: orta = kimlik (L<-L, R<-R)", near(app._fx_pan_gains(0.0), (1.0, 0.0, 0.0, 1.0)))
+    check("pan formulu: tam sol = L<-L+R, R<-0; tam sag = L<-0, R<-L+R",
+          near(app._fx_pan_gains(-1.0), (1.0, 1.0, 0.0, 0.0)) and near(app._fx_pan_gains(1.0), (0.0, 0.0, 1.0, 1.0)))
+
+    # hiz sirasi: asetrate+aresample ONCE (kanal basina), rubberband YALNIZ ton duzeltmesi, tempo=1
+    indep = chk(body(fx=fxbody["fx"], room=fxbody["room"], rate=0.8, semitones=2, region={"a": 10, "b": 20}))[0]
+    icmd = app._export_command(indep, {n: f"/w/{n}.flac" for n in indep["gains"]}, "/w/o.wav", ir_path="/w/ir.wav")
+    ig = icmd[icmd.index("-filter_complex") + 1]
+    check("fx + bagimsiz hiz/ton: kanal basina asetrate (4 kanal), kirpma asetrate'ten once",
+          ig.count("asetrate=35280.0000,aresample=44100") == len(indep["gains"])
+          and ig.index("atrim=start=10.000") < ig.index("asetrate"), ig)
+    pitch = 2 ** (2 / 12) / 0.8
+    check("fx + bagimsiz hiz/ton: rubberband tempo=1, pitch = 2^(ton/12)/hiz, afir'den SONRA",
+          f"rubberband=tempo=1:pitch={pitch:.6f}:" in ig and ig.index("afir") < ig.index("rubberband") < ig.index("alimiter")
+          and "formant=preserved" in ig, ig)
+    check("fx + bagimsiz: bolge fade'i cikti suresine gore (10/0.8 = 12.5 sn)",
+          "afade=t=out:st=12.485:d=0.015" in ig, ig)
+    ivin = chk(body(fx=fxbody["fx"], room=fxbody["room"], rate=0.85, vinyl=True))[0]
+    vcmd2 = app._export_command(ivin, {n: f"/w/{n}.flac" for n in ivin["gains"]}, "/w/o.wav", ir_path="/w/ir.wav")
+    vg2 = vcmd2[vcmd2.index("-filter_complex") + 1]
+    check("fx + plak gibi: rubberband HIC yok, hiz kanal basina, yankidan once",
+          "rubberband" not in vg2 and vg2.count("asetrate=37485.0000,aresample=44100") == len(ivin["gains"])
+          and vg2.index("asetrate") < vg2.index("afir"), vg2)
+    cancel = chk(body(fx=fxbody["fx"], rate=0.8, semitones=-4))[0]    # 2^(-4/12) = 0.7937 ~ 0.8 degil: rubberband gerekir
+    check("fx: hiz ve ton birbirini goturmuyorsa rubberband var", "rubberband" in
+          app._export_command(cancel, {n: f"/w/{n}.flac" for n in cancel["gains"]}, "/w/o.wav", ir_path="/w/ir.wav")[
+              app._export_command(cancel, {n: f"/w/{n}.flac" for n in cancel["gains"]}, "/w/o.wav",
+                                  ir_path="/w/ir.wav").index("-filter_complex") + 1])
+    try:
+        app._export_command(fspec, fpaths, "/w/out.wav")
+        check("yanki icin IR yolu yoksa hata", False)
+    except ValueError:
+        check("yanki icin IR yolu yoksa hata", True)
+
+    # --- impuls yanıtı: JS portuyla örnek eşitliği (node varsa), uzunluk, enerji, PRNG
+    import array
+    import shutil
+    import subprocess
+    rand = app._fx_mulberry32(0x9E3779B1)
+    first = [rand() for _ in range(3)]
+    again = app._fx_mulberry32(0x9E3779B1)
+    check("mulberry32: [0,1) araliginda ve deterministik", all(0 <= v < 1 for v in first)
+          and first == [again() for _ in range(3)] and len(set(first)) == 3)
+    left, right = app._fx_impulse(0.5, 1.6)
+    check("IR: uzunluk 83349 (JS parmak izi)", len(left) == len(right) == 83349, str(len(left)))
+    probe = [left[i] for i in (0, 1000, 5000, 10000, 20000)]
+    expected_probe = [0.0, 0.0, -1.42528e-3, 1.29586e-3, -6.35874e-4]
+    check("IR: JS parmak izi (fx.js notundaki 5 ornek)",
+          all(abs(a - b) < 1e-7 for a, b in zip(probe, expected_probe)), str(probe))
+    energy_l = sum(float(v) ** 2 for v in left)
+    energy_r = sum(float(v) ** 2 for v in right)
+    check("IR: kanal basina birim enerji, kanallar ilintisiz", abs(energy_l - 1) < 1e-4 and abs(energy_r - 1) < 1e-4
+          and abs(sum(float(a) * float(b) for a, b in zip(left, right))) < 0.05)
+    check("IR: sure siniri (3 sn -> 3.5 sn tavani icinde)", len(app._fx_impulse(1.0, 3.0)[0]) == round(min(3.0 * 1.15 + 0.05, 3.5) * 44100))
+    wav = app._fx_impulse_wav(0.5, 1.6)
+    check("IR WAV: RIFF/WAVE, float32 (format 3), 2 kanal, 44100, boyut tutarli",
+          wav[:4] == b"RIFF" and wav[8:12] == b"WAVE" and wav[20:22] == b"\x03\x00" and wav[22:24] == b"\x02\x00"
+          and int.from_bytes(wav[24:28], "little") == 44100 and len(wav) == 44 + 8 * 83349)
+    node = shutil.which("node")
+    if node:
+        sets = ((0.5, 1.6), (0.15, 0.6), (0.7, 2.2), (1.0, 3.0), (0.0, 0.4))
+        for size, decay in sets:
+            out = pathlib.Path(tempfile.mkdtemp()) / "ir.f32"
+            run = subprocess.run([node, str(ROOT / "tests" / "ir_dump.mjs"), str(size), str(decay), str(out)],
+                                 capture_output=True, text=True)
+            ok = run.returncode == 0
+            worst = None
+            if ok:
+                js = array.array("f")
+                js.frombytes(out.read_bytes())
+                pl, pr = app._fx_impulse(size, decay)
+                n = len(pl)
+                ok = len(js) == 2 * n
+                worst = max(max(abs(a - b) for a, b in zip(js[:n], pl)), max(abs(a - b) for a, b in zip(js[n:], pr))) if ok else None
+            check(f"IR JS<->Python esitligi: boyut {size}, sure {decay}", ok and worst is not None and worst < 1e-6,
+                  f"en buyuk fark {worst}")
+    else:
+        check("IR JS<->Python esitligi (node yok, ATLANDI)", True)
+
     # --- ölçüm ayrıştırma
     m = app._VOLUMEDETECT_MAX.search("[Parsed_volumedetect_0] max_volume: -0.7 dB\nmean_volume: -17.2 dB")
     check("volumedetect ayristirma", m and m.group(1) == "-0.7")

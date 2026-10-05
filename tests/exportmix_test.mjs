@@ -7,6 +7,8 @@ import {
   errorMessage, runExport, ExportFailure, mimeFor, shareSupported, waitHint, MISC_LABEL,
 } from "../frontend/js/exportmix.js";
 import { ApiError } from "../frontend/js/api.js";
+import { PRESETS, applyPreset, effectiveGain } from "../frontend/js/mixmemory.js";
+import { normalizeRoom } from "../frontend/js/fx.js";
 
 let failed = 0;
 function check(name, ok, detail = "") {
@@ -91,6 +93,39 @@ r = buildRequest({ channels: mix(), masterPercent: 100, rate: 0.85, vinyl: true,
 check("hız/ton kutusu kapalıysa vinyl de gitmez", r.ok && !("vinyl" in r.body) && !("rate" in r.body));
 check("özet/not: '0,85x plak gibi'", /0,85x plak gibi/.test(summarize({ channels: mix(), labels: LABELS, rate: 0.85, vinyl: true, options: { useTempo: true } }))
   && tempoNote(0.85, 0, true) === "0,85x plak gibi" && tempoNote(0.85, -3, false) === "0,85x, -3 yarım ton");
+
+// --- pan / EQ / yankı (Aşama 15, 3. oturum)
+r = buildRequest({ channels: mix(), masterPercent: 100, options: {} });
+check("fx: nötr mikserde istekte fx/room YOK (eski davranış)", r.ok && !("fx" in r.body) && !("room" in r.body));
+r = buildRequest({ channels: mix({ drums: { pan: -0.5, eq: [3, 0, -2], send: 0 }, bass: { pan: 0, eq: [0, 0, 0], send: 0 } }),
+  masterPercent: 100, options: {} });
+check("fx: yalnız ayarlı kanal gider, nötr (bass) gitmez", r.ok && Object.keys(r.body.fx).join() === "drums"
+  && r.body.fx.drums.pan === -0.5 && r.body.fx.drums.eq.join() === "3,0,-2" && r.body.fx.drums.send === 0);
+check("fx: gönderim yoksa oda gitmez", r.ok && !("room" in r.body));
+r = buildRequest({ channels: mix({ guitar: { send: 0.4 } }), masterPercent: 100, options: {}, room: { size: 0.7, decay: 2.2, level: 0.8 } });
+check("fx: gönderim varsa oda gider", r.ok && r.body.fx.guitar.send === 0.4 && r.body.room.size === 0.7
+  && r.body.room.decay === 2.2 && r.body.room.level === 0.8);
+r = buildRequest({ channels: mix({ guitar: { send: 0.4 } }), masterPercent: 100, options: {} });
+check("fx: oda verilmediyse varsayılan oda", r.ok && JSON.stringify(r.body.room) === JSON.stringify(normalizeRoom(null)));
+r = buildRequest({ channels: mix({ guitar: { send: 0.4, mute: true } }), masterPercent: 100, options: {} });
+check("fx: susturulan kanalın fx'i gitmez", r.ok && !("fx" in r.body));
+r = buildRequest({ channels: mix({ vocals: { pan: 0.3, send: 0.2 }, lead: { pan: 0.4, eq: [0, 2, 0] } }, true), masterPercent: 100, options: {} });
+check("fx: açık grupta alt kanal = kendi + ana kanalın (pan toplanır, EQ toplanır, gönderim ana kanaldan)",
+  r.ok && !("vocals" in r.body.fx) && Math.abs(r.body.fx.lead.pan - 0.7) < 1e-9 && r.body.fx.lead.eq.join() === "0,2,0"
+  && r.body.fx.lead.send === 0.2 && r.body.fx.backing.pan === 0.3 && r.body.fx.backing.send === 0.2);
+const slowed = applyPreset(PRESETS.find((p) => p.id === "slowed-reverb"), ["vocals", "drums", "bass", "guitar", "piano", "other"]);
+const slowedMix = base();
+for (const [name, state] of slowed) Object.assign(slowedMix.get(name), { ...state, fader: state.fader / 100 });
+r = buildRequest({ channels: slowedMix, masterPercent: 100, rate: 0.85, vinyl: true, options: { useTempo: true },
+  room: { size: 0.7, decay: 2.2, level: 0.8 } });
+check("Slowed + reverb: 6 kanalda gönderim (vokal 0,65, diğerleri 0,5), oda, plak gibi 0,85",
+  r.ok && r.label === "Slowed + reverb" && r.body.fx.vocals.send === 0.65 && r.body.fx.drums.send === 0.5
+  && Object.keys(r.body.fx).length === 6 && r.body.room.decay === 2.2 && r.body.vinyl === true && r.body.rate === 0.85,
+  JSON.stringify(r.body));
+check("özet: pan/EQ/yankı dahil söylenir", summarize({ channels: mix({ drums: { pan: -0.5 }, bass: { eq: [3, 0, 0] }, guitar: { send: 0.3 } }),
+  labels: LABELS }) === "Tüm kanallar açık, pan, EQ ve yankı dahil");
+check("özet: yalnız yankı", summarize({ channels: mix({ guitar: { send: 0.3 } }), labels: LABELS }) === "Tüm kanallar açık, yankı dahil");
+check("özet: nötr mikserde fx notu yok", !/dahil/.test(summarize({ channels: mix(), labels: LABELS })));
 
 // --- özet
 const sum = (over, extra = {}) => summarize({ channels: mix(over, extra.expand), labels: LABELS, ...extra });

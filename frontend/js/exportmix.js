@@ -7,9 +7,9 @@
 // yoksa sunucu "ana kanalla alt parçası birlikte karıştırılamaz" diye reddeder.
 
 import {
-  PRESETS, applyPreset, snapshot, effectiveGain, validLoop,
+  PRESETS, applyPreset, snapshot, effectiveGain, effectiveFx, validLoop,
 } from "./mixmemory.js";
-import { sameFx } from "./fx.js";
+import { sameFx, isNeutralFx, normalizeRoom } from "./fx.js";
 
 export const MISC_LABEL = "Miks";            // hiçbir ön ayarla eşleşmeyen mikser
 export const MAX_GAIN = 2.0;                 // sunucu sınırı (dosya başına doğrusal kazanç)
@@ -30,6 +30,19 @@ export function leafGains(channels) {
     gains[name] = Math.round(Math.min(gain, MAX_GAIN) * 10000) / 10000;
   }
   return gains;
+}
+
+/**
+ * Duyulan yaprak kanalların pan/EQ/gönderim ayarı (EFEKTİF değer: alt kanal = kendi + ana kanalın). Yalnız nötr
+ * OLMAYANLAR: ad -> {pan, eq:[bas,orta,tiz], send}. Hiçbiri yoksa boş nesne (istekte `fx` alanı da olmaz).
+ */
+export function leafFx(channels, gains = leafGains(channels)) {
+  const fx = {};
+  for (const name of Object.keys(gains)) {
+    const own = effectiveFx(channels, name);
+    if (!isNeutralFx(own)) fx[name] = { pan: own.pan, eq: [...own.eq], send: own.send };
+  }
+  return fx;
 }
 
 function sameState(a, b) {
@@ -63,7 +76,7 @@ export function presetLabel(channels) {
  * Dönen: {ok: true, body, label} | {ok: false, problem}.
  */
 export function buildRequest({ channels, masterPercent, rate = 1, semitones = 0, vinyl = false, loop = null,
-                               options = {} }) {
+                               options = {}, room = null }) {
   const gains = leafGains(channels);
   if (!Object.keys(gains).length) {
     return { ok: false, problem: "Hiçbir kanal duyulmuyor. En az bir kanalı aç." };
@@ -78,6 +91,13 @@ export function buildRequest({ channels, masterPercent, rate = 1, semitones = 0,
     master: Math.round(master * 10000) / 10000,
     label,
   };
+  // Pan/EQ/yankı: yalnız ayarlı kanallar (nötr = eski davranış, istekte alan yok). Oda yalnız bir gönderim varsa
+  // anlamlı: sunucu yoksa IR üretmez.
+  const fx = leafFx(channels, gains);
+  if (Object.keys(fx).length) {
+    body.fx = fx;
+    if (Object.values(fx).some((item) => item.send > 0)) body.room = normalizeRoom(room);
+  }
   if (options.useTempo) {
     const r = Math.round((Number(rate) || 1) * 10000) / 10000;
     const s = vinyl ? 0 : Math.round(Number(semitones) || 0);
@@ -139,6 +159,17 @@ export function summarize({ channels, masterPercent = 100, rate = 1, semitones =
   if (!closed.length) parts.push("Tüm kanallar açık");
   const open = leaves.filter((leaf) => leaf.gain > 0);
   if (open.some((leaf) => Math.abs(leaf.gain - 1) > 0.01)) parts.push("bazı kanallar farklı seviyede");
+  const fx = Object.values(leafFx(channels, Object.fromEntries(open.map((leaf) => [leaf.name, leaf.gain]))));
+  if (fx.length) {
+    const shaped = [];
+    if (fx.some((item) => item.pan !== 0)) shaped.push("pan");
+    if (fx.some((item) => item.eq.some((gain) => gain !== 0))) shaped.push("EQ");
+    if (fx.some((item) => item.send > 0)) shaped.push("yankı");
+    if (shaped.length) {
+      const last = shaped.pop();
+      parts.push(`${shaped.length ? `${shaped.join(", ")} ve ` : ""}${last} dahil`);
+    }
+  }
   if (Math.round(Number(masterPercent)) !== 100) parts.push(`ana ses %${Math.round(Number(masterPercent))}`);
 
   if (options.useTempo) {
