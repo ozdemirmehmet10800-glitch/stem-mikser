@@ -59,7 +59,7 @@ import {
   formatDuration, durationWarning, cardView,
 } from "./share.js";
 import { Collection, safeStorage } from "./collection.js";
-import { filterSongs, isFiltering } from "./songfilter.js";
+import { filterSongs, isFiltering, separatorIndex } from "./songfilter.js";
 
 const POLL_MS = 3000;
 
@@ -202,6 +202,48 @@ let librarySongs = [];
 const collection = new Collection(safeStorage().storage);
 const libraryFilter = { query: "", fav: false, tag: null };
 let visibleSongs = [];          // süzme sonrası görünen liste (seçim, "Tümünü seç" ve boş durum buna bakar)
+
+const STAR_PATH = "M12 3.6l2.5 5.4 5.9.7-4.4 4 1.2 5.8L12 16.5 6.8 19.5 8 13.7l-4.4-4 5.9-.7z";
+
+function collectionError(result) {
+  if (result && result.error === "readonly") return "Favori/etiket verisi daha yeni bir sürümden; uygulamayı yenile.";
+  if (result && result.error === "save") return "Kaydedilemedi (telefonda depolama dolu olabilir). Değişiklik geri alındı.";
+  if (result && result.error === "exists") return "Bu adda bir etiket zaten var.";
+  if (result && result.error === "limit") return "En çok 60 etiket olabilir.";
+  return "İşlem yapılamadı.";
+}
+
+function toggleFavorite(id) {
+  const result = collection.toggleFav(id);
+  if (!result.ok) showMessage(el("library-message"), collectionError(result));
+  // ★ süzmesi açıkken son favori kalkarsa süzme de kalksın (boş liste ve kaybolan çip kalmasın)
+  if (libraryFilter.fav && !collection.favCount()) libraryFilter.fav = false;
+  renderLibrary(librarySongs);
+}
+
+// Süzme çipleri: ★ Favoriler (favori varsa ya da süzme açıksa). Tek satır, yalnız çip varsa görünür.
+function renderFilterChips() {
+  const box = el("library-filters");
+  if (!box) return;
+  const chips = [];
+  const chip = (label, pressed, onClick) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "lib-chip";
+    button.textContent = label;
+    button.setAttribute("aria-pressed", String(pressed));
+    button.addEventListener("click", onClick);
+    chips.push(button);
+  };
+  if (collection.favCount() || libraryFilter.fav) {
+    chip("★ Favoriler", libraryFilter.fav, () => {
+      libraryFilter.fav = !libraryFilter.fav;
+      renderLibrary(librarySongs);
+    });
+  }
+  box.replaceChildren(...chips);
+  box.hidden = !chips.length;
+}
 
 function libraryContext() {
   return {
@@ -485,6 +527,7 @@ function renderLibrary(songs) {
   }
   list.classList.toggle("select-mode", selectMode);
   syncSelectBar();
+  renderFilterChips();
 
   // Çevrimdışı işareti ÇEVRİMİÇİYKEN HİÇ HESAPLANMIYOR: online'ken her şarkı
   // açılabilir, satır başına indeks okumaya gerek yok. Çevrimdışıyken de
@@ -504,9 +547,11 @@ function renderLibrary(songs) {
     empty.hidden = false;
     return;
   }
-  for (const song of visibleSongs) {
+  const ctx = libraryContext();
+  const separator = separatorIndex(visibleSongs, ctx.isFav);
+  for (const [index, song] of visibleSongs.entries()) {
     const item = document.createElement("li");
-    item.className = "song-row";
+    item.className = "song-row" + (index === separator ? " after-favs" : "");
     item.dataset.id = song.id;
     const picked = selectedIds.has(song.id);
     item.classList.toggle("selected", picked);
@@ -555,6 +600,22 @@ function renderLibrary(songs) {
     }
 
     item.append(thumb, info);
+
+    // Favori yıldızı: dokunmak şarkıyı AÇMAZ, uzun basmayı başlatmaz (pointerdown ve click satıra yükselmez).
+    const star = document.createElement("button");
+    star.type = "button";
+    star.className = "song-star";
+    const fav = collection.isFav(song.id);
+    star.setAttribute("aria-pressed", String(fav));
+    star.setAttribute("aria-label", fav ? "Favoriden çıkar" : "Favoriye ekle");
+    star.title = fav ? "Favoriden çıkar" : "Favoriye ekle";
+    star.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${STAR_PATH}"/></svg>`;
+    star.addEventListener("pointerdown", (event) => event.stopPropagation());
+    star.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleFavorite(song.id);
+    });
+    item.append(star);
 
     // Çevrimdışıyken: cihazda sesi olan şarkı normal, olmayan SOLUK.
     const offline = offlineNow;
