@@ -2297,6 +2297,7 @@ lyricsScreen = new LyricsScreen({
     root: el("lyrics-full"), media: el("lf-media"), flow: el("lf-flow"), pulse: el("lf-pulse"),
     track: el("lf-track"), stage: el("lf-stage"), title: el("lf-title"),
     closeBtn: el("lf-close"), playBtn: el("lf-play"), settingsBtn: el("lf-settings"),
+    followBtn: el("lf-follow"),
   },
   doc: document, win: window,
   wakeLock, keepAwake: () => engine.playing,

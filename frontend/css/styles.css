@@ -1029,13 +1029,16 @@ input[type="range"]::-moz-range-thumb {
 .lf-btn svg { width: 22px; height: 22px; fill: currentColor; }
 .lf-btn:focus-visible, .lf-play:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-.lf-stage { position: relative; z-index: 2; flex: 1; min-height: 0; overflow: hidden; }
+/* Tarayıcının kendi kaydırması: parmakla yukarı/aşağı; otomatik takip scrollTo ile. */
+.lf-stage {
+  position: relative; z-index: 2; flex: 1; min-height: 0;
+  overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
+  touch-action: pan-y; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+}
+.lf-stage::-webkit-scrollbar { display: none; }
 .lf-track {
   list-style: none; margin: 0; padding: 0; position: relative;
-  transition: transform 0.6s cubic-bezier(0.22, 0.8, 0.3, 1);
-  will-change: transform;
 }
-.lf-track.instant { transition: none; }
 .lf-track:lang(ja), .lf-line:lang(ja) {
   font-family: system-ui, -apple-system, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic",
     "Meiryo", "Noto Sans JP", "Noto Sans CJK JP", "Segoe UI", Roboto, sans-serif;
@@ -1099,3 +1102,16 @@ input[type="range"]::-moz-range-thumb {
 }
 .lyrics-full.has-media .lf-scrim { background: rgba(4, 6, 10, 0.7); }
 .lyrics-full.has-media .lf-line { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85), 0 2px 18px rgba(0, 0, 0, 0.75); }
+
+/* kaydırma (gezinme) kipi: o anki satır vurgulu kalır, ötekiler okunur */
+.lyrics-full.browsing .lf-line { opacity: 0.5; transform: scale(0.92); pointer-events: auto; }
+.lyrics-full.browsing .lf-line.cur { opacity: 1; transform: scale(1); }
+.lyrics-full.browsing .lf-line.low { opacity: 0.32; }
+.lyrics-full.browsing .lf-line.low.cur { opacity: 0.7; }
+.lf-follow {
+  position: absolute; z-index: 4; left: 50%; bottom: calc(86px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%); padding: 9px 18px; min-height: 40px; border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.3); background: rgba(20, 24, 31, 0.9); color: #fff;
+  font: inherit; font-size: 14px; cursor: pointer;
+}
+.lf-follow[hidden] { display: none; }

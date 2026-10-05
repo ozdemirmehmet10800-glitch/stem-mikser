@@ -749,7 +749,7 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      sözü eski yolla üretilmişti, yeniden hizalanmalı (kullanıcı onayıyla). Sınırlar: konuşma/rap bölümlerinde Whisper zayıf, o satırlar düşük güven kalır (elle düzelt).
      Arayüz: eşleşme notları, soluk düşük güvenli satırlar, "Zamanı düzelt" kipi (dokunma = satır başı = konum - 0,25 sn), elle satırlar `•` ile işaretli ve yeniden hizalamada metne göre korunur.
 
-11. [ ] **Aşama 13 - tam ekran sözler: YAPILDI (2026-10-05), SW v38, telefonda doğrulanmadı.** Yalnız arayüz. `lyricsscreen.js` (ekran; satır bulma `lyrics.js`'ten yeniden kullanıldı),
+11. [x] **Aşama 13 - tam ekran sözler: YAPILDI (2026-10-05), SW v38 telefonda doğrulandı; v39: sahne tarayıcının kendi kaydırmasına geçti (parmakla kaydırma, touch/wheel ile takip durur, "Şimdiye dön", dokunup atlayınca takip döner).** Yalnız arayüz. `lyricsscreen.js` (ekran; satır bulma `lyrics.js`'ten yeniden kullanıldı),
    `beatpulse.js` (kick'ten vuruş çıkarma, BeatTracker, ızgara yedeği, `stem-mikser.kicks.<id>` önbelleği), `bgstore.js` (özel resim/video yalnız IndexedDB). Arka plan: sade / akan renkler /
    vuruşa nabız / ikisi / kendi dosyam (200 MB üstü uyarı); tek ayar `settings.lyricsBg`, ⚙ ekrandaki panelden ve Ayarlar'dan seçilir. Yalnız transform+opacity; ekran kapalıyken ya da uygulama
    arka plandayken her şey durur (Wake Lock dahil). Testler: beatpulse_test, lyricsscreen_test (sahte DOM, aç/kapa sızıntısı), engine_leak_test'e ekran bölümü. Hiza testi bu turda yeniden koşulmadı.

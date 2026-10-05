@@ -44,7 +44,7 @@ const baseListeners = () => live.listeners;
 let env = makeEnv();
 let { screen, calls } = makeScreen(env);
 const startListeners = baseListeners();
-check("kalıcı dinleyiciler 4 (iz, oynat, kapat, ayar)", startListeners === 4, String(startListeners));
+check("kalıcı dinleyiciler 7 (iz, oynat, kapat, ayar, wheel, touchmove, şimdiye dön)", startListeners === 7, String(startListeners));
 screen.open({ lines: lines(), lang: "tr", title: "Sentetik", mode: "plain", time: 30, playing: true });
 check("açılınca görünür, satırlar kurulur", env.ui.root.hidden === false && env.ui.track.children.length === 20);
 check("başlık ve dil", env.ui.title.textContent === "Sentetik" && env.ui.track.lang === "tr");
@@ -56,23 +56,25 @@ check("yanındakiler d1, bir ötesi d2", env.ui.track.children[5].has("d1") && e
   && env.ui.track.children[4].has("d2") && env.ui.track.children[8].has("d2") && !env.ui.track.children[3].has("d2"));
 check("pencere dışı satırda sınıf yok", [0, 1, 2, 3, 9, 10, 19].every((i) => ![...env.ui.track.children[i]._classes].some((c) => ["cur", "d1", "d2", "next"].includes(c))));
 check("düşük güvenli satır işaretli (low)", env.ui.track.children[7].has("low") && !env.ui.track.children[6].has("low"));
-check("iz ortalandı: translate = -(satır merkezi - sahne merkezi)", env.ui.track.style.transform === "translate3d(0, -25.0px, 0)", env.ui.track.style.transform);
-check("açılış anında 'instant' sonra kalkar", env.ui.track.has("instant") && (env.win.flushFrames(), !env.ui.track.has("instant")));
+check("satır sahnenin ortasına kaydırıldı (scrollTo: merkez - sahne merkezi)", env.ui.stage.scrollTop === 25, String(env.ui.stage.scrollTop));
+check("açılışta anında (auto), sonra yumuşak", env.ui.stage.scrolls[0].behavior === "auto");
+env.win.flushFrames();
+check("ilk/son satır ortalanabilsin diye iz dolgusu", env.ui.track.style.paddingTop === "300px" && env.ui.track.style.paddingBottom === "300px");
 
 // satır değişimi
 screen.tick(34, false);
 check("satır değişince cur taşınır", env.ui.track.children[7].has("cur") && !env.ui.track.children[6].has("cur") && env.ui.track.children[6].has("d1"));
 check("eski pencerenin dışına düşen satırın sınıfı temizlenir", ["cur", "d1", "d2", "next"].every((c) => !env.ui.track.children[4].has(c)));
-check("iz bir satır kayar", env.ui.track.style.transform === "translate3d(0, -75.0px, 0)", env.ui.track.style.transform);
+check("bir satır kayar, yumuşak", env.ui.stage.scrollTop === 75 && env.ui.stage.scrolls.at(-1).behavior === "smooth", String(env.ui.stage.scrollTop));
 
 // aynı satırda DOM'a dokunulmaz
 let ops = 0;
 const probe = env.ui.track.children[7];
 const addOrig = probe.classList.add;
 probe.classList.add = (...a) => { ops += 1; return addOrig(...a); };
-const trackBefore = env.ui.track.style.transform;
+const scrollsBefore = env.ui.stage.scrolls.length;
 for (let t = 34; t < 35.5; t += 0.016) screen.tick(t, false);
-check("aynı satırda kare başı DOM işi yok", ops === 0 && env.ui.track.style.transform === trackBefore);
+check("aynı satırda kare başı DOM/kaydırma işi yok", ops === 0 && env.ui.stage.scrolls.length === scrollsBefore);
 probe.classList.add = addOrig;
 
 // ara müzik: son satırdan sonra 3+ sn
@@ -80,6 +82,26 @@ screen.tick(5 + 19 * 4 + 3 + 3.5, false);
 check("ara müzik/son: cur yok, ortada sıradaki/son satır 'next'", !env.ui.track.children.some((c) => c.has("cur")) && env.ui.track.children[19].has("next"));
 screen.tick(1, false);
 check("ilk satırdan önce: ilk satır 'next'", env.ui.track.children[0].has("next") && !env.ui.track.children.some((c) => c.has("cur")));
+
+// kullanıcı kaydırması
+screen.tick(34, false);
+const scrollsA = env.ui.stage.scrolls.length;
+env.ui.stage.fire("scroll");
+check("scroll olayı kullanıcı sayılmaz (yalnız touch/wheel)", env.ui.followBtn.hidden === true && !env.ui.root.has("browsing"));
+env.ui.stage.fire("touchmove");
+check("touchmove: takip durur, 'Şimdiye dön' çıkar, gezinme kipi", env.ui.followBtn.hidden === false && env.ui.root.has("browsing"));
+screen.tick(38.1, false);
+check("kaydırırken vurgu satırı güncellenir ama sahne KAYDIRILMAZ", env.ui.track.children[8].has("cur") && env.ui.stage.scrolls.length === scrollsA);
+env.ui.stage.fire("wheel");
+check("wheel de aynı (ikinci kez bir şey değişmez)", env.ui.followBtn.hidden === false);
+env.ui.followBtn.fire("click");
+check("'Şimdiye dön': takip yeniden, düğme gizli, o anki satıra kaydırıldı",
+  env.ui.followBtn.hidden === true && !env.ui.root.has("browsing") && env.ui.stage.scrollTop === 125,
+  String(env.ui.stage.scrollTop));
+env.ui.stage.fire("touchmove");
+env.ui.track.fire("click", { target: env.ui.track.children[9] });
+check("kaydırma sonrası satıra dokununca takip yeniden başlar", env.ui.followBtn.hidden === true && !env.ui.root.has("browsing"));
+calls.seek.length = 0;
 
 // dokunma
 env.ui.track.fire("click", { target: env.ui.track.children[9] });

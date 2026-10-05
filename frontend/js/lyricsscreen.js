@@ -2,9 +2,14 @@
 // beatpulse.js'ten GELİR; burada yalnız ekranın DOM yaşam döngüsü var.
 //
 // PERFORMANS KURALLARI (ses motoru takılmasın):
-//  - Hareket eden her şey yalnız transform + opacity (kompozitör). Satır değişimi: iz
-//    (track) tek translate3d, satırlar yalnız opacity/transform geçişi. Hareketli öğede
-//    blur, canvas piksel işleme, kare başı yeniden boyama YOK.
+//  - Hareket eden her şey yalnız transform + opacity (kompozitör). Sahne TARAYICININ KENDİ
+//    kaydırması (overflow-y + scrollTo): kare başı konum hesabı YOK, yalnız satır değişince
+//    tek scrollTo. Satırlar yalnız opacity/transform geçişi. Hareketli öğede blur, canvas
+//    piksel işleme, kare başı yeniden boyama YOK.
+//  - Kullanıcı kaydırması touch/wheel olaylarından anlaşılır (scroll olayından DEĞİL; otomatik
+//    takibin kendi scrollTo'su kullanıcı sanılmasın). Kaydırınca takip durur, "Şimdiye dön"
+//    çıkar; dokunup atlayınca ya da düğmeyle takip yeniden başlar. Parmak kaydıysa tarayıcı
+//    click üretmez, yani kaydırma "dokun → atla" sayılmaz.
 //  - DOM'a yalnız satır DEĞİŞİNCE dokunulur (kare başı tick: ikili arama + karşılaştırma).
 //  - Ekran kapalı ya da uygulama arka plandayken hiçbir şey çalışmaz: tick erken döner,
 //    CSS animasyonlar `paused` sınıfıyla durur, nabız animasyonları iptal, video durur.
@@ -54,6 +59,9 @@ export class LyricsScreen {
     this.mediaEl = null;
     this.mediaRevoke = null;
     this.instantFrame = 0;
+    this.instant = false;
+    this.following = true;
+    this.padded = 0;
     this.lastTime = 0;
 
     // Kalıcı dinleyiciler (ui düğümleri ömür boyu aynı): BİR kez.
@@ -61,6 +69,9 @@ export class LyricsScreen {
     ui.playBtn.addEventListener("click", this.#onPlay);
     ui.closeBtn.addEventListener("click", this.#onCloseClick);
     ui.settingsBtn.addEventListener("click", this.#onSettingsClick);
+    ui.stage.addEventListener("wheel", this.#onUserScroll, { passive: true });
+    ui.stage.addEventListener("touchmove", this.#onUserScroll, { passive: true });
+    if (ui.followBtn) ui.followBtn.addEventListener("click", this.#onFollowClick);
   }
 
   // ------------------------------------------------------------ yaşam döngüsü
@@ -74,6 +85,9 @@ export class LyricsScreen {
     this.index = -2;
     this.center = -2;
     this.lastTime = time;
+    this.following = true;
+    this.padded = 0;
+    this.#showFollowing();
     this.ui.title.textContent = title;
     this.#buildLines(lang);
     this.ui.root.hidden = false;
@@ -85,13 +99,13 @@ export class LyricsScreen {
     this.doc.addEventListener("visibilitychange", this.#onVisibility);
     this.win.addEventListener("resize", this.#onResize);
     if (this.wakeLock) this.wakeLock.request();
-    // İlk yerleşim anında (kayma yok), sonra geçişler açılır.
-    this.ui.track.classList.add("instant");
+    // İlk yerleşim anında (kayma yok), sonra yumuşak kaydırma açılır.
+    this.instant = true;
     this.tick(time, true);
     this.instantFrame = this.win.requestAnimationFrame(() => {
       this.instantFrame = this.win.requestAnimationFrame(() => {
         this.instantFrame = 0;
-        this.ui.track.classList.remove("instant");
+        this.instant = false;
       });
     });
   }
@@ -109,9 +123,10 @@ export class LyricsScreen {
     this.#cancelAnims();
     this.#clearMedia();
     this.ui.track.textContent = "";
-    this.ui.track.classList.remove("instant");
+    this.instant = false;
     this.ui.root.hidden = true;
-    this.ui.root.classList.remove("paused", "playing", "has-media");
+    this.ui.root.classList.remove("paused", "playing", "has-media", "browsing");
+    if (this.ui.followBtn) this.ui.followBtn.hidden = true;
     this.ui.flow.hidden = true;
     this.ui.pulse.hidden = true;
     this.lines = [];
@@ -183,9 +198,33 @@ export class LyricsScreen {
     this.lines = lines;
     this.index = -2;
     this.center = -2;
+    this.following = true;
+    this.#showFollowing();
     this.#buildLines(lang);
+    this.instant = true;
     this.tick(this.lastTime, true);
+    this.instant = false;
   }
+
+  /** "Şimdiye dön" / satıra dokunma: takip yeniden başlar ve o anki satıra kayar. */
+  resumeFollow() {
+    this.following = true;
+    this.#showFollowing();
+    if (this.isOpen) this.#position();
+  }
+
+  #showFollowing() {
+    this.ui.root.classList.toggle("browsing", !this.following);
+    if (this.ui.followBtn) this.ui.followBtn.hidden = this.following;
+  }
+
+  #onUserScroll = () => {
+    if (!this.following) return;
+    this.following = false;
+    this.#showFollowing();
+  };
+
+  #onFollowClick = () => this.resumeFollow();
 
   // ----------------------------------------------------------- görünürlük
 
@@ -212,6 +251,7 @@ export class LyricsScreen {
   };
 
   #onResize = () => {
+    this.padded = 0;
     if (this.isOpen) this.#position();
   };
 
@@ -252,15 +292,24 @@ export class LyricsScreen {
     }
     this.index = index;
     this.center = center;
-    this.#position();
+    if (this.following) this.#position();
   }
 
+  // Tarayıcının kendi kaydırması: satır değişince TEK scrollTo (kare başı hesap yok).
   #position() {
     const item = this.center >= 0 ? this.ui.track.children[this.center] : null;
     const stageHeight = this.ui.stage.clientHeight;
     if (!item || !(stageHeight > 0)) return;
-    const y = item.offsetTop + item.offsetHeight / 2 - stageHeight / 2;
-    this.ui.track.style.transform = `translate3d(0, ${(-y).toFixed(1)}px, 0)`;
+    if (this.padded !== stageHeight) {
+      // ilk ve son satır da ortalanabilsin
+      this.ui.track.style.paddingTop = `${Math.round(stageHeight / 2)}px`;
+      this.ui.track.style.paddingBottom = `${Math.round(stageHeight / 2)}px`;
+      this.padded = stageHeight;
+    }
+    const top = Math.max(0, item.offsetTop + item.offsetHeight / 2 - stageHeight / 2);
+    if (Math.abs(this.ui.stage.scrollTop - top) < 2) return;
+    const smooth = !this.instant && !this.reducedMotion();
+    this.ui.stage.scrollTo({ top, behavior: smooth ? "smooth" : "auto" });
   }
 
   #pulse(beatIndex) {
@@ -308,7 +357,11 @@ export class LyricsScreen {
     const item = event.target && event.target.closest ? event.target.closest(".lf-line") : null;
     if (!item) return;
     const index = Number(item.dataset.i);
-    if (Number.isInteger(index) && this.lines[index]) this.onSeek(index);
+    if (Number.isInteger(index) && this.lines[index]) {
+      this.following = true;                 // atlayınca takip yeniden başlar
+      this.#showFollowing();
+      this.onSeek(index);
+    }
   };
 
   #onPlay = () => this.onTogglePlay();

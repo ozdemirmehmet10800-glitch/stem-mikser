@@ -175,6 +175,23 @@ node tests\engine_leak_test.mjs
 Sahte AudioContext bağlı düğümleri sayıyor: 30 açılıştan sonra yalnız güncel
 şarkının 6 gain'i bağlı kalmalı. Düzeltme yokken 180/360 kalıyordu.
 
+**Dışa aktarma arayüzü mantığı (istek gövdesi, ön ayar adı, özet, hata mesajları, yoklama):**
+
+```powershell
+node tests\exportmix_test.mjs
+```
+
+**Tam ekran sözler (vuruş çıkarma, izleyici, arka plan önbelleği; ekranın yaşam döngüsü,
+kaydırma/takip, nabız, görünürlükte durma ve "aç/kapa iz bırakmaz" - sahte DOM):**
+
+```powershell
+node testseatpulse_test.mjs
+node tests\lyricsscreen_test.mjs
+```
+
+`engine_leak_test.mjs` ayrıca ekranı 60 kez açıp kapayarak ses düğümü, dinleyici, animasyon
+ve Wake Lock sızıntısı olmadığını denetler.
+
 **Akor mantığının yerel testi (Modal'a bağlanmaz, ücretsiz, saniyeler):**
 
 ```powershell

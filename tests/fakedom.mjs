@@ -82,11 +82,15 @@ export function makeEnv(visibility = "visible") {
   };
   const ui = {
     root: new FakeEl(), bg: new FakeEl(), media: new FakeEl(), flow: new FakeEl(), pulse: new FakeEl(),
-    track: new FakeEl("ul"), stage: new FakeEl(), title: new FakeEl("span"),
+    track: new FakeEl("ul"), stage: new FakeEl(), title: new FakeEl("span"), followBtn: new FakeEl("button"),
     closeBtn: new FakeEl("button"), playBtn: new FakeEl("button"), settingsBtn: new FakeEl("button"),
   };
   ui.root.hidden = true;
   ui.stage.clientHeight = 600;
+  ui.stage.scrollTop = 0;
+  ui.stage.scrolls = [];
+  ui.stage.scrollTo = (opts) => { ui.stage.scrolls.push(opts); ui.stage.scrollTop = opts.top; };
+  ui.followBtn.hidden = true;
   return { doc, win, ui };
 }
 
