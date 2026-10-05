@@ -45,6 +45,7 @@ import {
 import { getBackground, putBackground, clearBackground } from "./bgstore.js";
 import { MediaBridge } from "./media.js";
 import { badgeOf, upgradeOf, describeMethod, upgradeConfirmText } from "./quality.js";
+import { versionLabel } from "./swversion.js";
 import { WakeLock } from "./wakelock.js";
 import { StemCache, cacheTag } from "./stemcache.js";
 import { Metronome, SUBDIVISIONS } from "./metronome.js";
@@ -608,7 +609,10 @@ function renderLibrary(songs) {
     info.className = "song-info";
     const name = document.createElement("div");
     name.className = "song-name";
-    name.textContent = song.title || song.id.slice(0, 12);
+    const title = document.createElement("span");
+    title.className = "song-title";
+    title.textContent = song.title || song.id.slice(0, 12);
+    name.append(title);
     // Hangi yöntemle ayrıldığı kitaplıkta görünsün: Hi-Fi v2 / Hi-Fi (v1) / Standart (quality.js; yalnız biten şarkıda).
     const badge = badgeOf(song);
     if (badge) {
@@ -4204,7 +4208,19 @@ on("lyrics-text", "input", updateLyricsCount);
 
 // ---------------------------------------------------------------- olaylar
 
+// Ayarlar: çalışan service worker'ın sürümü ("Sürüm: SW vNN").
+async function refreshSwVersion() {
+  const node = el("sw-version");
+  if (!node) return;
+  const sw = "serviceWorker" in navigator ? navigator.serviceWorker : null;
+  node.textContent = await versionLabel({
+    controller: sw ? sw.controller : null,
+    cacheKeys: () => (typeof caches !== "undefined" ? caches.keys() : Promise.resolve([])),
+  });
+}
+
 on("open-settings", "click", () => {
+  refreshSwVersion();
   refreshStemCacheState();
   refreshCollectionState();
   collectionMessage("");

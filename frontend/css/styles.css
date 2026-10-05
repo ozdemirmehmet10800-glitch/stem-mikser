@@ -301,10 +301,13 @@ html, body {
 .song-thumb.busy { background: var(--panel-2); }
 
 .song-info { min-width: 0; flex: 1; }
+/* Başlık kendi içinde kısalır (…), rozet HER ZAMAN görünür: eskiden rozet başlığın SONUNA eklenip aynı kutuda kırpılıyordu
+   (uzun başlıklı şarkıda "Hi-Fi v2" görünmüyordu). */
 .song-name {
   font-size: 16px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center; min-width: 0;
 }
+.song-title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .song-sub { font-size: 13px; color: var(--text-faint); margin-top: 2px; }
 .song-sub.busy { color: var(--accent); }
 .song-sub.error { color: var(--danger); }
@@ -924,7 +927,7 @@ input[type="range"]::-moz-range-thumb {
   padding: 10px 12px; font: inherit; min-height: 44px;
 }
 .quality-tag {
-  display: inline-block; margin-left: 8px; padding: 1px 7px;
+  display: inline-block; flex: none; margin-left: 8px; padding: 1px 7px;
   border-radius: 999px; font-size: 10px; font-weight: 700;
   letter-spacing: 0.02em; vertical-align: middle;
 }

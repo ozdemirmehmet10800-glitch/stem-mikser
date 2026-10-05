@@ -9,7 +9,7 @@
 // yeni worker beklemeden devralıyor (skipWaiting + clients.claim), yoksa
 // GitHub Pages'e atılan bir düzeltme kullanıcıya günlerce ulaşmayabiliyor.
 
-const VERSION = "v54";
+const VERSION = "v55";
 const CACHE = `stem-mikser-${VERSION}`;
 // Kabuk cache'lerinin adı (stem-mikser-v<sayı>). Eski sürümler YALNIZ bu kalıpla silinir: uygulamanın kendi cache'leri
 // (stemcache.js: stem-mikser-stems-v1 = çevrimdışı şarkılar; paylaşılan dosya: stem-mikser-share-v1) farklı adlı ve
@@ -56,6 +56,7 @@ const SHELL = [
   "./js/songfilter.js",
   "./js/playlist.js",
   "./js/quality.js",
+  "./js/swversion.js",
   "./js/metronome.js",
   "./js/chords.js",
   "./js/settings.js",
@@ -113,8 +114,12 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// Ayarlardaki "önbelleği temizle" düğmesi buraya mesaj atıyor.
+// Ayarlardaki "önbelleği temizle" düğmesi buraya mesaj atıyor. "surum": Ayarlar'daki "Sürüm: SW vNN" satırı çalışan sürümü sorar.
 self.addEventListener("message", (event) => {
+  if (event.data === "surum" && event.ports && event.ports[0]) {
+    event.ports[0].postMessage(VERSION);
+    return;
+  }
   if (event.data === "temizle") {
     event.waitUntil(
       caches
