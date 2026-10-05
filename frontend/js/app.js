@@ -2269,6 +2269,9 @@ on("settings-form", "submit", (event) => {
   });
   api = new Api(settings);
   showMessage(el("settings-message"), "Kaydedildi.", "ok");
+  // Kullanıcı eylemi sonrası yeniden iste: ilk açılışta reddedilen izin Chrome'un
+  // etkileşim ölçütüyle sonradan verilebiliyor. Sonuç tanı satırında.
+  stemCache.requestPersistence().then(() => refreshAudioDiag());
   refreshLibrary();
 });
 
@@ -2510,6 +2513,7 @@ function diagText() {
   const info = engine.diagnostics();
   info.deviceMemoryGb = navigator.deviceMemory || 0;
   info.jsHeapBytes = performance.memory ? performance.memory.usedJSHeapSize : 0;
+  info.persisted = stemCache.persisted;
   return summarize(info, diag);
 }
 

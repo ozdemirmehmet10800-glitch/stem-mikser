@@ -72,6 +72,9 @@ export function summarize(info, diag) {
   bits.push(`düğüm ${info.liveGains} (yaratılan ${info.gainsCreated}, sökülen ${info.gainsReleased})`);
   if (info.deviceMemoryGb) bits.push(`cihaz ${info.deviceMemoryGb} GB`);
   if (info.jsHeapBytes) bits.push(`JS ${formatMb(info.jsHeapBytes)}`);
+  // Tarayıcı depolama temizliğinde ayarları (API adresi, token) silebilir; "hayır"
+  // ise Chrome kalıcılık izni vermemiş demektir.
+  bits.push(`kalıcı depolama: ${info.persisted === true ? "evet" : info.persisted === false ? "hayır" : "bilinmiyor"}`);
   bits.push(`hata: ${diag.countsText()}`);
   return bits.join(" · ");
 }
