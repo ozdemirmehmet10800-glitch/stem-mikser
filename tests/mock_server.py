@@ -76,7 +76,8 @@ EXPORT_PARENT = {"lead": "vocals", "backing": "vocals", "kick": "drums", "snare"
 # Soz cevirisi (Asama 14) taklidi: --translate-mode done|busy|error|refused, --translate-polls N (POST sonrasi N durum
 # sorgusu "running"), --lyrics-lang tr|en|ja (otomatik cikarmada dil). SENTETIK: "Ceviri: <metin>" / ja'da "romaji: <metin>".
 # Metne gore tutulur (gercek sunucudaki hash gibi): yeniden yapistirilan sozde degisen satir "cevrilmedi" olur.
-_translate = {"mode": "done", "polls": 0, "items": {}, "state": {}, "left": {}, "version": 0, "log": []}
+_translate = {"mode": "done", "polls": 0, "items": {}, "state": {}, "left": {}, "version": 0, "log": [], "en_pron": False}
+# --translate-en-pron: Ingilizce ceviriyle birlikte telaffuz ("pron: <metin>") da uretilsin (varsayilan: yok, yani "Okunusu ekle" denenebilir)
 
 # Stem servisini yavaslatma: telefondaki ~0.6-1.2 MB/sn'yi taklit etmek ve
 # ilerleme/duraklatma davranisini gorebilmek icin.
@@ -532,7 +533,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"state": record.get("state"), "code": record.get("code"), "message": record.get("message"),
                              "lang": doc["language"], "version": record.get("version") or _translate["version"],
                              "model": "mock", "missing": sum(1 for x in lines if x is None),
-                             "has_reading": doc["language"] == "ja", "lines": lines})
+                             "has_reading": doc["language"] == "ja" or any(x and x.get("ro") for x in lines), "lines": lines})
             return
 
         if path == "/__last_export":
@@ -824,14 +825,25 @@ class Handler(BaseHTTPRequestHandler):
         if current.get("state") == "running":
             self._json(200, {"id": song_id, "state": "running", "existing": True})
             return
-        items = {} if body.get("replace") is True else _translate["items"].get(song_id, {})
-        todo = [l for l in doc["lines"] if " ".join(l["text"].lower().split()) not in items]
+        reading = body.get("reading") is True
+        if reading and doc["language"] != "en":
+            self._json(400, {"detail": "Okunus ekleme yalniz Ingilizce icin"})
+            return
+        items = {} if body.get("replace") is True and not reading else _translate["items"].get(song_id, {})
+        if reading:
+            if not items:
+                self._json(409, {"detail": "Once ceviri gerekli"})
+                return
+            todo = [l for l in doc["lines"] if (items.get(" ".join(l["text"].lower().split())) or {}).get("tr")
+                    and not (items.get(" ".join(l["text"].lower().split())) or {}).get("ro")]
+        else:
+            todo = [l for l in doc["lines"] if " ".join(l["text"].lower().split()) not in items]
         _translate["log"].append({"song": song_id, "todo": len(todo), "replace": body.get("replace") is True})
-        if not todo and body.get("replace") is not True:
+        if not todo and (reading or body.get("replace") is not True):
             self._json(200, {"id": song_id, "state": "done", "existing": True, "missing": 0})
             return
         _translate["state"][song_id] = {"state": "running", "started": int(time.time()), "lang": doc["language"], "todo": len(todo),
-                                        "version": current.get("version")}
+                                        "version": current.get("version"), **({"mode": "reading"} if reading else {})}
         _translate["left"][song_id] = _translate["polls"]
         self._json(200, {"id": song_id, "state": "running", "lang": doc["language"], "todo": len(todo)})
 
@@ -852,12 +864,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         doc = _lyrics["docs"][song_id]
         items = _translate["items"].setdefault(song_id, {})
+        if record.get("mode") == "reading":
+            for line in doc["lines"]:
+                entry = items.get(" ".join(line["text"].lower().split()))
+                if entry and entry.get("tr") and not entry.get("ro"):
+                    entry["ro"] = f"pron: {line['text']}"
+            _translate["version"] += 1
+            _translate["state"][song_id] = {"state": "done", "lang": doc["language"], "version": _translate["version"],
+                                            "lines": len(doc["lines"]), "missing": 0}
+            return
         for line in doc["lines"]:
             key = " ".join(line["text"].lower().split())
             if key not in items or record.get("todo") is None:
                 entry = {"tr": f"Çeviri: {line['text']}"}
                 if doc["language"] == "ja":
                     entry["ro"] = f"romaji: {line['text']}"
+                elif doc["language"] == "en" and _translate["en_pron"]:
+                    entry["ro"] = f"pron: {line['text']}"
                 items[key] = entry
         _translate["version"] += 1
         _translate["state"][song_id] = {"state": "done", "lang": doc["language"], "version": _translate["version"],
@@ -958,6 +981,8 @@ def main():
                         help="POST /translate sonucu (Asama 14 taklidi)")
     parser.add_argument("--translate-polls", type=int, default=0,
                         help="POST /translate sonrasi kac durum sorgusu 'running' kalsin")
+    parser.add_argument("--translate-en-pron", action="store_true",
+                        help="Ingilizce ceviriyle birlikte telaffuz da uretilsin")
     parser.add_argument("--lyrics-lang", default="tr", choices=["tr", "en", "ja"],
                         help="otomatik soz cikarmada dil (cevirinin denenebilmesi icin)")
     parser.add_argument("--stem-delay", type=float, default=0.0,
@@ -973,6 +998,7 @@ def main():
     _lyrics["auto_lang"] = args.lyrics_lang
     _translate["mode"] = args.translate_mode
     _translate["polls"] = args.translate_polls
+    _translate["en_pron"] = args.translate_en_pron
     _export["mode"] = args.export_mode
     _export["polls"] = args.export_polls
     COLD_DELAY = args.cold

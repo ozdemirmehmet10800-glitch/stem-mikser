@@ -5533,49 +5533,156 @@ def _tr_missing(lines: list, items: dict) -> list:
     return out
 
 
-def _tr_prompt(lang: str, lines: list, indices: list, want_reading: bool, feedback: str = "") -> tuple:
-    """(sistem metni, kullanıcı metni). Tüm şarkı numaralı satırlarla BAĞLAM; yalnız `indices` istenir."""
+TRANSLATE_PRON_EXAMPLE = ("We were walking down the road", "Vi vır vokin dawn dı rod")   # SENTETİK örnek (gerçek söz değil)
+
+
+TRANSLATE_TR_LETTERS = set("abcçdefgğhıijklmnoöprsştuüvyz")
+TRANSLATE_LETTER_MAP = {"w": "v", "x": "ks", "q": "k"}
+
+
+def _tr_clean_pron(text: str) -> str:
+    """Telaffuzu YALNIZ Türk alfabesi harflerine indirger (ê -> e, w -> v, x -> ks, q -> k; rakam/noktalama atılır).
+    Boşluk, kesme işareti ve tire korunur."""
+    import unicodedata
+
+    out = []
+    for ch in unicodedata.normalize("NFC", str(text or "")):
+        low = ch.lower()
+        if low in TRANSLATE_TR_LETTERS:
+            out.append(ch)
+        elif ch.isspace() or ch in "'-":
+            out.append(" " if ch.isspace() else ch)
+        elif ch.isalpha():
+            base = unicodedata.normalize("NFKD", low)[:1]
+            base = TRANSLATE_LETTER_MAP.get(base, base)
+            if base and all(c in TRANSLATE_TR_LETTERS for c in base):
+                out.append(base.upper() if ch.isupper() else base)
+    return " ".join("".join(out).split())
+
+
+def _tr_missing_reading(lines: list, items: dict) -> list:
+    """Çevirisi var ama telaffuzu olmayan satırların (İngilizce) İLK geçtiği dizinler: "Okunuşu ekle" bunları işler."""
+    seen, out = set(), []
+    for i, text in enumerate(lines):
+        h = _tr_hash(text)
+        item = items.get(h) or {}
+        if h in seen or not item.get("tr") or item.get("pr"):
+            continue
+        seen.add(h)
+        out.append(i)
+    return out
+
+
+TRANSLATE_SRC_WORD_RE = re.compile(r"[A-Za-z]+(?:['\u2019][A-Za-z]+)*")
+TRANSLATE_PRON_STRIP_RE = re.compile(r"[,.;:!?\"()\[\]]")
+
+
+def _tr_unify_pron(lines: list, items: dict) -> int:
+    """Aynı İngilizce kelimenin telaffuzu şarkı boyunca TEK yazımda olsun. Kelime sayısı kaynakla tutan satırlarda
+    kaynak kelime -> telaffuz kelimesi eşlenir; en sık yazım (eşitlikte ilk görülen) kanonik olur ve o kelimenin
+    farklı yazıldığı satırlar düzeltilir (satır başı büyük harfi korunur). Dönen: düzeltilen kelime sayısı."""
+    seen_items, aligned, counts, order = set(), [], {}, {}
+    for text in lines:
+        item = items.get(_tr_hash(text))
+        if not item or not item.get("pr") or id(item) in seen_items:
+            continue
+        src = [w.lower() for w in TRANSLATE_SRC_WORD_RE.findall(text)]
+        words = TRANSLATE_PRON_STRIP_RE.sub(" ", item["pr"]).split()
+        if not src or len(src) != len(words):
+            continue
+        seen_items.add(id(item))
+        aligned.append((item, src, words))
+        for s_word, p_word in zip(src, words):
+            spelling = p_word.lower()
+            bucket = counts.setdefault(s_word, {})
+            bucket[spelling] = bucket.get(spelling, 0) + 1
+            order.setdefault((s_word, spelling), len(order))
+    canonical = {w: max(b, key=lambda sp: (b[sp], -order[(w, sp)])) for w, b in counts.items()}
+    changed = 0
+    for item, src, words in aligned:
+        fixed = []
+        for index, (s_word, p_word) in enumerate(zip(src, words)):
+            canon = canonical[s_word]
+            if p_word.lower() == canon:
+                fixed.append(p_word)
+                continue
+            fixed.append(canon[:1].upper() + canon[1:] if p_word[:1].isupper() and index == 0 else canon)
+            changed += 1
+        item["pr"] = " ".join(fixed)
+    return changed
+
+
+def _tr_prompt(lang: str, lines: list, indices: list, want_reading: bool, feedback: str = "",
+               reading_only: bool = False) -> tuple:
+    """(sistem metni, kullanıcı metni). Tüm şarkı numaralı satırlarla BAĞLAM; yalnız `indices` istenir.
+    want_reading: ja'da hiragana okuma (`rd`), en'de Türkçe harflerle telaffuz (`pr`). reading_only: çeviri YOK,
+    yalnız okuma/telaffuz (çevirisi olan şarkıya sonradan okunuş eklemek için)."""
     source = TRANSLATE_LANG_NAMES.get(lang, lang)
-    system = (
-        "You are a professional song-lyrics translator into Turkish. You translate ONE song, line by line.\n"
-        "Rules:\n"
-        "- Read the WHOLE song first so each line is translated in context (who speaks, tone, repeated refrains).\n"
-        "- Write natural, fluent, poetic-but-plain Turkish that conveys the MEANING. Never translate word for word: "
-        "adapt idioms and figures of speech to equivalent Turkish expressions.\n"
-        "- One output item per requested line; never merge, split, reorder, skip or add lines. Keep each line short.\n"
-        "- Identical source lines must get identical translations.\n"
-        "- Keep proper names. Interjections or vocables (ah, la la, oh) may stay as they are.\n"
-        "- Do not add explanations, numbering, quotes or notes inside the translation text.\n"
-    )
-    if want_reading:
+    if reading_only:
+        system = ("You write pronunciation guides for song lyrics for Turkish speakers. Do NOT translate. "
+                  "You process ONE song, line by line.\nRules:\n"
+                  "- One output item per requested line; never merge, split, reorder, skip or add lines.\n")
+    else:
+        system = (
+            "You are a professional song-lyrics translator into Turkish. You translate ONE song, line by line.\n"
+            "Rules:\n"
+            "- Read the WHOLE song first so each line is translated in context (who speaks, tone, repeated refrains).\n"
+            "- Write natural, fluent, poetic-but-plain Turkish that conveys the MEANING. Never translate word for word: "
+            "adapt idioms and figures of speech to equivalent Turkish expressions.\n"
+            "- One output item per requested line; never merge, split, reorder, skip or add lines. Keep each line short.\n"
+            "- Identical source lines must get identical translations.\n"
+            "- Keep proper names. Interjections or vocables (ah, la la, oh) may stay as they are.\n"
+            "- Do not add explanations, numbering, quotes or notes inside the translation text.\n"
+        )
+    fields = [] if reading_only else ['"tr": "<Turkish translation>"']
+    if want_reading and lang == "ja":
         system += (
             "- Also give, in `rd`, the reading of the line written ONLY in hiragana (katakana loanwords in hiragana too, "
             "no kanji, no romaji): the way it is actually SUNG, including poetic readings of kanji. Keep spaces between words.\n"
         )
+        fields.append('"rd": "<hiragana reading>"')
+    elif want_reading and lang == "en":
+        system += (
+            "- Also give, in `pr`, how the English line is SUNG/pronounced, written with Turkish letters only so that a "
+            f"Turkish speaker can read it aloud (example: '{TRANSLATE_PRON_EXAMPLE[0]}' -> '{TRANSLATE_PRON_EXAMPLE[1]}'). "
+            "Use ONLY letters of the Turkish alphabet (a b c ç d e f g ğ h ı i j k l m n o ö p r s ş t u ü v y z; "
+            "no w, x, q and no accents like ê or â: v for w, ks for x) and approximate English sounds "
+            "(th -> t/d/s, ng -> ng). Write exactly ONE pronunciation word per English word, so both "
+            "lines have the same number of words; keep spaces between words; no punctuation, no digits. Capitalize only "
+            "the first letter of the line. IMPORTANT: spell EVERY English word the SAME way every time it appears in the "
+            "song (same word -> same Turkish spelling), including inside refrains.\n"
+        )
+        fields.append('"pr": "<Turkish-letter pronunciation>"')
     wanted = ", ".join(str(i) for i in indices)
     numbered = "\n".join(f"{i}: {text}" for i, text in enumerate(lines))
     user = (
         f"Song language: {source}.\nFull lyrics (line number: text):\n{numbered}\n\n"
         f"Return a JSON array with exactly {len(indices)} objects, one for each of these line numbers, in this order: {wanted}.\n"
-        'Each object: {"i": <line number>, "tr": "<Turkish translation>"' + (', "rd": "<hiragana reading>"' if want_reading else "") + "}."
+        'Each object: {"i": <line number>' + "".join(", " + f for f in fields) + "}."
     )
     if feedback:
         user += f"\n\nYour previous answer was rejected: {feedback}\nFix it and answer again."
     return system, user
 
 
-def _tr_schema(count: int, want_reading: bool) -> dict:
-    props = {"i": {"type": "INTEGER"}, "tr": {"type": "STRING"}}
-    required = ["i", "tr"]
+def _tr_schema(count: int, want_reading: bool, lang: str = "ja", reading_only: bool = False) -> dict:
+    props = {"i": {"type": "INTEGER"}}
+    required = ["i"]
+    if not reading_only:
+        props["tr"] = {"type": "STRING"}
+        required.append("tr")
     if want_reading:
-        props["rd"] = {"type": "STRING"}
-        required.append("rd")
+        key = "pr" if lang == "en" else "rd"
+        props[key] = {"type": "STRING"}
+        required.append(key)
     return {"type": "ARRAY", "minItems": count, "maxItems": count,
             "items": {"type": "OBJECT", "properties": props, "required": required}}
 
 
-def _tr_parse(text: str, lines: list, indices: list, want_reading: bool) -> list:
-    """Model çıktısını doğrular. Dönen: [{i, tr, rd?}] (indices sırasında). Geçersizse TranslateInvalid."""
+def _tr_parse(text: str, lines: list, indices: list, want_reading: bool, lang: str = "ja",
+              reading_only: bool = False) -> list:
+    """Model çıktısını doğrular. Dönen: [{i, tr, rd?|pr?}] (indices sırasında; reading_only'de tr yok).
+    Geçersizse TranslateInvalid."""
     try:
         data = json.loads(text)
     except (ValueError, TypeError):
@@ -5593,17 +5700,28 @@ def _tr_parse(text: str, lines: list, indices: list, want_reading: bool) -> list
     for expected, item in zip(indices, data):
         if not isinstance(item, dict) or item.get("i") != expected:
             raise TranslateInvalid(f"{expected}. satirdan sonra siralama bozuk (i alani)")
-        tr = item.get("tr")
-        if not isinstance(tr, str) or not tr.strip():
-            raise TranslateInvalid(f"{expected}. satir bos")
-        tr = " ".join(tr.split())
         source = lines[expected]
-        if TRANSLATE_NUMBERING_RE.match(tr) and not TRANSLATE_NUMBERING_RE.match(source):
-            raise TranslateInvalid(f"{expected}. satir numarayla basliyor")
-        if len(tr) > 4 * len(source) + 40:
-            raise TranslateInvalid(f"{expected}. satir kaynaktan cok uzun")
-        entry = {"i": expected, "tr": tr}
-        if want_reading:
+        entry = {"i": expected}
+        if not reading_only:
+            tr = item.get("tr")
+            if not isinstance(tr, str) or not tr.strip():
+                raise TranslateInvalid(f"{expected}. satir bos")
+            tr = " ".join(tr.split())
+            if TRANSLATE_NUMBERING_RE.match(tr) and not TRANSLATE_NUMBERING_RE.match(source):
+                raise TranslateInvalid(f"{expected}. satir numarayla basliyor")
+            if len(tr) > 4 * len(source) + 40:
+                raise TranslateInvalid(f"{expected}. satir kaynaktan cok uzun")
+            entry["tr"] = tr
+        if want_reading and lang == "en":
+            pr = item.get("pr")
+            pr = _tr_clean_pron(pr) if isinstance(pr, str) else ""
+            if reading_only and not pr:
+                raise TranslateInvalid(f"{expected}. satirin telaffuzu bos")
+            if pr and len(pr) <= 3 * len(source) + 20 and not TRANSLATE_NUMBERING_RE.match(pr):
+                entry["pr"] = pr                           # geçersiz telaffuz yalnız o satırın okunuşunu atar
+            elif reading_only:
+                raise TranslateInvalid(f"{expected}. satirin telaffuzu gecersiz")
+        elif want_reading:
             rd = item.get("rd")
             rd = " ".join(rd.split()) if isinstance(rd, str) else ""
             if rd and not TRANSLATE_KANJI_RE.search(rd):       # kanjili okuma geçersiz: yalnız o okuma atılır
@@ -5695,16 +5813,17 @@ def _tr_call(api_key: str, models: list, system: str, user: str, schema: dict,
     raise TranslateBusy(TRANSLATE_BUSY_MESSAGE)
 
 
-def _tr_run(lang: str, lines: list, indices: list, want_reading: bool, call) -> list:
+def _tr_run(lang: str, lines: list, indices: list, want_reading: bool, call, reading_only: bool = False) -> list:
     """`indices` satırlarını çevirir. call(system, user, schema) -> metin. Önce hepsi tek istekte (geçersizse
     geri bildirimle TRANSLATE_RETRIES kez), olmazsa TRANSLATE_CHUNK'lık parçalar (her biri aynı kurallarla).
     Dönen: [{i, tr, rd?}]; olmazsa TranslateInvalid (ya da call'ın Busy/Refused/Auth'u)."""
     def attempt(part: list) -> list:
         feedback = ""
         for _ in range(TRANSLATE_RETRIES + 1):
-            system, user = _tr_prompt(lang, lines, part, want_reading, feedback)
+            system, user = _tr_prompt(lang, lines, part, want_reading, feedback, reading_only)
             try:
-                return _tr_parse(call(system, user, _tr_schema(len(part), want_reading)), lines, part, want_reading)
+                return _tr_parse(call(system, user, _tr_schema(len(part), want_reading, lang, reading_only)),
+                                 lines, part, want_reading, lang, reading_only)
             except TranslateInvalid as problem:
                 feedback = problem.message
         raise TranslateInvalid(feedback)
@@ -5907,7 +6026,16 @@ def _tr_apply(items: dict, lines: list, results: list, lang: str, katsu=None) ->
     sınırları fugashi'den, sözlüksüz Hepburn (esas; yoksa/tutmuyorsa görünümde `ro`ya düşülür)."""
     for result in results:
         text = lines[result["i"]]
+        if "tr" not in result:                                  # yalnız okunuş (çeviri korunur)
+            entry = dict(items.get(_tr_hash(text)) or {})
+            if result.get("pr"):
+                entry["pr"] = result["pr"]
+            if entry.get("tr"):
+                items[_tr_hash(text)] = entry
+            continue
         entry = {"tr": result["tr"]}
+        if lang == "en" and result.get("pr"):
+            entry["pr"] = result["pr"]
         if lang == "ja":
             if result.get("rd"):
                 entry["rd"] = result["rd"]
@@ -5926,6 +6054,10 @@ def _tr_apply(items: dict, lines: list, results: list, lang: str, katsu=None) ->
                 if rg:
                     entry["rg"] = rg
         items[_tr_hash(text)] = entry
+    if lang == "en":
+        fixed = _tr_unify_pron(lines, items)
+        if fixed:
+            print(f"[ceviri] telaffuz tutarliligi: {fixed} kelime duzeltildi")
     return items
 
 
@@ -5936,7 +6068,7 @@ def _tr_lines_view(lines: list, items: dict) -> tuple:
         item = items.get(_tr_hash(text))
         if item and item.get("tr"):
             entry = {"tr": item["tr"]}
-            romaji = item.get("rg") or item.get("ro")           # B (Gemini, söylendiği gibi) esas, A (cutlet) yedek
+            romaji = item.get("rg") or item.get("ro") or item.get("pr")   # ja: B (Gemini) esas, A (cutlet) yedek; en: telaffuz
             if romaji:
                 entry["ro"] = romaji
             view.append(entry)
@@ -5962,8 +6094,9 @@ translate_image = light_image.pip_install("cutlet==0.5.2", "fugashi==1.5.2", "un
     timeout=900,
     max_containers=2,
 )
-def translate_lyrics(song_id: str, replace: bool = False) -> dict:
-    """Sözlerin çevirisini (ve Japoncada okunuşunu) üretir/tamamlar. CPU. Sonuç `translation.json` + `status.translation`."""
+def translate_lyrics(song_id: str, replace: bool = False, mode: str = "full") -> dict:
+    """Sözlerin çevirisini (ve okunuşunu: ja hiragana->romaji, en Türkçe harfli telaffuz) üretir/tamamlar. CPU.
+    mode "reading": çeviriye DOKUNMADAN yalnız eksik telaffuzu ekler (İngilizce). Sonuç `translation.json` + `status.translation`."""
     started = time.time()
     volume.reload()
     song_dir = _song_dir(song_id)
@@ -5982,7 +6115,10 @@ def translate_lyrics(song_id: str, replace: bool = False) -> dict:
                     items = dict(old.get("items") or {})
             except (OSError, ValueError):
                 items = {}
-        todo = _tr_missing(lines, items)
+        reading_only = mode == "reading"
+        if reading_only and lang != "en":
+            raise TranslateInvalid("Okunuş ekleme yalnız İngilizce için.")
+        todo = _tr_missing_reading(lines, items) if reading_only else _tr_missing(lines, items)
         used = []
         katsu = None
         if lang == "ja":
@@ -5996,8 +6132,9 @@ def translate_lyrics(song_id: str, replace: bool = False) -> dict:
         if todo:
             key = os.environ["GEMINI_API_KEY"]
             models = _tr_models()
-            results = _tr_run(lang, lines, todo, lang == "ja",
-                              lambda system, user, schema: _tr_call(key, models, system, user, schema, used=used))
+            results = _tr_run(lang, lines, todo, lang in ("ja", "en"),
+                              lambda system, user, schema: _tr_call(key, models, system, user, schema, used=used),
+                              reading_only)
             items = _tr_apply(items, lines, results, lang, katsu)
         version = int(time.time())
         out = {"schema": 1, "lang": lang, "target": "tr", "version": version,
@@ -7115,15 +7252,19 @@ def api():
 
     @web.post("/songs/{song_id}/translate")
     async def start_translate(song_id: str, request: Request, _=auth):
-        """Sözleri Türkçeye çevirir (ve Japoncada okunuş ekler). Gövde (isteğe bağlı): {"replace": false}.
+        """Sözleri Türkçeye çevirir (ve okunuş ekler: ja romaji, en Türkçe harfli telaffuz). Gövde (isteğe bağlı):
+        {"replace": false, "reading": false}.
 
         Yalnız en/ja sözler (Türkçe 400). Çevirisi olmayan satırlar (yeni/değişen metin) çevrilir; hepsi
-        varsa yeniden iş yok (`existing`). `replace: true` hepsini baştan çevirir. Durum: GET .../translation.
+        varsa yeniden iş yok (`existing`). `replace: true` hepsini baştan çevirir. `reading: true` (yalnız en):
+        ÇEVİRİYE DOKUNMADAN çevirisi olup telaffuzu olmayan satırlara telaffuz ekler. Durum: GET .../translation.
         """
         replace = False
+        reading = False
         with contextlib.suppress(ValueError, TypeError):
             body = await request.json()
             replace = isinstance(body, dict) and body.get("replace") is True
+            reading = isinstance(body, dict) and body.get("reading") is True
         await gate.refresh(force=True)
         status = await require_status(song_id)
         if _lyrics_is_running(status):
@@ -7139,16 +7280,26 @@ def api():
             raise HTTPException(status_code=400, detail="Turkce sozler cevrilmez")
         if lang not in TRANSLATE_LANGS:
             raise HTTPException(status_code=400, detail="Bu dildeki sozler cevrilemez")
+        if reading and lang != "en":
+            raise HTTPException(status_code=400, detail="Okunus ekleme yalniz Ingilizce icin")
         if _tr_is_running(status):
             return {"id": song_id, "state": "running", "existing": True}
         existing = await read_json_file(_song_dir(song_id) / "translation.json")
-        items = dict((existing or {}).get("items") or {}) if existing and existing.get("lang") == lang and not replace else {}
-        todo = _tr_missing(lines, items)
-        if not todo and not replace:
-            return {"id": song_id, "state": "done", "existing": True, "missing": 0}
+        items = dict((existing or {}).get("items") or {}) if existing and existing.get("lang") == lang and not (replace and not reading) else {}
+        if reading:
+            if not any(item.get("tr") for item in items.values()):
+                raise HTTPException(status_code=409, detail="Once ceviri gerekli")
+            todo = _tr_missing_reading(lines, items)
+            if not todo:
+                return {"id": song_id, "state": "done", "existing": True, "missing": 0}
+        else:
+            todo = _tr_missing(lines, items)
+            if not todo and not replace:
+                return {"id": song_id, "state": "done", "existing": True, "missing": 0}
         await asyncio.to_thread(_write_status, song_id, translation={
-            "state": "running", "started": int(time.time()), "lang": lang, "todo": len(todo)})
-        call = translate_lyrics.spawn(song_id, replace)
+            "state": "running", "started": int(time.time()), "lang": lang, "todo": len(todo),
+            **({"mode": "reading"} if reading else {})})
+        call = translate_lyrics.spawn(song_id, replace, "reading") if reading else translate_lyrics.spawn(song_id, replace)
         return {"id": song_id, "state": "running", "lang": lang, "todo": len(todo), "call_id": str(call.object_id)}
 
     @web.get("/songs/{song_id}/translation")
@@ -7168,7 +7319,8 @@ def api():
         return JSONResponse(
             {"state": "running" if running else record.get("state"), "code": record.get("code"),
              "message": record.get("message"), "lang": stored.get("lang"), "version": stored.get("version"),
-             "model": stored.get("model"), "missing": missing, "has_reading": stored.get("lang") == "ja",
+             "model": stored.get("model"), "missing": missing,
+             "has_reading": stored.get("lang") == "ja" or any(x and x.get("ro") for x in view),
              "lines": view},
             headers={"Cache-Control": "private, max-age=0, must-revalidate"})
 

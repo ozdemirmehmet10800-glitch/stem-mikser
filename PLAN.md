@@ -807,6 +807,15 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      yoksa görünmez). DÜZELTME: "Tam ekran" düğmesi çevrimdışıyken pasifti (sözler cihazda olduğu halde); artık açılıyor. Mock sunucu: `--lyrics-lang`, `--translate-mode`, `--translate-polls`.
      Tarayıcıda uçtan uca denendi (mock + mobil boyut): Çevir -> yoklama -> alt satırlar, tercih açma/kapama (panel ve tam ekran birbirini izler), metin düzenleyince "Güncelle (2)" ve yalnız
      değişen satırların yenilenmesi, busy hatası + "Tekrar dene", çevrimdışı önbellekten açılış, Türkçede düğmelerin gizli olması. Node testleri + hiza testi geçti.
+   - **İNGİLİZCE OKUNUŞ (2026-10-05), SW v44, `modal deploy` yapıldı:** İngilizce şarkılarda da "Okunuş" = Türkçe harflerle yaklaşık telaffuz ("We were walking down the road" -> "Vi vır vokin dawn dı rod"
+     tarzı; istemdeki örnek SENTETİK). AYNI Gemini çağrısında `pr` alanı; Japonca (B yolu) aynen. Sunucu kuralları: istemde "kelime başına tek telaffuz kelimesi, aynı kelime şarkı boyunca aynı yazım,
+     yalnız Türk alfabesi"; `_tr_clean_pron` Türk alfabesi dışını indirger (ê->e, w->v, x->ks, q->k, rakam/noktalama atılır); `_tr_unify_pron` kelime sayısı kaynakla tutan satırlarda kaynak kelime ->
+     telaffuz eşler, en sık yazımı (eşitlikte ilk görüleni) kanonik yapar ve eski + yeni satırları buna uydurur (satır başı büyük harf korunur). Geçersiz/uzun `pr` yalnız o satırın okunuşunu atar,
+     çeviri kalır. Görünümde `ro` = ja: rg > ro(cutlet), en: pr (istemci tek alan görür). "Okunuşu ekle" = `POST /translate {reading: true}` (yalnız en; çevirisi olup telaffuzu olmayan satırlar,
+     ÇEVİRİYE DOKUNMAZ, tr korunur; çeviri yoksa 409, Japoncada 400, hepsi tamsa `existing`); `translate_lyrics(..., mode="reading")`, `status.translation.mode`. "Güncelle" yolu da yeni/değişen satırlar
+     için çeviri + telaffuzu birlikte getirir. Arayüz: mevcut "Okunuş" satırı/çipi (ro artık en'de de), çevirisi olup bazı satırlarda `ro` yoksa "Okunuşu ekle" çipi. CANLI (NEM, 39 satır): önce yalnız okunuş
+     modu (çeviri aynen kaldı, 25 sn), sonra `--replace` ile tek çağrıda çeviri+telaffuz (33 sn): 39/39 satır kelime sayısı tuttu, birden çok yazımlı kelime YOK. Testler: test_translate_gate (110),
+     test_translate_api (41), translation_test; mock sunucu `--translate-en-pron`.
    - **Sıra:** (1) backend çeviri + secret + gate/api testleri + Ado/NEM'de canlı doğrulama, (2) okunuş (cutlet) + ölçüm, (3) arayüz (panel, tam ekran, önbellek, mock) + telefon.
      ~3 oturum. **Test:** sahte HTTP ile saf işlevler (istem, doğrulama, eşleme, yeniden deneme, parçalama) `tests/test_translate_gate.py`; uçlar `test_translate_api.py`;
      mock sunucuda sentetik çeviri; GERÇEK sözler yalnız gitignore'lı `backend/lyrics_ref/` + `lyrics_out/` ile elle `modal run backend/app.py::translate_probe`

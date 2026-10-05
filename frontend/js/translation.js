@@ -12,6 +12,7 @@ export const SHOW_KEY = "stem-mikser.lyrics.show";
 export const CACHE_PREFIX = "stem-mikser.translation.";
 export const CACHE_LIMIT = 40;
 export const TRANSLATE_LANGS = ["en", "ja"];
+export const READING_LANGS = ["ja", "en"];     // ja: romaji, en: Türkçe harfli telaffuz
 export const BUSY_TEXT = "Çeviri servisi şu an meşgul, biraz sonra tekrar dene.";
 export const RUNNING_STALE_SECONDS = 900;
 
@@ -63,6 +64,17 @@ export function missingCount(lyricLines, map) {
   return missing;
 }
 
+/** Çevirisi olup okunuşu olmayan satır sayısı ("Okunuşu ekle" yalnız İngilizcede ve bunlar için). */
+export function readingMissingCount(lyricLines, map) {
+  if (!lyricLines || !map) return 0;
+  let missing = 0;
+  for (const line of lyricLines) {
+    const entry = lookup(map, line.text);
+    if (entry && !entry.ro) missing += 1;
+  }
+  return missing;
+}
+
 export function hasAnyReading(map) {
   if (!map) return false;
   for (const entry of map.values()) {
@@ -97,13 +109,14 @@ export function writeShow(storage, show) {
 }
 
 /**
- * Bir satırın alt yazıları: önce okunuş, sonra çeviri. Okunuş yalnız Japoncada; kapalıysa boş string.
+ * Bir satırın alt yazıları: önce okunuş, sonra çeviri. Okunuş Japonca (romaji) ve İngilizcede (Türkçe harfli
+ * telaffuz) var; kapalıysa boş string.
  * Dönen {ro, tr} (her biri string, boş olabilir).
  */
 export function subsFor(entry, show, lang) {
   if (!entry) return { ro: "", tr: "" };
   return {
-    ro: show.ro && lang === "ja" && entry.ro ? entry.ro : "",
+    ro: show.ro && READING_LANGS.includes(lang) && entry.ro ? entry.ro : "",
     tr: show.tr && entry.tr ? entry.tr : "",
   };
 }
@@ -145,20 +158,24 @@ export function errorMessage(error) {
 }
 
 /**
- * Söz panelindeki çeviri denetimi.
+ * Söz panelindeki çeviri denetimi. `addReading`: İngilizce çeviri var ama bazı satırların telaffuzu yok ->
+ * "Okunuşu ekle" (çeviriye dokunmadan); `readingMissing` o satır sayısı.
  *   lang: sözlerin dili, hasDoc: söz gösteriliyor mu, record: status.translation, map: eldeki çeviri (ya da null),
  *   lines: sözlerin satırları, offline, starting: istek gidiyor.
  * çıktı { kind, label, disabled, hint, note: {tone,text}|null, showTr, showRo }
  *   kind hidden | translate | update | running | retry
  */
 export function actionView({ lang, hasDoc, record, map, lines, offline = false, starting = false, nowSec = Date.now() / 1000 }) {
-  const base = { kind: "hidden", label: "", disabled: false, hint: "", note: null, showTr: false, showRo: false };
+  const base = { kind: "hidden", label: "", disabled: false, hint: "", note: null, showTr: false, showRo: false,
+    addReading: false, readingMissing: 0 };
   if (!hasDoc || !isTranslatable(lang)) return base;          // Türkçe (ve bilinmeyen dil): hiçbir şey görünmez
   const has = Boolean(map && map.size);
   const missing = missingCount(lines, map);
-  const view = { ...base, showTr: has, showRo: has && lang === "ja" && hasAnyReading(map) };
+  const readingMissing = lang === "en" ? readingMissingCount(lines, map) : 0;
+  const view = { ...base, showTr: has, showRo: has && READING_LANGS.includes(lang) && hasAnyReading(map),
+    addReading: has && readingMissing > 0, readingMissing };
   if (starting || isRunning(record, nowSec)) {
-    return { ...view, kind: "running", note: { tone: "info", text: "Çeviri hazırlanıyor… (bu ekranda kalabilirsin)" } };
+    return { ...view, kind: "running", addReading: false, note: { tone: "info", text: "Çeviri hazırlanıyor… (bu ekranda kalabilirsin)" } };
   }
   const failure = statusMessage(record);
   const hint = offline ? "İnternet yok" : "";

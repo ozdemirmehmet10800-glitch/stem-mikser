@@ -4,7 +4,7 @@
 
 import {
   normKey, isTranslatable, buildMap, lookup, missingCount, hasAnyReading, defaultShow, readShow, writeShow, SHOW_KEY,
-  subsFor, subsList, statusMessage, errorMessage, actionView, isRunning, readCache, writeCache, dropCache, CACHE_PREFIX, CACHE_LIMIT, BUSY_TEXT,
+  subsFor, subsList, statusMessage, errorMessage, actionView, isRunning, readingMissingCount, READING_LANGS, readCache, writeCache, dropCache, CACHE_PREFIX, CACHE_LIMIT, BUSY_TEXT,
 } from "../frontend/js/translation.js";
 
 let failed = 0;
@@ -52,7 +52,8 @@ check("tercih: kota dolu patlamaz", (writeShow({ setItem() { throw new Error("ko
 const both = { tr: true, ro: true };
 const entry = { tr: "Merhaba", ro: "konnichiwa" };
 check("alt yazı: ja'da okunuş + çeviri", JSON.stringify(subsFor(entry, both, "ja")) === '{"ro":"konnichiwa","tr":"Merhaba"}');
-check("alt yazı: en'de okunuş yok", subsFor(entry, both, "en").ro === "" && subsFor(entry, both, "en").tr === "Merhaba");
+check("alt yazı: en'de de okunuş (Türkçe harfli telaffuz) + çeviri", subsFor(entry, both, "en").ro === "konnichiwa" && subsFor(entry, both, "en").tr === "Merhaba");
+check("alt yazı: ja/en dışında okunuş yok", subsFor(entry, both, "tr").ro === "" && subsFor(entry, both, "de").ro === "" && READING_LANGS.join() === "ja,en");
 check("alt yazı: kapalıysa boş", subsFor(entry, { tr: false, ro: true }, "ja").tr === "" && subsFor(entry, { tr: true, ro: false }, "ja").ro === "");
 check("alt yazı: kayıt yoksa boş", subsFor(null, both, "ja").tr === "" && subsFor({ tr: "x" }, both, "ja").ro === "");
 const list = subsList(lines, map, both, "ja");
@@ -78,7 +79,7 @@ let v = actionView(base);
 check("çeviri yok: 'Çevir', aç/kapa yok", v.kind === "translate" && v.label === "Çevir" && !v.showTr && !v.showRo);
 check("çevrimdışı: 'Çevir' pasif + ipucu", actionView({ ...base, offline: true }).disabled && actionView({ ...base, offline: true }).hint === "İnternet yok");
 v = actionView({ ...base, map });
-check("kısmi: 'Güncelle (1)', çeviri anahtarı görünür", v.kind === "update" && v.label === "Güncelle (1)" && v.showTr && !v.showRo);
+check("kısmi: 'Güncelle (1)', çeviri ve (veri varsa) okunuş anahtarı görünür", v.kind === "update" && v.label === "Güncelle (1)" && v.showTr && v.showRo);
 v = actionView({ ...base, lang: "ja", map });
 check("ja + okunuş verisi: iki anahtar", v.showTr && v.showRo);
 v = actionView({ ...base, lines: lines.slice(0, 3).filter((l) => l.text !== "Line three"), map });
@@ -93,6 +94,26 @@ v = actionView({ ...base, record: { state: "error", code: "busy" } });
 check("meşgul hatası: 'Tekrar dene' + uyarı metni", v.kind === "retry" && v.label === "Tekrar dene" && v.note.text === BUSY_TEXT && v.note.tone === "warn");
 v = actionView({ ...base, record: { state: "error", code: "busy" }, map });
 check("hata + kısmi çeviri: 'Güncelle (1)'", v.label === "Güncelle (1)" && v.showTr);
+
+// --- İngilizce okunuş ("Okunuşu ekle")
+const enLines = [{ text: "Line one" }, { text: "Line two" }, { text: "Line three" }];
+const enNoRo = buildMap(enLines, [{ tr: "Bir" }, { tr: "İki" }, { tr: "Üç" }]);
+const enSome = buildMap(enLines, [{ tr: "Bir", ro: "layn van" }, { tr: "İki" }, null]);
+const enAll = buildMap(enLines, [{ tr: "Bir", ro: "a" }, { tr: "İki", ro: "b" }, { tr: "Üç", ro: "c" }]);
+check("okunuş eksik sayısı: çevirisi olup ro'su olmayan satırlar", readingMissingCount(enLines, enNoRo) === 3 && readingMissingCount(enLines, enSome) === 1 && readingMissingCount(enLines, enAll) === 0 && readingMissingCount(enLines, null) === 0);
+const enBase = { lang: "en", hasDoc: true, record: undefined, lines: enLines, offline: false, starting: false, nowSec: 5000 };
+v = actionView({ ...enBase, map: enNoRo });
+check("en: çeviri var okunuş hiç yok -> 'Okunuşu ekle' görünür, okunuş anahtarı YOK", v.addReading && v.readingMissing === 3 && !v.showRo && v.showTr && v.kind === "hidden");
+v = actionView({ ...enBase, map: enSome });
+check("en: kısmi okunuş -> anahtar ve 'Okunuşu ekle' birlikte; eksik çeviri varsa 'Güncelle'", v.showRo && v.addReading && v.readingMissing === 1 && v.kind === "update" && v.label === "Güncelle (1)");
+v = actionView({ ...enBase, map: enAll });
+check("en: hepsi tam -> 'Okunuşu ekle' yok, anahtarlar var", !v.addReading && v.showRo && v.showTr && v.kind === "hidden");
+v = actionView({ ...enBase, lang: "ja", map: enNoRo });
+check("ja: 'Okunuşu ekle' hiç görünmez (o yol çeviriyle birlikte)", !v.addReading && v.readingMissing === 0);
+v = actionView({ ...enBase, map: enNoRo, record: { state: "running", started: 4900 } });
+check("sürerken 'Okunuşu ekle' gizli", !v.addReading && v.kind === "running");
+v = actionView({ ...enBase, map: null });
+check("çeviri yokken 'Okunuşu ekle' yok ('Çevir' var; o okunuşu da getirir)", !v.addReading && v.kind === "translate");
 
 // --- önbellek
 s = store();

@@ -282,6 +282,98 @@ v, _ = app._tr_lines_view(["今日", "別", "x"], {**items, app._tr_hash("x"): {
 check("gorunum: tek 'ro' alani: rg esas, rg yoksa cutlet, hicbiri yoksa ro yok; rd/rg sizmaz",
       v[0] == {"tr": "Bugün", "ro": "Kyou"} and v[1] == {"tr": "Ayrı", "ro": "ro(別)"} and v[2] == {"tr": "X"})
 
+
+# --- Ingilizce okunus: Turkce harfli telaffuz (pr)
+sys_en, user_en = app._tr_prompt("en", LINES, [1], True)
+check("en istemi: pr kurali, tek kelime-tek kelime, ayni yazim kurali, sentetik ornek", "`pr`" in sys_en and "ONE pronunciation word per English word" in sys_en
+      and "SAME way every time" in sys_en and app.TRANSLATE_PRON_EXAMPLE[0] in sys_en and '"pr"' in user_en and '"tr"' in user_en)
+check("en istemi: ja'nin hiragana kurali YOK", "hiragana" not in sys_en and '"rd"' not in user_en)
+sys_ro, user_ro = app._tr_prompt("en", LINES, [1, 2], True, "", True)
+check("yalniz okunus istemi: ceviri istenmez", "Do NOT translate" in sys_ro and '"tr"' not in user_ro and '"pr"' in user_ro and "translator" not in sys_ro)
+sch = app._tr_schema(2, True, "en")
+check("en semasi: pr zorunlu, rd yok", "pr" in sch["items"]["required"] and "rd" not in sch["items"]["properties"] and "tr" in sch["items"]["required"])
+sch = app._tr_schema(2, True, "en", True)
+check("yalniz okunus semasi: tr yok, pr zorunlu", "tr" not in sch["items"]["properties"] and sch["items"]["required"] == ["i", "pr"])
+en_ok = app._tr_parse(json.dumps([{"i": 0, "tr": "Merhaba", "pr": "Vi vır vokin"}]), ["We were walking"], [0], True, "en")
+check("en parse: pr saklanir", en_ok == [{"i": 0, "tr": "Merhaba", "pr": "Vi vır vokin"}], str(en_ok))
+en_bad = app._tr_parse(json.dumps([{"i": 0, "tr": "Merhaba", "pr": "x" * 200}]), ["We were walking"], [0], True, "en")
+check("en parse: gecersiz (cok uzun) pr yalniz okunusu atar, ceviri kalir", en_bad == [{"i": 0, "tr": "Merhaba"}])
+check("en parse: pr yoksa ceviri kalir", app._tr_parse(json.dumps([{"i": 0, "tr": "Merhaba"}]), ["We were walking"], [0], True, "en") == [{"i": 0, "tr": "Merhaba"}])
+ro_ok = app._tr_parse(json.dumps([{"i": 1, "pr": "Vi vır"}]), LINES, [1], True, "en", True)
+check("yalniz okunus parse: tr aranmaz", ro_ok == [{"i": 1, "pr": "Vi vır"}])
+err = raises(lambda: app._tr_parse(json.dumps([{"i": 1}]), LINES, [1], True, "en", True), app.TranslateInvalid)
+check("yalniz okunus parse: pr yoksa gecersiz (yeniden denenir)", isinstance(err, app.TranslateInvalid))
+
+# --- yalniz Turk alfabesi
+check("telaffuz temizligi: ê -> e, w -> v, x -> ks, rakam/noktalama atilir", app._tr_clean_pron("Forêvır, wan 2 ekxit!") == "Forevır van ekksit", app._tr_clean_pron("Forêvır, wan 2 ekxit!"))
+check("telaffuz temizligi: Turk harfleri aynen", app._tr_clean_pron("Nevır kerd vat şey çok ğü") == "Nevır kerd vat şey çok ğü")
+check("telaffuz temizligi: ê -> e", app._tr_clean_pron("Forêvır") == "Forevır")
+check("telaffuz temizligi: w/x/q", app._tr_clean_pron("wan ex qu") == "van eks ku")
+check("telaffuz temizligi: kesme/tire korunur, bosluk toplanir", app._tr_clean_pron("dont   it's  a-b") == "dont it's a-b")
+check("telaffuz temizligi: buyuk harf korunur", app._tr_clean_pron("Wan Êt") == "Van Et")
+cleaned = app._tr_parse(json.dumps([{"i": 0, "tr": "x", "pr": "Forêvır wan"}]), ["Forever one"], [0], True, "en")
+check("en parse: pr Turk alfabesine indirgenir", cleaned[0]["pr"] == "Forevır van", str(cleaned))
+sys_en2 = app._tr_prompt("en", LINES, [0], True)[0]
+check("en istemi: yalniz Turk alfabesi kurali", "ONLY letters of the Turkish alphabet" in sys_en2 and "no w, x, q" in sys_en2)
+
+# --- eksik okunus
+src = ["We were walking down", "We were walking down", "Home again", "No pron yet"]
+its = {app._tr_hash(src[0]): {"tr": "A", "pr": "Vi vır"}, app._tr_hash(src[2]): {"tr": "B"}, app._tr_hash(src[3]): {"tr": "C"}}
+check("eksik okunus: ceviri var pr yok, ilk gecis, tekrar bedava", app._tr_missing_reading(src, its) == [2, 3])
+check("eksik okunus: cevirisi olmayan satir sayilmaz", app._tr_missing_reading(["x"], {}) == [] and app._tr_missing_reading(["x"], {app._tr_hash("x"): {"tr": ""}}) == [])
+
+# --- tutarlilik: ayni kelime hep ayni yazim
+lines_c = ["We were walking down", "Walking down the road", "We walking down"]
+items_c = {
+    app._tr_hash(lines_c[0]): {"tr": "a", "pr": "Vi vır vokin dawn"},
+    app._tr_hash(lines_c[1]): {"tr": "b", "pr": "Vokin davn dı rod"},
+    app._tr_hash(lines_c[2]): {"tr": "c", "pr": "Vi vokin dawn"},
+}
+fixed = app._tr_unify_pron(lines_c, items_c)
+check("tutarlilik: 'walking' ve 'down' hep ayni (en sik yazim), satir basi buyuk harf korunur",
+      items_c[app._tr_hash(lines_c[1])]["pr"] == "Vokin dawn dı rod" and items_c[app._tr_hash(lines_c[0])]["pr"] == "Vi vır vokin dawn"
+      and items_c[app._tr_hash(lines_c[2])]["pr"] == "Vi vokin dawn" and fixed == 1, str(items_c))
+tie = {app._tr_hash("go go"): {"tr": "x", "pr": "Go gou"}}
+check("tutarlilik: esitlikte ilk gorulen kalir", app._tr_unify_pron(["go go"], tie) in (0, 1) and tie[app._tr_hash("go go")]["pr"].split()[0] == "Go")
+off = {app._tr_hash("one two three"): {"tr": "x", "pr": "van tu"}}
+check("tutarlilik: kelime sayisi tutmayan satira DOKUNMAZ", app._tr_unify_pron(["one two three"], off) == 0 and off[app._tr_hash("one two three")]["pr"] == "van tu")
+punct = {app._tr_hash("Hey, you"): {"tr": "x", "pr": "Hey, yu"}}
+check("tutarlilik: noktalama telaffuzdan ayiklanir", app._tr_unify_pron(["Hey, you"], punct) == 0 and punct[app._tr_hash("Hey, you")]["pr"] == "Hey yu")
+items_old = {app._tr_hash("Run away"): {"tr": "k", "pr": "Ran evey"}}
+items_old = app._tr_apply(items_old, ["Run away", "Run again"], [{"i": 1, "tr": "T", "pr": "Rin egen"}], "en")
+check("yeni satir ESKI satirlarin yazimina uyar (Run -> Ran)", items_old[app._tr_hash("Run again")]["pr"] == "Ran egen", str(items_old))
+
+# --- apply (en) ve yalniz okunus birlestirme
+en_items = app._tr_apply({}, ["Hello world", "Hello world", "Bye"], [{"i": 0, "tr": "Selam dünya", "pr": "Helo vörld"}, {"i": 2, "tr": "Hoşça kal"}], "en")
+check("en isleme: pr saklanir, olmayan satir pr'siz", en_items[app._tr_hash("hello world")] == {"tr": "Selam dünya", "pr": "Helo vörld"} and en_items[app._tr_hash("bye")] == {"tr": "Hoşça kal"})
+merged = app._tr_apply(dict(en_items), ["Hello world", "Hello world", "Bye"], [{"i": 2, "pr": "Bay"}], "en")
+check("yalniz okunus: ceviri AYNEN kalir, pr eklenir", merged[app._tr_hash("bye")] == {"tr": "Hoşça kal", "pr": "Bay"} and merged[app._tr_hash("hello world")]["tr"] == "Selam dünya")
+orphan = app._tr_apply({}, ["Solo"], [{"i": 0, "pr": "Solo"}], "en")
+check("yalniz okunus: cevirisi olmayan satir olusturulmaz", orphan == {})
+view_en, miss_en = app._tr_lines_view(["Hello world", "Bye"], merged)
+check("gorunum: en telaffuzu 'ro' olarak gelir", view_en[0] == {"tr": "Selam dünya", "ro": "Helo vörld"} and view_en[1] == {"tr": "Hoşça kal", "ro": "Bay"})
+view_ja, _ = app._tr_lines_view(["x"], {app._tr_hash("x"): {"tr": "T", "ro": "cut", "rg": "gem", "pr": "yok"}})
+check("gorunum: ja'da rg > ro > pr onceligi", view_ja[0]["ro"] == "gem")
+
+# --- akis: yalniz okunus
+def run_reading(responses):
+    seen = []
+
+    def fake_call(system, user, schema):
+        seen.append((system, user))
+        return responses.pop(0)
+
+    try:
+        return app._tr_run("en", LINES, [1, 2], True, fake_call, True), seen, None
+    except app.TranslateError as error:
+        return None, seen, error
+
+
+out, seen, err = run_reading([json.dumps([{"i": 1, "pr": "A"}, {"i": 2, "pr": "B"}])])
+check("akis (yalniz okunus): tek istek, ciktida tr yok", err is None and out == [{"i": 1, "pr": "A"}, {"i": 2, "pr": "B"}] and len(seen) == 1 and "Do NOT translate" in seen[0][0])
+out, seen, err = run_reading([json.dumps([{"i": 1, "pr": "A"}]), json.dumps([{"i": 1, "pr": "A"}, {"i": 2, "pr": "B"}])])
+check("akis (yalniz okunus): eksik oge -> geri bildirimle yeniden", err is None and len(seen) == 2 and "rejected" in seen[1][1])
+
 # --- durum
 now = __import__("time").time()
 check("calisiyor: taze evet, bayat hayir", app._tr_is_running({"translation": {"state": "running", "started": now}})

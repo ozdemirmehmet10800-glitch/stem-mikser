@@ -233,11 +233,12 @@ export class Api {
   // Söz çevirisi (Aşama 14): yabancı (en/ja) sözleri Türkçeye çevirir, Japoncada okunuş ekler. Eksik/değişen
   // satırları çevirir (replace: hepsini baştan). Dönen {state: "running" | "done", existing?, todo?}.
   // 400 Türkçe/desteklenmeyen dil, 409 sözler yok/hazırlanıyor.
-  async startTranslate(id, replace = false) {
+  // reading: true (yalnız en) çeviriye DOKUNMADAN eksik telaffuzu ekler ("Okunuşu ekle").
+  async startTranslate(id, replace = false, reading = false) {
     return (await this.#request(`/songs/${encodeURIComponent(id)}/translate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ replace }),
+      body: JSON.stringify({ replace, reading }),
     })).json();
   }
 

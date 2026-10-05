@@ -3,7 +3,7 @@
 Gercek sozler/cikti yalniz gitignore'li backend/lyrics_out/ altina yazilir (commit edilmez). Bu dosyada soz yok.
 
     .\\.venv\\Scripts\\python.exe tests\\translate_live.py list
-    .\\.venv\\Scripts\\python.exe tests\\translate_live.py run <baslik parcasi> [--replace] [--show N]
+    .\\.venv\\Scripts\\python.exe tests\\translate_live.py run <baslik parcasi> [--replace] [--reading] [--show N]
 """
 
 import json
@@ -48,6 +48,7 @@ def main():
         return
     needle = args[1].lower()
     replace = "--replace" in args
+    reading = "--reading" in args
     show = int(args[args.index("--show") + 1]) if "--show" in args else 0
     found = [s for s in songs() if needle in str(s.get("title", "")).lower() or s["id"].startswith(needle)]
     if not found:
@@ -56,7 +57,7 @@ def main():
     sid = song["id"]
     print(f"sarki: {str(song.get('title'))[:50]}  soz={song.get('lyrics_state')}")
     started = time.time()
-    status, body = call("POST", f"/songs/{sid}/translate", {"replace": replace})
+    status, body = call("POST", f"/songs/{sid}/translate", {"replace": replace, "reading": reading})
     print("baslat:", status, {k: v for k, v in body.items() if k != "call_id"})
     if status != 200:
         return

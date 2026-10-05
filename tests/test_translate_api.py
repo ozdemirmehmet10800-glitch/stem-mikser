@@ -199,6 +199,36 @@ def main():
     body = client.get(f"/songs/{RUN}/translation", headers=H)
     check("calisirken (ceviri dosyasi yok) 404", body.status_code == 404)
 
+
+    # --- Ingilizce okunus ekleme (cevirisi olan sarkida, ceviriye dokunmadan)
+    RD_PART, RD_FULL, RD_JA, RD_NONE = "6" * 64, "7" * 64, "8" * 64, "9" * 63 + "a"
+    rd_items = {h("Line one"): {"tr": "Bir", "pr": "Layn van"}, h("Line two"): {"tr": "Iki"}, h("Line three"): {"tr": "Uc"}}
+    make_song(tmp, RD_PART, "en", lines, translation={"schema": 1, "lang": "en", "version": 3, "items": rd_items}, tr_status={"state": "done", "version": 3})
+    full_items = {key: dict(value, pr="x") for key, value in rd_items.items()}
+    make_song(tmp, RD_FULL, "en", lines, translation={"schema": 1, "lang": "en", "version": 3, "items": full_items}, tr_status={"state": "done", "version": 3})
+    make_song(tmp, RD_JA, "ja", ["一行目"], translation={"schema": 1, "lang": "ja", "version": 3, "items": {h("一行目"): {"tr": "x"}}})
+    make_song(tmp, RD_NONE, "en", lines)
+    before = len(spawner.calls)
+    r = post(RD_PART, {"reading": True})
+    check("okunus ekle: kismi -> running, yalniz eksik 2 benzersiz satir", r.status_code == 200 and r.json()["state"] == "running" and r.json()["todo"] == 2, r.text)
+    check("okunus ekle: spawn (sarki, replace=False, 'reading')", spawner.calls[-1] == (RD_PART, False, "reading") and len(spawner.calls) == before + 1)
+    status = json.loads((pathlib.Path(tmp) / "songs" / RD_PART / "status.json").read_text("utf-8"))
+    check("okunus ekle: status.translation mode=reading", status["translation"]["state"] == "running" and status["translation"].get("mode") == "reading")
+    r = post(RD_FULL, {"reading": True})
+    check("okunus ekle: hepsinde telaffuz var -> existing done, spawn yok", r.json() == {"id": RD_FULL, "state": "done", "existing": True, "missing": 0} and len(spawner.calls) == before + 1)
+    r = post(RD_JA, {"reading": True})
+    check("okunus ekle: Japoncada 400 (o yol zaten var)", r.status_code == 400, r.text)
+    r = post(RD_NONE, {"reading": True})
+    check("okunus ekle: cevirisi hic yoksa 409", r.status_code == 409 and "ceviri" in r.text.lower(), r.text)
+    r = post(TR, {"reading": True})
+    check("okunus ekle: Turkce 400", r.status_code == 400)
+    r = post(RD_PART, {"reading": True})
+    check("okunus eklenirken tekrar: existing running", r.json().get("existing") is True and len(spawner.calls) == before + 1)
+    body = client.get(f"/songs/{RD_FULL}/translation", headers=H).json()
+    check("GET: en telaffuzu 'ro' olarak, has_reading true", body["has_reading"] is True and all(x["ro"] == "x" for x in body["lines"] if x), str(body)[:200])
+    body = client.get(f"/songs/{FULL}/translation", headers=H)
+    check("GET: telaffuzu olmayan en cevirisinde has_reading false", body.json()["has_reading"] is False)
+
     # --- liste
     listing = {item["id"]: item for item in client.get("/songs", headers=H).json()["songs"]}
     check("liste: translation_state / translation_version", listing[EN]["translation_state"] == "running"

@@ -2363,7 +2363,8 @@ buildBgChooser(el("bg-chooser-settings"), "bg-mode-settings");
 buildRowsControl(el("bg-chooser-screen"));
 buildRowsControl(el("bg-chooser-settings"));
 buildSubsControls(el("lf-subs"));
-on("lyrics-translate", "click", startTranslation);
+on("lyrics-translate", "click", () => startTranslation(false));
+on("lyrics-add-reading", "click", () => startTranslation(true));
 on("lyrics-tr-toggle", "click", () => setTrShow("tr", !trShow.tr));
 on("lyrics-ro-toggle", "click", () => setTrShow("ro", !trShow.ro));
 refreshBgChoosers();
@@ -3086,6 +3087,10 @@ function refreshTranslateUi() {
   button.textContent = view.label || "Çevir";
   button.disabled = view.disabled;
   button.title = view.hint;
+  const reading = el("lyrics-add-reading");
+  reading.hidden = !view.addReading || editing;
+  reading.disabled = isOffline() || trStarting;
+  reading.title = isOffline() ? "İnternet yok" : "Çevirilere dokunmadan okunuşu ekler";
   const trToggle = el("lyrics-tr-toggle");
   const roToggle = el("lyrics-ro-toggle");
   trToggle.hidden = !view.showTr || editing;
@@ -3203,7 +3208,7 @@ function ensureTranslationPolling() {
   }, 4000);
 }
 
-async function startTranslation() {
+async function startTranslation(reading = false) {
   if (!currentSong || !lyricsDoc || trStarting) return;
   if (!requireOnline(el("player-message"), "çeviri")) return;
   const songId = currentSong.id;
@@ -3211,7 +3216,7 @@ async function startTranslation() {
   trNote = "";
   refreshTranslateUi();
   try {
-    await api.startTranslate(songId, false);
+    await api.startTranslate(songId, false, reading === true);
     const detail = await api.getSong(songId);
     if (currentSong && currentSong.id === songId) adoptDetail(detail);
   } catch (error) {
