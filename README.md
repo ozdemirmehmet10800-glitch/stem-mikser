@@ -238,6 +238,18 @@ Veri telefonda tek anahtarda (`stem-mikser.collection`). `storage_safety_test` k
 temizle" localStorage'a dokunmuyor, hiçbir önek silmesi bu anahtara uymuyor. Ayarlar'daki "Etiket ve favori yedeği" JSON olarak
 indirir / birleştirerek yükler.
 
+**Çalma listeleri (prova modu; saf mantık, sahte depo/Cache; Modal/ağ gerekmez):**
+
+```powershell
+node tests\collection_lists_test.mjs
+node tests\playlist_test.mjs
+node tests\engine_leak_test.mjs
+node tests\lyricsscreen_test.mjs
+```
+
+Listeler aynı belgede (`stem-mikser.collection`, `lists`), yedeğe dahil. Şarkı bitişi artık `onended` ile de algılanır (ekran
+kapalıyken rAF durur); gerçek ekran-kapalı geçiş yalnız telefonda denenir.
+
 **Paylaş menüsünden şarkı ekleme (Web Share Target) ve service worker (saf mantık, sahte `self`/Cache Storage; Modal/ağ gerekmez):**
 
 ```powershell

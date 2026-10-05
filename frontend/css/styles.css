@@ -147,6 +147,8 @@ html, body {
   flex: 1; min-width: 0; padding: 10px 12px; font: inherit; font-size: 15px; color: var(--text); background: var(--panel);
   border: 1px solid var(--line); border-radius: var(--radius-sm);
 }
+.list-download-row { margin: 0 0 10px; }
+.list-download-row[hidden] { display: none; }
 .list-manage { display: flex; gap: 10px; margin-bottom: 12px; }
 .list-manage[hidden] { display: none; }
 .plist-choices { display: flex; flex-direction: column; gap: 8px; max-height: 40vh; overflow-y: auto; }

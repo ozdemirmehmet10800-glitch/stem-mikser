@@ -1316,6 +1316,7 @@ async function prefetchSong(item) {
 // Satırı yerinde güncelliyoruz: bütün listeyi yeniden çizmek her yüzde
 // değişiminde seçim modunu ve kaydırma konumunu hırpalardı.
 function updatePrefetchRow(songId) {
+  scheduleListRefresh();
   const row = el("song-list") && el("song-list").querySelector(`[data-id="${songId}"]`);
   if (!row) return;
   const sub = row.querySelector(".song-sub");
@@ -4366,8 +4367,18 @@ function renderListDetail() {
   el("list-title").textContent = list.name;
   const total = totalDuration(list.items, (item) => (map.get(item.song) || {}).duration);
   const blocked = list.items.filter((item) => itemState(item, ctx) !== "ok").length;
+  // Çevrimiçiyken cihazda kopyası olmayan şarkılar çalarken iner: aralar uzar (indirme ~0,6-1,2 MB/sn). "Önce indir" bunu çözer.
+  const deviceIndex = stemCache.indexSnapshot();
+  const missingIds = isOffline() ? [] : [...new Set(list.items
+    .filter((item) => itemState(item, ctx) === "ok" && !isOfflineReady(map.get(item.song), deviceIndex))
+    .map((item) => item.song))];
   el("list-meta").textContent = `${list.items.length} şarkı${total ? ` · ${formatTime(total)}` : ""}`
-    + (blocked ? ` · ${blocked} tanesi şu an çalınamıyor` : "");
+    + (blocked ? ` · ${blocked} tanesi şu an çalınamıyor` : "")
+    + (missingIds.length ? ` · ${missingIds.length} şarkı telefonda değil, çalarken iner (aralar uzar)` : "");
+  el("list-download-row").hidden = !missingIds.length;
+  el("list-download").textContent = missingIds.some((id) => prefetchQueued.has(id)) ? "İniyor…" : `Önce indir (${missingIds.length})`;
+  el("list-download").disabled = missingIds.length > 0 && missingIds.every((id) => prefetchQueued.has(id));
+  listView.missing = missingIds;
   el("list-play").disabled = !anyPlayable(list.items, ctx);
   const cur = list.cur ? list.items.findIndex((item) => item.iid === list.cur) : -1;
   const cont = el("list-continue");
@@ -4407,7 +4418,13 @@ function renderListDetail() {
     const sub = document.createElement("div");
     sub.className = "list-sub";
     const song = map.get(item.song);
-    const stateText = { ok: "", missing: "şarkı bulunamadı", notready: "henüz hazır değil", offline: "telefonda kayıtlı değil" }[state];
+    let stateText = { ok: "", missing: "şarkı bulunamadı", notready: "henüz hazır değil", offline: "telefonda kayıtlı değil" }[state];
+    if (state === "ok" && !isOffline()) {
+      const progress = prefetchProgress.get(item.song);
+      if (progress) stateText = `cihaza iniyor %${Math.min(99, Math.round(((progress.done + progress.ratio) / progress.total) * 100))}`;
+      else if (isOfflineReady(song, deviceIndex)) stateText = "cihazda";
+      else stateText = "cihazda değil";
+    }
     sub.textContent = [song && song.duration ? formatTime(song.duration) : "", stateText].filter(Boolean).join(" · ");
     info.append(name, sub);
     row.append(no, info);
@@ -4444,6 +4461,24 @@ function removeListItem(iid) {
   const result = collection.removeItem(listView.lid, iid);
   listMessage("list-message", result.ok ? "" : collectionError(result));
   renderListDetail();
+}
+
+on("list-download", "click", () => {
+  const map = librarySongMap();
+  const ids = listView.missing || [];
+  for (const id of ids) enqueuePrefetch(map.get(id));
+  listMessage("list-message", ids.length ? `${ids.length} şarkı cihaza indiriliyor; bitince aralar kısalır.` : "", "ok");
+  renderListDetail();
+});
+
+// İndirme ilerledikçe liste ekranındaki "cihaza iniyor %X" satırları tazelensin (en çok 600 ms'de bir; Düzenle'de dokunmayı bozmasın)
+let listRefreshTimer = 0;
+function scheduleListRefresh() {
+  if (views.list.hidden || listView.edit || listRefreshTimer) return;
+  listRefreshTimer = setTimeout(() => {
+    listRefreshTimer = 0;
+    if (!views.list.hidden && !listView.edit) renderListDetail();
+  }, 600);
 }
 
 on("list-back", "click", () => requestBack("list"));
@@ -4897,10 +4932,10 @@ on("tag-mode", "click", () => {
 
 // ---------------------------------------------------- yedek (Ayarlar): dışa / içe aktar
 function refreshCollectionState() {
-  const { favs, tags, songs } = collection.stats();
+  const { favs, tags, songs, lists } = collection.stats();
   const persisted = stemCache.persisted;
   const kalici = persisted === true ? "kalıcı" : persisted === false ? "geçici" : "bilinmiyor";
-  el("collection-state").textContent = `${favs} favori, ${tags} etiket, ${songs} şarkı kaydı. Depolama: ${kalici}.`;
+  el("collection-state").textContent = `${favs} favori, ${tags} etiket, ${lists} çalma listesi, ${songs} şarkı kaydı. Depolama: ${kalici}.`;
 }
 
 function collectionMessage(text) {
@@ -4918,8 +4953,8 @@ on("collection-export", "click", () => {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(link.href), 10000);
-    const { favs, tags } = collection.stats();
-    collectionMessage(`Yedek indirildi (${favs} favori, ${tags} etiket).`);
+    const { favs, tags, lists } = collection.stats();
+    collectionMessage(`Yedek indirildi (${favs} favori, ${tags} etiket, ${lists} çalma listesi).`);
   } catch (error) {
     collectionMessage(`Yedek indirilemedi: ${error && error.message ? error.message : error}`);
   }
@@ -4947,7 +4982,7 @@ on("collection-file", "change", async (event) => {
     }[result.error] || collectionError(result));
     return;
   }
-  collectionMessage(`Yedek yüklendi: ${result.tagsAdded} etiket, ${result.favsAdded} favori eklendi, ${result.songsTouched} şarkı kaydı güncellendi.`);
+  collectionMessage(`Yedek yüklendi: ${result.tagsAdded} etiket, ${result.favsAdded} favori, ${result.listsAdded} liste (${result.itemsAdded} şarkı sırası) eklendi, ${result.songsTouched} şarkı kaydı güncellendi.`);
   refreshCollectionState();
   renderLibrary(librarySongs);
 });
