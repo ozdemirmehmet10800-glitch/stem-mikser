@@ -1121,3 +1121,21 @@ input[type="range"]::-moz-range-thumb {
   font: inherit; font-size: 14px; cursor: pointer;
 }
 .lf-follow[hidden] { display: none; }
+
+/* ---------- söz çevirisi alt yazıları (Aşama 14) ---------- */
+.lyric-main { display: inline; }
+.lyric-line.manual .lyric-main::after { content: " •"; color: var(--accent); }
+.lyric-line.manual::after { content: none; }
+.lyric-sub { display: block; font-size: 0.8em; line-height: 1.3; font-weight: 400; color: var(--text-faint); opacity: 0.9; }
+.lyric-sub[hidden] { display: none; }
+.lyric-ro { font-style: italic; letter-spacing: 0.01em; }
+.lyric-line.active .lyric-sub { color: var(--text-dim); font-weight: 400; }
+
+.lf-main { display: block; }
+.lf-sub { display: block; font-size: 0.56em; line-height: 1.3; font-weight: 400; margin-top: 0.15em; opacity: 0.78; }
+.lf-sub[hidden] { display: none; }
+.lf-ro { font-style: italic; letter-spacing: 0.01em; }
+#lf-subs-box { margin-top: 10px; }
+#lf-subs-box[hidden] { display: none; }
+#lf-subs-box > b { display: block; margin-bottom: 4px; font-size: 14px; }
+.lyrics-actions .chip[aria-pressed="true"]#lyrics-tr-toggle, .lyrics-actions .chip[aria-pressed="true"]#lyrics-ro-toggle { background: var(--accent-dim); border-color: var(--accent); }

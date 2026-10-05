@@ -98,10 +98,14 @@
           <button type="button" class="chip" id="lyrics-edit">Düzenle</button>
           <button type="button" class="chip" id="lyrics-fix" aria-pressed="false">Zamanı düzelt</button>
           <button type="button" class="chip" id="lyrics-realign">Yeniden hizala</button>
+          <button type="button" class="chip" id="lyrics-translate" hidden>Çevir</button>
+          <button type="button" class="chip" id="lyrics-tr-toggle" aria-pressed="true" hidden>Çeviri</button>
+          <button type="button" class="chip" id="lyrics-ro-toggle" aria-pressed="true" hidden>Okunuş</button>
           <button type="button" class="chip" id="lyrics-full-open" hidden>Tam ekran</button>
         </div>
       </div>
       <div class="lyrics-notices" id="lyrics-notices"></div>
+      <div class="lyrics-notices" id="lyrics-tr-notice" hidden></div>
       <div class="lyrics-editor" id="lyrics-editor" hidden>
         <textarea id="lyrics-text" rows="8" spellcheck="false" autocomplete="off"
                   aria-label="Şarkı sözleri metni"
@@ -442,6 +446,10 @@
     <div class="lf-panel" id="lf-panel" hidden>
       <b>Arka plan</b>
       <div class="bg-chooser" id="bg-chooser-screen"></div>
+      <div id="lf-subs-box" hidden>
+        <b>Alt yazı</b>
+        <div class="bg-chooser" id="lf-subs"></div>
+      </div>
     </div>
   </div>
   <input type="file" id="bg-file" accept="image/*,video/*" hidden>

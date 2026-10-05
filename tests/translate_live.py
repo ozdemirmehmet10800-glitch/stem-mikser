@@ -76,13 +76,13 @@ def main():
     (OUT / f"translate_{sid[:8]}.json").write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
     lines = body["lines"]
     have = sum(1 for x in lines if x)
-    print(f"satir: {len(lines)}  cevirili: {have}  okunuslu(ro): {sum(1 for x in lines if x and x.get('ro'))}  gemini okuma(rg): {sum(1 for x in lines if x and x.get('rg'))}")
+    print(f"satir: {len(lines)}  cevirili: {have}  okunuslu(ro): {sum(1 for x in lines if x and x.get('ro'))}")
     if show:
         _, lyr = call("GET", f"/songs/{sid}/lyrics")
         texts = [l["text"] for l in lyr["lyrics"]["lines"]]
         for i, item in list(enumerate(lines))[:show]:
             print(f"\n{i}: {texts[i]}")
-            for key in ("tr", "ro", "rg"):
+            for key in ("tr", "ro"):
                 if item and item.get(key):
                     print(f"   {key}: {item[key]}")
 

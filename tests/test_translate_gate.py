@@ -66,12 +66,12 @@ check("sozler yeniden siralanir/zaman degisir: ceviri korunur, yeni metin eksik"
 system, user = app._tr_prompt("ja", LINES, [2, 5], True)
 check("istem: tum sarki numarali baglam", all(f"{i}: {t}" in user for i, t in enumerate(LINES)))
 check("istem: yalniz istenen dizinler ve sayi", "exactly 2 objects" in user and "2, 5" in user)
-check("istem: ja'da hiragana okuma ve romaji istenir, en'de istenmez", "hiragana" in system and "`rm`" in system
+check("istem: ja'da hiragana okuma istenir, en'de istenmez", "hiragana" in system and "`rm`" not in system
       and "hiragana" not in app._tr_prompt("en", LINES, [0], False)[0])
 check("istem: geri bildirim eklenir", "rejected: sayi" in app._tr_prompt("en", LINES, [0], False, "sayi")[1])
 schema = app._tr_schema(3, True)
-check("sema: minItems = maxItems = N, rd ve rm zorunlu", schema["minItems"] == 3 and schema["maxItems"] == 3
-      and "rd" in schema["items"]["required"] and "rm" in schema["items"]["required"])
+check("sema: minItems = maxItems = N, rd zorunlu, rm yok (sinirlar fugashi'den)", schema["minItems"] == 3 and schema["maxItems"] == 3
+      and "rd" in schema["items"]["required"] and "rm" not in schema["items"]["properties"])
 check("sema: okunussuz rd yok", "rd" not in app._tr_schema(3, False)["items"]["properties"])
 
 # --- dogrulama
@@ -91,9 +91,8 @@ for name, text, indices in [
     err = raises(lambda t=text, ix=indices: app._tr_parse(t, LINES, ix, False), app.TranslateInvalid)
     check(f"parse reddeder: {name}", isinstance(err, app.TranslateInvalid), repr(err))
 check("parse: kaynak numarayla basliyorsa numara serbest", len(app._tr_parse(json.dumps([{"i": 0, "tr": "1. Cadde"}]), ["1. Street"], [0], False)) == 1)
-ja = app._tr_parse(json.dumps([{"i": 0, "tr": "A", "rd": "こんにちは", "rm": "konnichi wa"}, {"i": 1, "tr": "B", "rd": "今日"}, {"i": 2, "tr": "C"}]), LINES, [0, 1, 2], True)
-check("parse: kanjili okuma atilir (satir kalir), kana okuma ve rm korunur", ja[0]["rd"] == "こんにちは" and ja[0]["rm"] == "konnichi wa"
-      and "rd" not in ja[1] and "rd" not in ja[2])
+ja = app._tr_parse(json.dumps([{"i": 0, "tr": "A", "rd": "こんにちは"}, {"i": 1, "tr": "B", "rd": "今日"}, {"i": 2, "tr": "C"}]), LINES, [0, 1, 2], True)
+check("parse: kanjili okuma atilir (satir kalir), kana okuma korunur", ja[0]["rd"] == "こんにちは" and "rd" not in ja[1] and "rd" not in ja[2])
 
 # --- kana -> Hepburn (sozluksuz)
 for kana, expected in [
@@ -103,10 +102,47 @@ for kana, expected in [
     ("ABC あいう 123", "ABC aiu 123"), ("", None),
 ]:
     check(f"kana: {kana or '(bos)'} -> {expected}", app._tr_kana_romaji(kana) == expected, str(app._tr_kana_romaji(kana)))
-check("okunus: rm kanayla ortusuyorsa (kelime boslukli) kullanilir", app._tr_reading_romaji("みんなが つまみやみずを", "minna ga tsumami ya mizu o") == "Minna ga tsumami ya mizu o")
-check("okunus: rm uyusmuyorsa kana Hepburn'u", app._tr_reading_romaji("みんなが つまみやみずを", "baska seyler") == "Minnaga tsumamiyamizuo")
-check("okunus: rm yoksa kana Hepburn'u", app._tr_reading_romaji("ライフ", None) == "Raifu")
 
+# --- okunus: Gemini kanasi + fugashi sozcuk sinirlari (sahte jetonlarla; fugashi yerelde gerekmez)
+def tok(reading, attach=False):
+    return {"reading": reading, "attach": attach}
+
+
+tokens = [tok("みんな"), tok("が"), tok("つまみ"), tok("や"), tok("みず"), tok("を"), tok("おにく")]
+spaced, ratio = app._tr_space_kana("みんなが つまみやみずを おにく", tokens)
+check("sinirlar fugashi'den: Gemini'nin birlesik kanasi sozcuklere bolunur", spaced == "みんな が つまみ や みず を おにく" and ratio > 0.99, spaced)
+check("romaji: sozcuk bosluklu, parcacik wa/o", app._tr_reading_romaji("みんなが つまみやみずを おにく", tokens) == "Minna ga tsumami ya mizu o oniku")
+t2 = [tok("わたし"), tok("は"), tok("いく"), tok("よ")]
+check("tek basina は parcacigi wa", app._tr_reading_romaji("わたしはいくよ", t2) == "Watashi wa iku yo")
+t3 = [tok("たべ"), tok("て", True), tok("いる", True), tok("よ")]
+check("yapisanlar (て/いる) onceki sozcukle birlesik kalir", app._tr_reading_romaji("たべているよ", t3) == "Tabeteiru yo")
+t4 = [tok("かえ"), tok("ない", True), tok("ぱろでぃー")]
+check("Gemini katakana/uzatma: sozluk 'ぱろでぃー' ile hizalanir", app._tr_reading_romaji("かえない パロディー", t4) == "Kaenai parodii")
+t5 = [tok("さげ"), tok("て", True), tok("わたし")]
+out5 = app._tr_reading_romaji("さげて わたし", [tok("した"), tok("が"), tok("わたし")])
+check("Gemini sozlukten farkli okursa (sagete vs shita) hizalama bozulmaz: harfler ayni, son sozcuk watashi",
+      out5 is not None and out5.replace(" ", "").lower() == "sageteWatashi".lower() and out5.endswith("watashi"), str(out5))
+check("Gemini okumasi sozlukle tutmuyorsa None (cutlet'e dusulur)", app._tr_reading_romaji("ぜんぜんちがうことば", tokens) is None)
+check("jeton yoksa Gemini'nin kendi bosluklari", app._tr_reading_romaji("みんなが つまみ") == "Minnaga tsumami")
+check("bos kana -> None", app._tr_reading_romaji("", tokens) is None)
+check("Gemini'nin kendi bosluklari da korunur", "みんな が" in app._tr_space_kana("みんな が つまみ", [tok("みんなが")])[0])
+check("katakana jeton okumasi hiraganaya cevrilir", app._tr_hira("ライフ") == "らいふ")
+
+
+class FakeWord:
+    def __init__(self, surface, kana, pos1, pos2=""):
+        self.surface = surface
+        self.feature = type("F", (), {"kana": kana, "pos1": pos1, "pos2": pos2})()
+
+
+def fake_tagger(text):
+    return [FakeWord("食べ", "タベ", "動詞", "一般"), FakeWord("て", "テ", "助詞", "接続助詞"), FakeWord("い", "イ", "動詞", "非自立可能"),
+            FakeWord("ます", "マス", "助動詞"), FakeWord("が", "ガ", "助詞", "格助詞"), FakeWord("♪", "*", "補助記号")]
+
+
+jt = app._tr_tokens(fake_tagger, "x")
+check("fugashi jetonlari: okuma hiragana, て/い/ます ONCEKINE yapisir, が ayri, kanasiz jeton yuzeyi",
+      [t["reading"] for t in jt] == ["たべ", "て", "い", "ます", "が", "♪"] and [t["attach"] for t in jt] == [False, True, True, True, False, False])
 # --- Gemini cevabi
 check("gemini metni: normal", app._tr_gemini_text(gemini_body("[]")) == "[]")
 check("gemini metni: dusunce parcasi atlanir", app._tr_gemini_text(json.dumps({"candidates": [{"content": {"parts": [
@@ -230,9 +266,21 @@ class FakeKatsu:
 
 items = app._tr_apply({}, ["Hello", "Hello", "World"], [{"i": 0, "tr": "Merhaba"}, {"i": 2, "tr": "Dünya"}], "en")
 check("isleme: hash'e yazilir, en'de okunus yok", items[app._tr_hash("hello")] == {"tr": "Merhaba"} and len(items) == 2)
-items = app._tr_apply({}, ["今日", "boom"], [{"i": 0, "tr": "Bugün", "rd": "きょう", "rm": "kyou"}, {"i": 1, "tr": "Patlama", "rd": "ぼーむ"}], "ja", FakeKatsu())
-check("ja: ro = cutlet(metin), rg = Gemini okumasi (rm dogrulanmis), rd saklanir", items[app._tr_hash("今日")] == {"tr": "Bugün", "rd": "きょう", "ro": "ro(今日)", "rg": "Kyou"})
+items = app._tr_apply({}, ["今日", "boom"], [{"i": 0, "tr": "Bugün", "rd": "きょう"}, {"i": 1, "tr": "Patlama", "rd": "ぼーむ"}], "ja", FakeKatsu())
+check("ja: ro = cutlet(metin) yedek, rg = Gemini okumasi, rd saklanir", items[app._tr_hash("今日")] == {"tr": "Bugün", "rd": "きょう", "ro": "ro(今日)", "rg": "Kyou"})
 check("ja: cutlet patlarsa ceviri kalir, ro yok, rg kanadan", items[app._tr_hash("boom")] == {"tr": "Patlama", "rd": "ぼーむ", "rg": "Boomu"})
+
+
+class TaggerKatsu(FakeKatsu):
+    tagger = staticmethod(lambda text: [FakeWord("きょう", "キョウ", "名詞")] if "今日" in text else [FakeWord("zzz", "ゼンゼン", "名詞")])
+
+
+items = app._tr_apply({}, ["今日", "別"], [{"i": 0, "tr": "Bugün", "rd": "きょう"}, {"i": 1, "tr": "Ayrı", "rd": "ちがうことばです"}], "ja", TaggerKatsu())
+check("ja: fugashi varsa sinirlar oradan; kanasi sozlukle tutmayan satirda rg YOK (cutlet'e duser)",
+      items[app._tr_hash("今日")]["rg"] == "Kyou" and "rg" not in items[app._tr_hash("別")] and items[app._tr_hash("別")]["ro"] == "ro(別)")
+v, _ = app._tr_lines_view(["今日", "別", "x"], {**items, app._tr_hash("x"): {"tr": "X"}})
+check("gorunum: tek 'ro' alani: rg esas, rg yoksa cutlet, hicbiri yoksa ro yok; rd/rg sizmaz",
+      v[0] == {"tr": "Bugün", "ro": "Kyou"} and v[1] == {"tr": "Ayrı", "ro": "ro(別)"} and v[2] == {"tr": "X"})
 
 # --- durum
 now = __import__("time").time()

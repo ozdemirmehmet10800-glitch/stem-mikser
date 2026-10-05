@@ -216,6 +216,39 @@ screen.open({ lines: lines(), mode: "plain", time: 0 });
 screen.close();
 check("çalarken kapatınca ekran kilidi BIRAKILMAZ (oynatıcı tutuyor)", calls.wakeReq === 1 && calls.wakeRel === 0);
 
+// --- alt yazılar (okunuş + çeviri)
+env = makeEnv();
+({ screen, calls } = makeScreen(env));
+const subsFor = (n, ro = true) => Array.from({ length: n }, (_, i) => ({ ro: ro ? `okunus ${i}` : "", tr: i % 2 ? "" : `ceviri ${i}` }));
+screen.open({ lines: lines(), mode: "plain", time: 30, subs: subsFor(20) });
+const sub = (i, slot) => env.ui.track.children[i].children[slot];
+check("satır üç parça: ana satır, okunuş, çeviri", env.ui.track.children[6].children.length === 3 && sub(6, 0).textContent === "Sentetik satir 7");
+check("alt yazılar açılışta dolu: önce okunuş sonra çeviri", sub(6, 1).textContent === "okunus 6" && sub(6, 2).textContent === "ceviri 6" && !sub(6, 1).hidden && !sub(6, 2).hidden);
+check("boş çeviri gizlenir", sub(5, 2).hidden === true && sub(5, 1).hidden === false);
+check("alt yazı sınıfları (lf-sub lf-ro / lf-tr)", sub(6, 1).has("lf-sub") && sub(6, 1).has("lf-ro") && sub(6, 2).has("lf-tr"));
+const scrollsBeforeSubs = env.ui.stage.scrolls.length;
+screen.setSubs(subsFor(20, false));
+check("setSubs: okunuş kapanır, çeviri kalır; satırlar yeniden KURULMAZ", sub(6, 1).hidden === true && sub(6, 2).textContent === "ceviri 6" && env.ui.track.children.length === 20);
+check("setSubs: takipteyken yükseklik değişimi anında yeniden ortalanır (smooth DEĞİL)", env.ui.stage.scrolls.length >= scrollsBeforeSubs && (env.ui.stage.scrolls.at(-1) || { behavior: "auto" }).behavior === "auto");
+env.ui.stage.fire("touchmove");
+const scrollsBrowsing = env.ui.stage.scrolls.length;
+screen.setSubs(subsFor(20));
+check("kaydırırken (takip kapalı) setSubs sahneyi KAYDIRMAZ", env.ui.stage.scrolls.length === scrollsBrowsing && sub(6, 1).textContent === "okunus 6");
+screen.setSubs(null);
+check("setSubs(null): hepsi gizli", sub(6, 1).hidden && sub(6, 2).hidden && sub(3, 2).hidden);
+env.ui.track.fire("click", { target: sub(9, 2) });
+check("alt yazıya dokunmak da o satıra atlar", calls.seek.at(-1) === 9);
+screen.setLines(lines(12), "ja", subsFor(12));
+check("setLines: yeni satırlar ve alt yazılar", env.ui.track.children.length === 12 && sub(2, 2).textContent === "ceviri 2");
+screen.close();
+screen.setSubs(subsFor(3));
+check("kapalıyken setSubs patlamaz", screen.isOpen === false);
+env = makeEnv();
+({ screen, calls } = makeScreen(env));
+screen.open({ lines: lines(5), mode: "plain", time: 0 });
+check("subs verilmezse hepsi gizli", [0, 1, 2].every((i) => sub(i, 1).hidden && sub(i, 2).hidden));
+screen.close();
+
 // --- aç/kapa iz bırakmaz
 env = makeEnv();
 ({ screen, calls } = makeScreen(env));

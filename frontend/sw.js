@@ -9,7 +9,7 @@
 // yeni worker beklemeden devralıyor (skipWaiting + clients.claim), yoksa
 // GitHub Pages'e atılan bir düzeltme kullanıcıya günlerce ulaşmayabiliyor.
 
-const VERSION = "v42";
+const VERSION = "v43";
 const CACHE = `stem-mikser-${VERSION}`;
 
 // Göreli yollar: site /stem-mikser/ alt yolunda yayınlanıyor, kökte değil.
@@ -28,6 +28,7 @@ const SHELL = [
   "./js/exportmix.js",
   "./js/lyrics.js",
   "./js/lyricsscreen.js",
+  "./js/translation.js",
   "./js/beatpulse.js",
   "./js/bgstore.js",
   "./js/fader.js",

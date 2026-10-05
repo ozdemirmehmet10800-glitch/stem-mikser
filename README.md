@@ -192,6 +192,18 @@ node tests\lyricsscreen_test.mjs
 `engine_leak_test.mjs` ayrıca ekranı 60 kez açıp kapayarak ses düğümü, dinleyici, animasyon
 ve Wake Lock sızıntısı olmadığını denetler.
 
+**Söz çevirisi (Aşama 14):** arayüz mantığı (node) ve sunucu (Python, Modal'a/ağa bağlanmaz, Gemini sahte HTTP ile):
+
+```powershell
+node tests\translation_test.mjs
+.\.venv\Scripts\python.exe tests\test_translate_gate.py
+.\.venv\Scripts\python.exe tests\test_translate_api.py
+```
+
+Canlı deneme (token dosyadan okunur, yazdırılmaz; gerçek sözler yalnız gitignore'lı `backend/lyrics_out/` altına yazılır):
+`.\.venv\Scripts\python.exe tests\translate_live.py list` ve `... run <şarkı adı parçası> [--replace] [--show N]`.
+Mock sunucuda: `tests\mock_server.py --lyrics-lang ja --translate-mode done|busy|error|refused --translate-polls 2`.
+
 **Akor mantığının yerel testi (Modal'a bağlanmaz, ücretsiz, saniyeler):**
 
 ```powershell

@@ -5551,15 +5551,13 @@ def _tr_prompt(lang: str, lines: list, indices: list, want_reading: bool, feedba
         system += (
             "- Also give, in `rd`, the reading of the line written ONLY in hiragana (katakana loanwords in hiragana too, "
             "no kanji, no romaji): the way it is actually SUNG, including poetic readings of kanji. Keep spaces between words.\n"
-            "- In `rm`, give the SAME reading in Hepburn romaji, lowercase, with spaces between words and particles "
-            "(particle は = wa, へ = e, を = o; long vowels written doubled: ou, uu, ii, aa). `rm` must be exactly consistent with `rd`.\n"
         )
     wanted = ", ".join(str(i) for i in indices)
     numbered = "\n".join(f"{i}: {text}" for i, text in enumerate(lines))
     user = (
         f"Song language: {source}.\nFull lyrics (line number: text):\n{numbered}\n\n"
         f"Return a JSON array with exactly {len(indices)} objects, one for each of these line numbers, in this order: {wanted}.\n"
-        'Each object: {"i": <line number>, "tr": "<Turkish translation>"' + (', "rd": "<hiragana reading>", "rm": "<romaji>"' if want_reading else "") + "}."
+        'Each object: {"i": <line number>, "tr": "<Turkish translation>"' + (', "rd": "<hiragana reading>"' if want_reading else "") + "}."
     )
     if feedback:
         user += f"\n\nYour previous answer was rejected: {feedback}\nFix it and answer again."
@@ -5571,8 +5569,7 @@ def _tr_schema(count: int, want_reading: bool) -> dict:
     required = ["i", "tr"]
     if want_reading:
         props["rd"] = {"type": "STRING"}
-        props["rm"] = {"type": "STRING"}
-        required += ["rd", "rm"]
+        required.append("rd")
     return {"type": "ARRAY", "minItems": count, "maxItems": count,
             "items": {"type": "OBJECT", "properties": props, "required": required}}
 
@@ -5611,10 +5608,6 @@ def _tr_parse(text: str, lines: list, indices: list, want_reading: bool) -> list
             rd = " ".join(rd.split()) if isinstance(rd, str) else ""
             if rd and not TRANSLATE_KANJI_RE.search(rd):       # kanjili okuma geçersiz: yalnız o okuma atılır
                 entry["rd"] = rd
-                rm = item.get("rm")
-                rm = " ".join(rm.split()) if isinstance(rm, str) else ""
-                if rm:
-                    entry["rm"] = rm
         out.append(entry)
     return out
 
@@ -5811,19 +5804,94 @@ def _tr_kana_romaji(text: str):
     return (result[:1].upper() + result[1:]) if result else None
 
 
-def _tr_reading_romaji(kana: str, spaced=None):
-    """Gemini okumasından romaji. Güvenilir temel: kanadan sözlüksüz Hepburn. Gemini'nin KELİME-BOŞLUKLU `rm`'si
-    (okunaklı) yalnız kanayla ~%88+ örtüşüyorsa (boşluk/ünlü uzatma/parçacık farkları dışında aynı) kullanılır."""
+def _tr_hira(text: str) -> str:
+    return "".join(chr(ord(ch) - 0x60) if 0x30A1 <= ord(ch) <= 0x30F6 else ch for ch in str(text or ""))
+
+
+def _tr_tokens(tagger, text: str) -> list:
+    """fugashi/unidic ile sözcük listesi: [{reading (hiragana), attach (öncekine yapışır mı)}]. Yapışanlar: yardımcı
+    fiil, ek, bağlaç eki (て/で/ば), ve て'den sonra gelen yardımcı fiiller (いる/しまう): cutlet'in boşluk mantığına yakın."""
+    out = []
+    for word in tagger(text):
+        feature = word.feature
+        kana = getattr(feature, "kana", None)
+        if not kana or kana == "*":
+            kana = word.surface
+        pos1 = getattr(feature, "pos1", "") or ""
+        pos2 = getattr(feature, "pos2", "") or ""
+        attach = pos1 in ("助動詞", "接尾辞") or (pos1 == "助詞" and pos2 == "接続助詞") \
+            or (pos1 == "動詞" and pos2 == "非自立可能")
+        out.append({"reading": _tr_hira(kana), "attach": attach})
+    return out
+
+
+def _tr_map_index(opcodes, p: int) -> int:
+    """Sözlük okumasındaki (a) konumu p'yi Gemini okumasındaki (b) konuma taşır (difflib işlem listesiyle)."""
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag == "equal" and i1 <= p <= i2:
+            return j1 + (p - i1)
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag == "replace" and i1 <= p <= i2 and i2 > i1:
+            return j1 + round((p - i1) / (i2 - i1) * (j2 - j1))
+        if tag in ("delete", "insert") and i1 <= p <= i2:
+            return j1
+    return -1
+
+
+def _tr_space_kana(kana: str, tokens: list):
+    """Gemini'nin hiragana okumasına sözcük sınırları koyar: sınırlar fugashi sözcüklerinden (sözlük okumasına
+    hizalanıp Gemini okumasına taşınır), Gemini'nin kendi boşlukları da korunur. Dönen: (boşluklu kana, benzerlik 0-1)."""
     import difflib
 
-    base = _tr_kana_romaji(kana)
-    if base and spaced:
-        a = base.lower().replace(" ", "")
-        b = str(spaced).lower().replace(" ", "").replace("-", "")
-        if a and b and difflib.SequenceMatcher(None, a, b).ratio() >= 0.88:
-            spaced = " ".join(str(spaced).split())
-            return spaced[:1].upper() + spaced[1:]
-    return base
+    given = _tr_hira(kana)
+    plain = "".join(given.split())
+    if not plain:
+        return "", 0.0
+    word_starts, acc = [], 0
+    reading = ""
+    for token in tokens:
+        piece = token["reading"].replace(" ", "")
+        if not piece:
+            continue
+        if reading and not token["attach"]:
+            word_starts.append(acc)
+        reading += piece
+        acc += len(piece)
+    matcher = difflib.SequenceMatcher(None, reading, plain, autojunk=False)
+    ratio = matcher.ratio()
+    opcodes = matcher.get_opcodes()
+    cuts = set()
+    for start in word_starts:
+        mapped = _tr_map_index(opcodes, start)
+        if 0 < mapped < len(plain):
+            cuts.add(mapped)
+    count = 0                                          # Gemini'nin kendi boşlukları (boşluksuz dizideki konum)
+    for ch in given:
+        if ch.isspace():
+            if 0 < count < len(plain):
+                cuts.add(count)
+        else:
+            count += 1
+    out = []
+    for position, ch in enumerate(plain):
+        if position in cuts:
+            out.append(" ")
+        out.append(ch)
+    return "".join(out), ratio
+
+
+TRANSLATE_READING_MIN_RATIO = 0.5                      # Gemini okuması sözlük okumasından bu kadar uzaksa güvenilmez -> cutlet
+
+
+def _tr_reading_romaji(kana: str, tokens=None):
+    """Gemini okumasından (söylendiği gibi) romaji. `tokens` (fugashi) varsa sözcük sınırları oradan; okuma sözlük
+    okumasıyla %50'den az örtüşüyorsa None (çağıran cutlet'e düşer). Tokens yoksa Gemini'nin kendi boşlukları."""
+    if tokens:
+        spaced, ratio = _tr_space_kana(kana, tokens)
+        if ratio < TRANSLATE_READING_MIN_RATIO:
+            return None
+        return _tr_kana_romaji(spaced)
+    return _tr_kana_romaji(kana)
 
 
 def _tr_romaji(katsu, text: str):
@@ -5835,7 +5903,8 @@ def _tr_romaji(katsu, text: str):
 
 
 def _tr_apply(items: dict, lines: list, results: list, lang: str, katsu=None) -> dict:
-    """Sonuçları hash'e göre `items`e işler. ja'da okunuş: `ro` = cutlet(metin), `rg` = Gemini hiraganası -> sözlüksüz Hepburn."""
+    """Sonuçları hash'e göre `items`e işler. ja'da okunuş: `ro` = cutlet(metin) (yedek), `rg` = Gemini hiraganası, sözcük
+    sınırları fugashi'den, sözlüksüz Hepburn (esas; yoksa/tutmuyorsa görünümde `ro`ya düşülür)."""
     for result in results:
         text = lines[result["i"]]
         entry = {"tr": result["tr"]}
@@ -5847,7 +5916,13 @@ def _tr_apply(items: dict, lines: list, results: list, lang: str, katsu=None) ->
                 if ro:
                     entry["ro"] = ro
             if result.get("rd"):
-                rg = _tr_reading_romaji(result["rd"], result.get("rm"))
+                tokens = None
+                if katsu is not None and getattr(katsu, "tagger", None) is not None:
+                    try:
+                        tokens = _tr_tokens(katsu.tagger, text)
+                    except Exception:
+                        tokens = None
+                rg = _tr_reading_romaji(result["rd"], tokens)
                 if rg:
                     entry["rg"] = rg
         items[_tr_hash(text)] = entry
@@ -5861,9 +5936,9 @@ def _tr_lines_view(lines: list, items: dict) -> tuple:
         item = items.get(_tr_hash(text))
         if item and item.get("tr"):
             entry = {"tr": item["tr"]}
-            for key in ("ro", "rg", "rd"):
-                if item.get(key):
-                    entry[key] = item[key]
+            romaji = item.get("rg") or item.get("ro")           # B (Gemini, söylendiği gibi) esas, A (cutlet) yedek
+            if romaji:
+                entry["ro"] = romaji
             view.append(entry)
         else:
             view.append(None)

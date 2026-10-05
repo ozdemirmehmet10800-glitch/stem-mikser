@@ -32,6 +32,7 @@ import {
   readCache as readLyricsCache, writeCache as writeLyricsCache, dropCache as dropLyricsCache,
 } from "./lyrics.js";
 import { LyricsScreen, ROWS_MIN, ROWS_MAX, normalizeRows } from "./lyricsscreen.js";
+import * as TR from "./translation.js";
 import {
   BG_MODES, BG_LABELS, normalizeBg, wantsPulse, onsetsFromBuffer, pickBeats, readKicks, writeKicks, dropKicks,
   classifyBackground,
@@ -83,6 +84,17 @@ let rafHandle = 0;
 let seeking = false;
 let currentSong = null;
 let lyricsScreen = null;       // tam ekran sözler (Aşama 13); aşağıda kurulur
+// Söz çevirisi durumu (Aşama 14): işlevler aşağıda (refreshLyricSubs vb.)
+let trMap = null;                 // Map normKey -> {tr, ro?} ya da null
+let trVersion = 0;                // eldeki çevirinin sunucu sürümü
+let trShow = TR.defaultShow();    // {tr, ro}: açık/kapalı, TÜM şarkılar için tek, cihazda
+let trStarting = false;
+let trPollTimer = 0;
+let trLoadGen = 0;
+let trNote = "";
+
+try { trShow = TR.readShow(localStorage); } catch { /* varsayılan */ }
+const subsInputs = [];
 let media = null;
 const wakeLock = new WakeLock();
 const stemCache = new StemCache();
@@ -722,6 +734,7 @@ function dropMeta(ids) {
   const lyricsKeep = lyricsStorage();
   if (lyricsKeep) {
     dropLyricsCache(lyricsKeep, ids);       // cihazdaki sözler de gitsin
+    TR.dropCache(lyricsKeep, ids);          // ve çeviri önbelleği
     dropKicks(lyricsKeep, ids);             // ve kick vuruş listesi
   }
   for (const id of ids || []) {
@@ -2165,7 +2178,7 @@ function openLyricsScreen() {
   const mode = normalizeBg(settings.lyricsBg);
   lyricsScreen.open({
     lines: lyricsDoc.lines, lang: lyricsDoc.language, title: currentSong.title || "", mode,
-    rows: normalizeRows(settings.lyricsRows),
+    subs: currentSubs(), rows: normalizeRows(settings.lyricsRows),
     beats: currentBeats(), playing: engine.playing, time: engine.visualTime,
   });
   pushLayer("lyrics-full");
@@ -2349,6 +2362,10 @@ buildBgChooser(el("bg-chooser-screen"), "bg-mode-screen");
 buildBgChooser(el("bg-chooser-settings"), "bg-mode-settings");
 buildRowsControl(el("bg-chooser-screen"));
 buildRowsControl(el("bg-chooser-settings"));
+buildSubsControls(el("lf-subs"));
+on("lyrics-translate", "click", startTranslation);
+on("lyrics-tr-toggle", "click", () => setTrShow("tr", !trShow.tr));
+on("lyrics-ro-toggle", "click", () => setTrShow("ro", !trShow.ro));
 refreshBgChoosers();
 getBackground().then((record) => {
   if (record) {
@@ -2450,7 +2467,10 @@ function syncLyricsCache(detail) {
   const lyr = lyricsOf(status);
   const hasFile = Boolean(lyr && (lyr.state === "done" || (lyr.previous && lyr.previous.state === "done")));
   const storage = lyricsStorage();
-  if (!hasFile && storage && !(lyr && lyr.state === "running")) dropLyricsCache(storage, [status.id]);
+  if (!hasFile && storage && !(lyr && lyr.state === "running")) {
+    dropLyricsCache(storage, [status.id]);
+    TR.dropCache(storage, [status.id]);
+  }
 }
 
 function adoptDetail(detail) {
@@ -2954,9 +2974,11 @@ function refreshLyricsUi() {
   show("lyrics-realign", view.canRealign);
   show("lyrics-fix", view.canFix);
   show("lyrics-full-open", Boolean(lyricsDoc));      // sözü olmayan şarkıda görünmez
-  for (const id of ["lyrics-extract", "lyrics-lang", "lyrics-paste", "lyrics-edit", "lyrics-realign", "lyrics-fix", "lyrics-full-open"]) {
+  refreshTranslateUi();
+  for (const id of ["lyrics-extract", "lyrics-lang", "lyrics-paste", "lyrics-edit", "lyrics-realign", "lyrics-fix"]) {
     el(id).disabled = off;
   }
+  el("lyrics-full-open").disabled = false;           // tam ekran çevrimdışı da açılır (sözler cihazda)
   if (!view.canFix) lyricsFixing = false;
   el("lyrics-fix").setAttribute("aria-pressed", String(lyricsFixing));
   el("lyrics-list").classList.toggle("fixing", lyricsFixing);
@@ -2995,13 +3017,233 @@ function renderLyricsList() {
     const item = document.createElement("li");
     item.className = "lyric-line" + (line.c === 0 ? " low" : "") + (line.m ? " manual" : "");
     item.dataset.i = String(index);
-    item.textContent = line.text;
+    const main = document.createElement("span");
+    main.className = "lyric-main";
+    main.textContent = line.text;
+    const ro = document.createElement("span");
+    ro.className = "lyric-sub lyric-ro";
+    ro.hidden = true;
+    const tr = document.createElement("span");
+    tr.className = "lyric-sub lyric-tr";
+    tr.hidden = true;
+    item.append(main, ro, tr);
     fragment.append(item);
   });
   list.append(fragment);
   list.scrollTop = 0;
+  refreshLyricSubs(false);
   if (lyricsScreen && lyricsScreen.isOpen) {
-    lyricsScreen.setLines(lyricsDoc ? lyricsDoc.lines : [], lyricsDoc ? lyricsDoc.language : null);
+    lyricsScreen.setLines(lyricsDoc ? lyricsDoc.lines : [], lyricsDoc ? lyricsDoc.language : null, currentSubs());
+  }
+}
+
+// ---- söz çevirisi (Aşama 14): alt satırlar, "Çevir/Güncelle", tercihler. Mantık translation.js'te.
+// Çeviri satır METNİNE göre tutulur (trMap), indekse değil: yeniden hizalama/yapıştırma sonrası da doğru satırda.
+
+
+function trLang() {
+  return lyricsDoc ? lyricsDoc.language : null;
+}
+
+function currentSubs() {
+  return lyricsDoc ? TR.subsList(lyricsDoc.lines, trMap, trShow, trLang()) : [];
+}
+
+// Panelde satırların alt yazılarını YERİNDE günceller (liste yeniden kurulmaz, kaydırma sıçramaz).
+function refreshLyricSubs(updateScreen = true) {
+  const items = el("lyrics-list").children;
+  const subs = currentSubs();
+  for (let i = 0; i < items.length; i += 1) {
+    const sub = subs[i] || { ro: "", tr: "" };
+    const ro = items[i].children[1];
+    const tr = items[i].children[2];
+    if (!ro || !tr) continue;
+    if (ro.textContent !== sub.ro) ro.textContent = sub.ro;
+    ro.hidden = !sub.ro;
+    if (tr.textContent !== sub.tr) tr.textContent = sub.tr;
+    tr.hidden = !sub.tr;
+  }
+  if (updateScreen && lyricsScreen && lyricsScreen.isOpen) lyricsScreen.setSubs(subs);
+}
+
+function translationRecord() {
+  return currentSong && currentSong.status ? TR.translationOf(currentSong.status) : undefined;
+}
+
+function trView() {
+  return TR.actionView({
+    lang: trLang(), hasDoc: Boolean(lyricsDoc), record: translationRecord(), map: trMap,
+    lines: lyricsDoc ? lyricsDoc.lines : [], offline: isOffline(), starting: trStarting,
+  });
+}
+
+function refreshTranslateUi() {
+  const view = trView();
+  const button = el("lyrics-translate");
+  const editing = lyricsEditing;
+  const showButton = view.kind === "translate" || view.kind === "update" || view.kind === "retry";
+  button.hidden = !showButton || editing;
+  button.textContent = view.label || "Çevir";
+  button.disabled = view.disabled;
+  button.title = view.hint;
+  const trToggle = el("lyrics-tr-toggle");
+  const roToggle = el("lyrics-ro-toggle");
+  trToggle.hidden = !view.showTr || editing;
+  roToggle.hidden = !view.showRo || editing;
+  trToggle.setAttribute("aria-pressed", String(trShow.tr));
+  roToggle.setAttribute("aria-pressed", String(trShow.ro));
+  const note = el("lyrics-tr-notice");
+  const text = (view.note && view.note.text) || trNote;
+  note.textContent = "";
+  note.hidden = !text || editing;
+  if (text) {
+    const span = document.createElement("span");
+    span.className = `notice ${view.note && view.note.tone === "info" ? "info" : ""}`.trim();
+    span.textContent = text;
+    note.append(span);
+  }
+  // Tam ekrandaki ⚙ paneli: veri yoksa "Alt yazı" bölümü görünmez
+  const box = el("lf-subs-box");
+  if (box) {
+    box.hidden = !view.showTr;
+    for (const [kind, input] of subsInputs) {
+      input.checked = trShow[kind];
+      input.closest("label").hidden = kind === "ro" ? !view.showRo : !view.showTr;
+    }
+  }
+}
+
+function setTrShow(kind, on) {
+  trShow = { ...trShow, [kind]: Boolean(on) };
+  try { TR.writeShow(localStorage, trShow); } catch { /* yok say */ }
+  refreshTranslateUi();
+  refreshLyricSubs();
+}
+
+function applyTranslation(map, version) {
+  trMap = map && map.size ? map : null;
+  trVersion = Number(version) || 0;
+  trNote = "";
+  refreshLyricSubs();
+  refreshTranslateUi();
+}
+
+function resetTranslation() {
+  trLoadGen += 1;
+  clearInterval(trPollTimer);
+  trPollTimer = 0;
+  trMap = null;
+  trVersion = 0;
+  trStarting = false;
+  trNote = "";
+}
+
+async function loadTranslation(retry = true) {
+  if (!currentSong || !lyricsDoc || !TR.isTranslatable(lyricsDoc.language)) {
+    if (trMap) applyTranslation(null, 0);
+    else refreshTranslateUi();
+    return;
+  }
+  const id = currentSong.id;
+  const generation = ++trLoadGen;
+  const storage = lyricsStorage();
+  if (!trMap && storage) {
+    const cached = TR.readCache(storage, id);
+    if (cached) applyTranslation(cached.map, cached.version);
+  }
+  const record = translationRecord();
+  const serverVersion = record && Number(record.version) ? Number(record.version) : 0;
+  const needFetch = Boolean(record) && !isOffline() && (!trMap || (serverVersion && serverVersion !== trVersion))
+    && !TR.isRunning(record);
+  refreshTranslateUi();
+  if (TR.isRunning(record)) ensureTranslationPolling();
+  if (!needFetch) return;
+  try {
+    const response = await api.getTranslation(id);
+    if (generation !== trLoadGen || !currentSong || currentSong.id !== id || !lyricsDoc) return;
+    const map = TR.buildMap(lyricsDoc.lines, response.lines);
+    if (!map) {
+      // satır sayısı tutmadı: sözler bizde eski olabilir; bir kez yeniden yükle
+      if (retry) await loadLyricsDoc();
+      return;
+    }
+    if (storage) TR.writeCache(storage, id, map, response.version, response.lang);
+    applyTranslation(map, response.version);
+  } catch (error) {
+    if (error instanceof ApiError && error.kind === "notfound") {
+      if (storage) TR.dropCache(storage, [id]);
+      if (trMap) applyTranslation(null, 0);
+    }
+    // ağ hatası: eldeki (önbellek) çeviri kalır
+  }
+}
+
+function ensureTranslationPolling() {
+  if (trPollTimer || !currentSong) return;
+  const songId = currentSong.id;
+  trPollTimer = setInterval(async () => {
+    if (!currentSong || currentSong.id !== songId) {
+      clearInterval(trPollTimer);
+      trPollTimer = 0;
+      return;
+    }
+    try {
+      adoptDetail(await api.getSong(songId));
+    } catch {
+      return;                                      // geçici ağ hatası: bir sonraki turda
+    }
+    if (!TR.isRunning(translationRecord())) {
+      clearInterval(trPollTimer);
+      trPollTimer = 0;
+      trStarting = false;
+      const failure = TR.statusMessage(translationRecord());
+      trNote = failure ? failure.text : "";
+      await loadTranslation();
+    }
+  }, 4000);
+}
+
+async function startTranslation() {
+  if (!currentSong || !lyricsDoc || trStarting) return;
+  if (!requireOnline(el("player-message"), "çeviri")) return;
+  const songId = currentSong.id;
+  trStarting = true;
+  trNote = "";
+  refreshTranslateUi();
+  try {
+    await api.startTranslate(songId, false);
+    const detail = await api.getSong(songId);
+    if (currentSong && currentSong.id === songId) adoptDetail(detail);
+  } catch (error) {
+    trStarting = false;
+    trNote = TR.errorMessage(error);
+    refreshTranslateUi();
+    return;
+  }
+  trStarting = false;
+  if (!TR.isRunning(translationRecord())) {
+    // anında bitti (tümü zaten çevrili) ya da hata: durumu yükle
+    const failure = TR.statusMessage(translationRecord());
+    trNote = failure ? failure.text : "";
+    await loadTranslation();
+  } else {
+    refreshTranslateUi();
+    ensureTranslationPolling();
+  }
+}
+
+function buildSubsControls(container) {
+  for (const [kind, text] of [["tr", "Çeviri göster"], ["ro", "Okunuş göster"]]) {
+    const label = document.createElement("label");
+    label.className = "bg-opt";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.addEventListener("change", () => setTrShow(kind, input.checked));
+    const span = document.createElement("span");
+    span.textContent = text;
+    label.append(input, span);
+    container.append(label);
+    subsInputs.push([kind, input]);
   }
 }
 
@@ -3184,6 +3426,7 @@ function bindLyricsList() {
 // ---- yükleme / önbellek / yoklama
 
 function resetLyrics() {
+  resetTranslation();
   clearInterval(lyricsPollTimer);
   lyricsPollTimer = 0;
   lyricsLoadGen += 1;
@@ -3235,12 +3478,14 @@ async function loadLyricsDoc() {
   if (generation !== lyricsLoadGen || !currentSong || currentSong.id !== id) return;
   if (doc && lyricsDoc && lyricsDoc.version === doc.version && lyricsDoc.lines.length === doc.lines.length) {
     refreshLyricsUi();                           // aynı sürüm: listeye dokunma, kaydırma sıçramasın
+    loadTranslation();
     return;
   }
   lyricsDoc = doc;
   renderLyricsList();
   refreshLyricsUi();
   if (lyricsDoc) lyricsTick(engine.visualTime);
+  loadTranslation();
 }
 
 function lyricsRunning() {

@@ -89,7 +89,7 @@ export class LyricsScreen {
   // ------------------------------------------------------------ yaşam döngüsü
 
   open({ lines, lang = null, title = "", mode = "plain", beats = null, media = null,
-         playing = false, time = 0 }) {
+         playing = false, time = 0, subs = null }) {
     if (this.isOpen) this.close(true);
     this.lines = lines || [];
     this.isOpen = true;
@@ -102,6 +102,7 @@ export class LyricsScreen {
     this.#showFollowing();
     this.ui.title.textContent = title;
     this.#buildLines(lang);
+    this.#fillSubs(subs);
     this.ui.root.hidden = false;
     this.#applyPaused();
     this.setMode(mode);
@@ -215,8 +216,38 @@ export class LyricsScreen {
     if (media.kind === "video" && !this.paused) this.#playVideo();
   }
 
+  /**
+   * Alt yazılar (okunuş, çeviri): subs[i] = {ro, tr} (boş string = gizli). Satırlar yeniden KURULMAZ, yalnız
+   * alt satırlar güncellenir; yükseklik değişeceği için takip açıksa o anki satır yeniden ortalanır.
+   */
+  setSubs(subs) {
+    if (!this.isOpen) return;
+    this.#fillSubs(subs);
+    if (this.following) {
+      const was = this.instant;
+      this.instant = true;               // yükseklik değişimi kaymayla değil, anında oturur
+      this.#position();
+      this.instant = was;
+    }
+  }
+
+  #fillSubs(subs) {
+    const items = this.ui.track.children;
+    for (let i = 0; i < items.length; i += 1) {
+      const sub = subs && subs[i] ? subs[i] : null;
+      const nodes = items[i].children;
+      if (!nodes || nodes.length < 3) continue;
+      for (const [slot, text] of [[1, sub ? sub.ro : ""], [2, sub ? sub.tr : ""]]) {
+        const node = nodes[slot];
+        const value = text || "";
+        if (node.textContent !== value) node.textContent = value;
+        node.hidden = !value;
+      }
+    }
+  }
+
   /** Satırlar değişti (yeniden hizalama bitti): ekran açıksa yeniden kur; boşsa kapat. */
-  setLines(lines, lang = null) {
+  setLines(lines, lang = null, subs = null) {
     if (!this.isOpen) return;
     if (!lines || !lines.length) {
       this.close();
@@ -228,6 +259,7 @@ export class LyricsScreen {
     this.following = true;
     this.#showFollowing();
     this.#buildLines(lang);
+    this.#fillSubs(subs);
     this.instant = true;
     this.tick(this.lastTime, true);
     this.instant = false;
@@ -379,7 +411,17 @@ export class LyricsScreen {
       const item = this.createEl("li");
       item.className = "lf-line" + (line.c === 0 ? " low" : "");
       item.dataset.i = String(i);
-      item.textContent = line.text;
+      // [0] satır, [1] okunuş, [2] çeviri (alt yazılar başta gizli; setSubs doldurur)
+      const main = this.createEl("span");
+      main.className = "lf-main";
+      main.textContent = line.text;
+      const ro = this.createEl("span");
+      ro.className = "lf-sub lf-ro";
+      ro.hidden = true;
+      const tr = this.createEl("span");
+      tr.className = "lf-sub lf-tr";
+      tr.hidden = true;
+      item.append(main, ro, tr);
       fragment.append(item);
     });
     if (fragment !== track) track.append(fragment);

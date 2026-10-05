@@ -754,7 +754,7 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
    vuruşa nabız / ikisi / kendi dosyam (200 MB üstü uyarı); tek ayar `settings.lyricsBg`, ⚙ ekrandaki panelden ve Ayarlar'dan seçilir. Yalnız transform+opacity; ekran kapalıyken ya da uygulama
    arka plandayken her şey durur (Wake Lock dahil). Testler: beatpulse_test, lyricsscreen_test (sahte DOM, aç/kapa sızıntısı), engine_leak_test'e ekran bölümü. Hiza testi bu turda yeniden koşulmadı.
 
-12. [ ] **Aşama 14 - söz çevirisi: OTURUM 1 (backend) YAPILDI ve YAYINDA (2026-10-05); okunuş seçimi ve arayüz sırada.** (Plan ve kararlar aşağıda.) Yabancı şarkılarda her söz satırının altında soluk (1) doğal Türkçe çeviri,
+12. [x] **Aşama 14 - söz çevirisi: OTURUM 1 (backend) ve OTURUM 2-3 (okunuş seçimi + arayüz) YAPILDI (2026-10-05), SW v43, telefonda doğrulanmadı.** (Plan ve kararlar aşağıda.) Yabancı şarkılarda her söz satırının altında soluk (1) doğal Türkçe çeviri,
    (2) Japonca şarkılarda okunuş (romaji); ikisi ayrı açılıp kapanır; panelde ve tam ekranda, sözlerle birlikte akar.
    - **Model: Gemini ücretsiz katman (öneri).** Doğrulandı (ai.google.dev, 2026-10-05): Gemini 3.x Flash modelleri ücretsiz katmanda "free of charge";
      Türkiye desteklenen bölgede; kart gerekmez (PLAN kuralı: kredi kartı gerektiren servis yok). Ücretsiz katman limitleri belgede SAYI olarak yok, AI Studio'dan
@@ -792,6 +792,21 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      **Okunuş (Ado, 61 satır):** A = cutlet(metin), B = Gemini hiragana okuması -> sözlüksüz kana-Hepburn (+ kanayla ~%88 örtüşen kelime-boşluklu `rm`). 19/61 satırda fark; B şiirsel/söylenen okumada
      daha iyi (皆 minna, 愚か oroka, 私 watashi, 何回 nankai), A tutarlı ama bağlamsız kanjide hatalı ve Whisper'ın bozuk metnine (ör. "っちゃな頃") bağımlı. KARAR kullanıcıda (bkz. sonraki tur).
      Testler: tests/test_translate_gate.py (67), tests/test_translate_api.py (31); canlı deneme aracı tests/translate_live.py (token dosyadan, yazdırılmaz; çıktı gitignore'lı lyrics_out/).
+   - **OKUNUŞ KARARI (kullanıcı, 2026-10-05): B = Gemini okuması (söylendiği gibi).** Sözcük sınırları fugashi/unidic'ten (`_tr_tokens`: yardımcı fiil, ek, bağlaç eki ve て'den sonra
+     gelen yardımcı fiiller önceki sözcüğe yapışır), Gemini'nin kanasına sözlük okumasıyla `difflib` hizalaması üzerinden taşınır, sonra sözlüksüz kana->Hepburn (`は` tek başına = wa, を = o,
+     っ ikileme, ー uzatma). Gemini okuması yoksa (kanjili/boş) ya da sözlük okumasıyla %50'den az örtüşüyorsa o satırda A = cutlet'e DÜŞÜLÜR. `rm` (Gemini'nin kendi romaji'si) kaldırıldı.
+     Sunucu görünümü tek `ro` alanı verir (`rg` esas, yoksa cutlet). Canlı (Ado, kullanıcının doğru Japonca metniyle, 53 satır): "Tadashisa to wa orokasa to wa", "Kizuitara otona ni natte ita",
+     "Aa yoku niau" gibi sözcük boşluklu ve söylendiği gibi çıktı; ana model yine 503 verdi, yedek model devreye girdi.
+   - **OTURUM 3 (arayüz) YAPILDI (2026-10-05), SW v43:** `translation.js` (saf; `tests/translation_test.mjs`), `api.startTranslate/getTranslation`. Çeviri satır METNİNE göre tutulur
+     (`Map normKey -> {tr, ro}`): Ado'nun sözleri yeniden yapıştırılsa da değişmeyen satırların çevirisi korunur, değişenler "Güncelle (N)" ile çevrilir. Panelde satır altında önce okunuş
+     (italik) sonra çeviri (küçük, soluk); "Çevir" (yalnız en/ja, Türkçede gizli, çevrimdışıyken pasif), "Güncelle (N)", "Tekrar dene", "Çeviri" ve "Okunuş" açma/kapama çipleri (tercih
+     `stem-mikser.lyrics.show`, tüm şarkılar için tek). Hazırlanırken 4 sn'de bir yoklama; hata `status.translation.code`'dan: busy -> "Çeviri servisi şu an meşgul, biraz sonra tekrar dene.",
+     refused, auth, genel. Cihaz önbelleği `stem-mikser.translation.<id>` (40 şarkı LRU, metne göre; çevrimdışı açılışta görünür; şarkı silinince ve sözler silinince gider). Tam ekranda
+     her satır [ana, okunuş, çeviri] üç parçadan oluşur (`setSubs` yalnız alt satırları günceller, liste yeniden kurulmaz; takipteyken yükseklik değişimi anında yeniden ortalanır, kaydırırken
+     sahneye dokunmaz); alt satırlar ana satırın opaklığını miras alır, yani "görünen satır" kademeli solması aynen çalışır; ⚙ panelinde "Alt yazı" bölümü (Çeviri göster / Okunuş göster; veri
+     yoksa görünmez). DÜZELTME: "Tam ekran" düğmesi çevrimdışıyken pasifti (sözler cihazda olduğu halde); artık açılıyor. Mock sunucu: `--lyrics-lang`, `--translate-mode`, `--translate-polls`.
+     Tarayıcıda uçtan uca denendi (mock + mobil boyut): Çevir -> yoklama -> alt satırlar, tercih açma/kapama (panel ve tam ekran birbirini izler), metin düzenleyince "Güncelle (2)" ve yalnız
+     değişen satırların yenilenmesi, busy hatası + "Tekrar dene", çevrimdışı önbellekten açılış, Türkçede düğmelerin gizli olması. Node testleri + hiza testi geçti.
    - **Sıra:** (1) backend çeviri + secret + gate/api testleri + Ado/NEM'de canlı doğrulama, (2) okunuş (cutlet) + ölçüm, (3) arayüz (panel, tam ekran, önbellek, mock) + telefon.
      ~3 oturum. **Test:** sahte HTTP ile saf işlevler (istem, doğrulama, eşleme, yeniden deneme, parçalama) `tests/test_translate_gate.py`; uçlar `test_translate_api.py`;
      mock sunucuda sentetik çeviri; GERÇEK sözler yalnız gitignore'lı `backend/lyrics_ref/` + `lyrics_out/` ile elle `modal run backend/app.py::translate_probe`

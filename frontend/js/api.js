@@ -230,6 +230,23 @@ export class Api {
     return (await this.#request(`/songs/${encodeURIComponent(id)}/lyrics`)).json();
   }
 
+  // Söz çevirisi (Aşama 14): yabancı (en/ja) sözleri Türkçeye çevirir, Japoncada okunuş ekler. Eksik/değişen
+  // satırları çevirir (replace: hepsini baştan). Dönen {state: "running" | "done", existing?, todo?}.
+  // 400 Türkçe/desteklenmeyen dil, 409 sözler yok/hazırlanıyor.
+  async startTranslate(id, replace = false) {
+    return (await this.#request(`/songs/${encodeURIComponent(id)}/translate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ replace }),
+    })).json();
+  }
+
+  // {state, code, message, lang, version, missing, has_reading, lines: [{tr, ro?} | null]} (sözlerin satırlarına hizalı).
+  // Çeviri yoksa ApiError(notfound).
+  async getTranslation(id) {
+    return (await this.#request(`/songs/${encodeURIComponent(id)}/translation`)).json();
+  }
+
   // Miks dışa aktarma (Aşama 12). body: {format, gains, master, region?, rate?, semitones?, label}.
   // Dönen {hash, state: "running" | "done", existing?, filename?, bytes?, duration?}.
   // 400 doğrulama, 409 "başka dışa aktarma sürüyor" / "şarkı hazır değil".
