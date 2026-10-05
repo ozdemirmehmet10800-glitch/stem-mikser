@@ -128,6 +128,28 @@ export class MediaBridge {
     this.handlersBound = true;
   }
 
+  /**
+   * Çalma listesi modu: kilit ekranında önceki/sonraki. handlers = {onPrevious, onNext} ya da null (liste dışı: önceki = başa sar,
+   * sonraki yok). Chrome Android düğmeleri yalnız işleyici varsa gösterir.
+   */
+  setTrackControls(handlers) {
+    if (!this.supported) return;
+    const set = (action, handler) => {
+      try {
+        navigator.mediaSession.setActionHandler(action, handler);
+      } catch {
+        // Bu eylemi desteklemiyor; sorun değil.
+      }
+    };
+    if (handlers) {
+      set("previoustrack", () => handlers.onPrevious());
+      set("nexttrack", () => handlers.onNext());
+    } else {
+      set("previoustrack", () => this.onSeek(0));
+      set("nexttrack", null);
+    }
+  }
+
   setPlaybackState(playing) {
     if (!this.supported) return;
     navigator.mediaSession.playbackState = playing ? "playing" : "paused";

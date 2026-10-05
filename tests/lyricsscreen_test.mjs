@@ -130,6 +130,37 @@ screen.setLines([], null);
 check("sözler boşalırsa ekran kapanır", screen.isOpen === false && calls.closed === 1);
 screen.close();
 
+// --- liste modu: yeni şarkıda söz yoksa ekran AÇIK kalır ("söz yok" görünümü), yeni şarkıya geçince sözler gelir
+env = makeEnv();
+({ screen, calls } = makeScreen(env));
+screen.open({ lines: lines(5), lang: "tr", title: "Zeus", mode: "plain", time: 3, playing: true });
+screen.setTitle("HAZBİN HOTEL - Bağımlı");
+check("setTitle: başlık güncellenir (ekran açık kalır)", env.ui.title.textContent === "HAZBİN HOTEL - Bağımlı" && screen.isOpen);
+screen.setLines([], null, null, "Bu şarkıda söz yok");
+check("boş + emptyText: ekran KAPANMAZ, tek sade 'söz yok' satırı", screen.isOpen && calls.closed === 0 && env.ui.track.children.length === 1
+  && env.ui.track.children[0].className === "lf-empty" && env.ui.track.children[0].textContent === "Bu şarkıda söz yok" && env.ui.root.classList.contains("empty"));
+check("söz yok görünümünde tick/dokunma patlamaz, satır boyanmaz", (() => {
+  screen.tick(10, true);
+  env.ui.track.fire("click", { target: env.ui.track.children[0] });
+  return screen.lines.length === 0 && calls.seek.length === 0 && screen.isOpen;
+})());
+screen.setLines([], null, null, "Sözler yükleniyor…");
+check("metin güncellenir (yükleniyor -> yok)", env.ui.track.children.length === 1 && env.ui.track.children[0].textContent === "Sözler yükleniyor…");
+screen.setLines(lines(7), "ja", null);
+check("yeni şarkının sözleri gelince 'söz yok' görünümü kalkar, satırlar kurulur, ekran hâlâ açık",
+  screen.isOpen && env.ui.track.children.length === 7 && !env.ui.root.classList.contains("empty") && env.ui.track.children[0].className.includes("lf-line"));
+screen.setLines([], null, null);
+check("emptyText verilmezse (liste dışı) boşalan söz hâlâ ekranı kapatır", screen.isOpen === false && calls.closed === 1);
+screen.close();
+env = makeEnv();
+({ screen } = makeScreen(env));
+screen.open({ lines: lines(3), mode: "plain", time: 0 });
+screen.setLines([], null, null, "söz yok");
+screen.close();
+screen.open({ lines: lines(3), mode: "plain", time: 0 });
+check("söz yok görünümünden kapanıp yeniden açılınca 'empty' sınıfı yok, satırlar normal", !env.ui.root.classList.contains("empty") && env.ui.track.children.length === 3);
+screen.close();
+
 // --- nabız
 env = makeEnv();
 ({ screen, calls } = makeScreen(env));

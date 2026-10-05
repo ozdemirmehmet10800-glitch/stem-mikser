@@ -101,6 +101,7 @@ export class LyricsScreen {
     this.padded = 0;
     this.#showFollowing();
     this.ui.title.textContent = title;
+    this.ui.root.classList.remove("empty");
     this.#buildLines(lang);
     this.#fillSubs(subs);
     this.ui.root.hidden = false;
@@ -138,7 +139,7 @@ export class LyricsScreen {
     this.ui.track.textContent = "";
     this.instant = false;
     this.ui.root.hidden = true;
-    this.ui.root.classList.remove("paused", "playing", "has-media", "browsing");
+    this.ui.root.classList.remove("paused", "playing", "has-media", "browsing", "empty");
     if (this.ui.followBtn) this.ui.followBtn.hidden = true;
     this.ui.flow.hidden = true;
     this.ui.pulse.hidden = true;
@@ -246,13 +247,24 @@ export class LyricsScreen {
     }
   }
 
-  /** Satırlar değişti (yeniden hizalama bitti): ekran açıksa yeniden kur; boşsa kapat. */
-  setLines(lines, lang = null, subs = null) {
+  /** Başlık (liste modunda yeni şarkıya geçilince ekran açık kalır, başlık güncellenir). */
+  setTitle(title) {
+    this.ui.title.textContent = title || "";
+  }
+
+  /**
+   * Satırlar değişti (yeniden hizalama bitti / liste modunda yeni şarkı): ekran açıksa yeniden kur. Boşsa: emptyText verilmişse
+   * ekran AÇIK kalır ve sade bir metin gösterir ("Bu şarkıda söz yok"); verilmemişse kapanır.
+   */
+  setLines(lines, lang = null, subs = null, emptyText = null) {
     if (!this.isOpen) return;
     if (!lines || !lines.length) {
-      this.close();
+      if (emptyText) this.#showEmpty(emptyText);
+      else this.close();
       return;
     }
+    this.ui.root.classList.remove("empty");
+    this.padded = 0;
     this.lines = lines;
     this.index = -2;
     this.center = -2;
@@ -263,6 +275,25 @@ export class LyricsScreen {
     this.instant = true;
     this.tick(this.lastTime, true);
     this.instant = false;
+  }
+
+  #showEmpty(text) {
+    this.lines = [];
+    this.index = -2;
+    this.center = -2;
+    this.padded = 0;
+    this.following = true;
+    this.#showFollowing();
+    const track = this.ui.track;
+    track.textContent = "";
+    track.removeAttribute("lang");
+    track.style.paddingTop = "";
+    track.style.paddingBottom = "";
+    const item = this.createEl("li");
+    item.className = "lf-empty";
+    item.textContent = text;
+    track.append(item);
+    this.ui.root.classList.add("empty");
   }
 
   /** "Şimdiye dön" / satıra dokunma: takip yeniden başlar ve o anki satıra kayar. */
@@ -322,6 +353,7 @@ export class LyricsScreen {
     this.lastTime = time;
     if (this.paused) return;
     const lines = this.lines;
+    if (!lines.length) return;                // "söz yok" görünümü: boyanacak satır yok
     const probe = highlightTime(time);
     const index = findLine(lines, probe);
     const center = index >= 0 ? index : scrollTarget(lines, probe);

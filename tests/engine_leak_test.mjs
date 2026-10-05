@@ -153,6 +153,77 @@ check("kanal gain'leri baglida", before.every((g) => g.targets.size === 1));
 engine.dispose();
 check("dispose sonrasi kanal yok", engine.channels.size === 0);
 
+// ---------------------------------------------------------------- dogal bitis (onended; rAF'a bagli degil)
+// rAF dongusu arka planda/ekran kapaliyken durur; calma listesinde siradaki sarkiya gecis bu olaya bagli.
+{
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const e = new Engine();
+  await e.loadStems(STEMS, provide, { concurrency: 3 });
+  let ended = 0;
+  e.onEnded = () => { ended += 1; };
+  await e.play();
+  const sources = [...e.channels.values()].map((c) => c.source);
+  check("dogal bitis: kaynaklardan YALNIZ BIRINDE onended var", sources.filter((s) => typeof s.onended === "function").length === 1);
+  const hooked = sources.find((s) => typeof s.onended === "function");
+  hooked.onended();                           // kaynak dogal olarak bitti (rAF HIC calismadi)
+  check("dogal bitis: gecikme (D + 40 ms) dolmadan HEMEN bitmez", ended === 0 && e.playing === true);
+  await sleep(120);
+  check("dogal bitis: rAF olmadan onEnded cagrildi, calma durdu, konum basa sarildi", ended === 1 && e.playing === false && e.offset === 0);
+  check("dogal bitis: stop() sonrasi onended sifirlandi (sizinti yok)", sources.every((s) => s.onended === null));
+
+  // programli durdurma TETIKLEMEZ
+  await e.play();
+  const again = [...e.channels.values()].map((c) => c.source).find((s) => typeof s.onended === "function");
+  const lateHandler = again.onended;
+  e.pause();
+  check("pause: kaynagin onended'i sifirlanir", again.onended === null);
+  lateHandler();                              // tarayici yine de gec bir olay yollarsa (playGen artti: yok sayilir)
+  await sleep(80);
+  check("pause sonrasi gelen eski onended onEnded cagirmaz", ended === 1);
+
+  // eski calmadan gelen olay (seek: stop + play) yok sayilir
+  await e.play();
+  const stale = [...e.channels.values()].map((c) => c.source).find((s) => typeof s.onended === "function");
+  const staleHandler = stale.onended;
+  await e.seek(5);
+  staleHandler();
+  await sleep(80);
+  check("seek: eski calmanin onended'i yok sayilir (calma surer)", ended === 1 && e.playing === true);
+
+  // bitis zamanlayicisi bekleyen bir sey varken duraklatilirsa iptal olur
+  const live = [...e.channels.values()].map((c) => c.source).find((s) => typeof s.onended === "function");
+  live.onended();
+  e.pause();
+  await sleep(120);
+  check("bitis beklerken duraklatma: zamanlayici iptal, onEnded cagrilmadi", ended === 1 && e.playing === false);
+
+  // dongu acikken bitmez
+  await e.setLoop(2, 6);
+  await e.play();
+  const looping = [...e.channels.values()].map((c) => c.source).find((s) => typeof s.onended === "function");
+  looping.onended();
+  await sleep(120);
+  check("dongu acikken dogal bitis YOK (liste bekler)", ended === 1 && e.playing === true);
+  e.clearLoop();
+  e.loop = null;
+  e.pause();
+
+  // esnetici gecikmesi D: son notayi kesmemek icin D kadar bekler
+  const e3 = new Engine();
+  await e3.loadStems(STEMS, provide, { concurrency: 3 });
+  let ended3 = 0;
+  e3.onEnded = () => { ended3 += 1; };
+  e3.latency = 0.2;
+  await e3.play();
+  [...e3.channels.values()].map((c) => c.source).find((s) => typeof s.onended === "function").onended();
+  await sleep(120);
+  check("D = 0.2 sn: 120 ms'de HENUZ bitmedi", ended3 === 0 && e3.playing === true);
+  await sleep(200);
+  check("D = 0.2 sn: ~240 ms sonra bitti", ended3 === 1 && e3.playing === false);
+  e3.dispose();
+  e.dispose();
+}
+
 // ---------------------------------------------------------------- A-B dongu
 const liveSources = (e) =>
   (e.ctx.sources || []).filter((n) => n.targets.size > 0 && !n.stopped).length;

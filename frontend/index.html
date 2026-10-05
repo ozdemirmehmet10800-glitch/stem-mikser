@@ -241,6 +241,19 @@
 
     <!-- alt çubuk -->
     <footer class="transport">
+      <!-- Çalma listesi modu (prova): önceki / konum + sıradaki / sonraki. Liste dışında gizli. -->
+      <div class="list-bar" id="list-bar" hidden>
+        <button type="button" class="list-bar-btn" id="pl-prev" aria-label="Önceki şarkı">
+          <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+        </button>
+        <div class="list-bar-text">
+          <div class="list-bar-pos" id="list-bar-pos"></div>
+          <div class="list-bar-sub" id="list-bar-sub"></div>
+        </div>
+        <button type="button" class="list-bar-btn" id="pl-next" aria-label="Sonraki şarkı">
+          <svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg>
+        </button>
+      </div>
       <div class="seek-row">
         <span class="time" id="time-current">0:00</span>
         <div class="seek-wrap" id="seek-wrap">

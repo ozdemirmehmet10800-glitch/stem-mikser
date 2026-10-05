@@ -61,7 +61,8 @@ import {
 import { Collection, safeStorage } from "./collection.js";
 import { filterSongs, isFiltering, separatorIndex } from "./songfilter.js";
 import {
-  itemState, startIndex, anyPlayable, totalDuration, alreadyInList,
+  itemState, startIndex, anyPlayable, totalDuration, alreadyInList, nextPlayable, previousAction, indexOfItem, skipNote,
+  positionLabel,
 } from "./playlist.js";
 
 const POLL_MS = 3000;
@@ -1435,7 +1436,18 @@ function openTimer() {
   };
 }
 
-async function openSong(song) {
+// opts: {quiet}: oynatıcı zaten açıkken (çalma listesinde geçiş) tam ekran yükleme örtüsü YOK, küçük bir not; hata olursa
+// kitaplığa dönülmez. {fresh}: bellekteki aynı şarkı bile BAŞTAN çalsın. Dönen: true = açıldı, false = açılamadı.
+async function openSong(song, opts = {}) {
+  const quiet = Boolean(opts.quiet);
+  const loading = (text) => {
+    if (quiet) showMessage(el("player-message"), text, "warn");
+    else setOverlay(true, text);
+  };
+  const loadingDone = () => {
+    if (quiet) hideMessage(el("player-message"));
+    else setOverlay(false);
+  };
   const timer = openTimer();
   // Arka plan indirmesi kullanıcının beklediği indirmeyle bant genişliği
   // paylaşmasın.
@@ -1447,6 +1459,11 @@ async function openSong(song) {
   if (canReuseLoaded(song)) {
     showView("player");
     pushLayer("view");
+    if (opts.fresh) {
+      await engine.seek(0);
+      metronome.resync();
+    }
+    if (lyricsScreen && lyricsScreen.isOpen) lyricsScreen.setTitle(song.title || "");
     lastPositionSync = -1;
     startLoop();
     refreshSubUi();
@@ -1457,7 +1474,8 @@ async function openSong(song) {
       source: "bellek", concurrency: 0,
       duration: Number(song.duration) || 0,
     });
-    return;
+    updateListBar();
+    return true;
   }
 
   showView("player");
@@ -1495,7 +1513,7 @@ async function openSong(song) {
   closeFxDom();
   refreshExportAvailability();
 
-  setOverlay(true, "Şarkı bilgileri alınıyor…");
+  loading("Şarkı bilgileri alınıyor…");
   try {
     // Sürümün otoritesi KİTAPLIK SATIRI: /songs listesi stems_version'ı
     // veriyor ve az önce tazelendi. Cihazdaki bilgi yalnız o sürümle
@@ -1549,7 +1567,7 @@ async function openSong(song) {
       fills.set(name, row.querySelector("i"));
     }
 
-    setOverlay(true, "Kanallar hazırlanıyor…");
+    loading("Kanallar hazırlanıyor…");
     // Getirme ve çözme TEK boru hattında, ikişerli. Eskiden önce altı dosya
     // iniyor, sonra çözme başlıyordu; indirme artık çözmenin altında saklanıyor.
     // İkiden fazlası yok: "Tasarruf" kipinde her çözme kendi stereo ara
@@ -1557,7 +1575,7 @@ async function openSong(song) {
     let fromCache = 0;
     let loadStats = null;
     const parallelCount = settings.decodeParallel;
-    setOverlay(true, "Kanallar hazırlanıyor…");
+    loading("Kanallar hazırlanıyor…");
     const duration = await engine.loadStems(stems, async (name) => {
       const fill = fills.get(name);
       // Önce cihazdaki kopya: ikinci açılışta ağa hiç çıkılmıyor.
@@ -1614,6 +1632,8 @@ async function openSong(song) {
     el("time-current").textContent = "0:00";
     el("time-remaining").textContent = `-${formatTime(duration)}`;
     el("play").disabled = false;
+    // Çalma listesi modunda tam ekran sözler AÇIK kalır: başlık yeni şarkıya geçer (sözler loadLyricsDoc ile gelir, yoksa "söz yok").
+    if (lyricsScreen && lyricsScreen.isOpen) lyricsScreen.setTitle(song.title || "");
     // Metronom ızgarası: beat_this vuruşları + downbeat'ler.
     metronome.setGrid(chords ? chords.beats : [], chords ? chords.downbeats : []);
     setLoopGrid(chords);
@@ -1632,7 +1652,7 @@ async function openSong(song) {
 
     media.bindHandlers({ onPlay: startPlayback, onPause: stopPlayback });
     lastPositionSync = -1;
-    setOverlay(false);
+    loadingDone();
     startLoop();
     // Hızlı yolun kapısı: ne yüklü olduğunu burada kayda geçiyoruz.
     loadedState = {
@@ -1653,12 +1673,14 @@ async function openSong(song) {
       decodeMs: loadStats ? loadStats.decodeMs : null,
       bytes: loadStats ? loadStats.bytes : null,
     });
+    updateListBar();
+    return true;
   } catch (error) {
     // AÇILIŞ HERHANGİ BİR ADIMDA DÜŞERSE boş mikserde kalınmıyor: oynatıcı
     // katmanı kapanıyor ve sebep kitaplıkta yazıyor. Mesaj pendingLibraryNote
     // üzerinden gidiyor, çünkü katmanı kapatan yol kitaplığı tazeliyor ve
     // tazeleme ilk iş mesajı siliyor.
-    setOverlay(false);
+    loadingDone();
     stopPlayback();
     stopLoop();
     engine.releaseStems();
@@ -1672,15 +1694,25 @@ async function openSong(song) {
     // Sunucuya ulaşılamadığı buradan da öğreniliyor: kitaplık hemen
     // çevrimdışı görünümüne geçsin, hangi şarkının açılabileceği belli olsun.
     if (offlineMissing) markOnlineState(false);
-    pendingLibraryNote = offlineMissing && isOffline()
+    const failure = offlineMissing && isOffline()
       ? "İnternet yok, bu şarkı telefonda kayıtlı değil."
       : describeError(error);
+    if (quiet) {
+      // Çalma listesinde geçiş sırasında: kitaplığa dönülmez; çağıran sıradakini dener ya da durur.
+      showMessage(el("player-message"), failure, "warn");
+      resumePrefetch();
+      updateListBar();
+      return false;
+    }
+    pendingLibraryNote = failure;
     if (nav.peek() === "view") history.back();
     else {
       showView("library");
       await refreshLibrary();
     }
     resumePrefetch();
+    updateListBar();
+    return false;
   }
 }
 
@@ -2007,13 +2039,7 @@ function startLoop() {
       el("time-current").textContent = formatTime(time);
       el("time-remaining").textContent = `-${formatTime(engine.duration - time)}`;
     }
-    if (engine.checkEnded()) {
-      setPlayIcon(false);
-      media.stopKeeper();
-      media.setPlaybackState(false);
-      metronome.stop();
-      releasePlaybackWake();
-    }
+    engine.checkEnded();      // bitiş işlemi engine.onEnded -> handleSongEnded (rAF'a bağlı olmayan onended yolu da aynı)
     // Kilit ekranı konumu: saniyede bir yeter, her karede değil.
     if (time - lastPositionSync > 1 || time < lastPositionSync) {
       lastPositionSync = time;
@@ -2022,6 +2048,17 @@ function startLoop() {
     rafHandle = requestAnimationFrame(tick);
   };
   rafHandle = requestAnimationFrame(tick);
+}
+
+// Şarkı doğal olarak bitti (rAF ya da arka planda da çalışan onended yolundan). Çalma listesinde sıradaki varsa geçilir
+// (sessiz <audio> DURMAZ: kilit ekranı kontrolü ve otomatik başlatma izni kalsın); liste bitince ya da liste dışında durur.
+function handleSongEnded() {
+  setPlayIcon(false);
+  metronome.stop();
+  if (playlistCtx && playlistAdvance()) return;
+  media.stopKeeper();
+  media.setPlaybackState(false);
+  releasePlaybackWake();
 }
 
 function stopLoop() {
@@ -3193,6 +3230,7 @@ function snapTime(t) {
 }
 
 function refreshLoopUi() {
+  updateListBar();
   if (!el("loop-bar")) return;
   const ready = engine.channels.size > 0;
   const full = loopA !== null && loopB !== null;
@@ -3395,6 +3433,7 @@ const PRESS_SLOP_PX = 10;
 const SCROLL_GUARD_MS = 1200;
 
 let lyricsDoc = null;             // normalizeDoc çıktısı (cihazdaki ya da sunucudan gelen)
+let lyricsEmptyText = "Bu şarkıda söz yok";   // liste modunda tam ekran sözler açıkken sözsüz şarkıda gösterilen metin
 let lyricsStarting = false;       // istek gidiyor
 let lyricsPollTimer = 0;
 let lyricsIndex = -2;             // son boyanan satır (-2: hiç boyanmadı)
@@ -3529,7 +3568,9 @@ function renderLyricsList() {
   list.scrollTop = 0;
   refreshLyricSubs(false);
   if (lyricsScreen && lyricsScreen.isOpen) {
-    lyricsScreen.setLines(lyricsDoc ? lyricsDoc.lines : [], lyricsDoc ? lyricsDoc.language : null, currentSubs());
+    // Çalma listesinde tam ekran AÇIK kalır: sözü olmayan şarkıda sade metin; liste dışında boş söz ekranı kapatır (eski davranış).
+    lyricsScreen.setLines(lyricsDoc ? lyricsDoc.lines : [], lyricsDoc ? lyricsDoc.language : null, currentSubs(),
+      playlistCtx ? lyricsEmptyText : null);
   }
 }
 
@@ -3934,6 +3975,7 @@ function resetLyrics() {
   lyricsStarting = false;
   lyricsEditing = false;
   lyricsFixing = false;
+  lyricsEmptyText = "Sözler yükleniyor…";       // yeni şarkının sözü gelene dek (liste modu); gelmezse aşağıda "söz yok"
   renderLyricsList();
   refreshLyricsUi();
 }
@@ -3982,6 +4024,7 @@ async function loadLyricsDoc() {
     return;
   }
   lyricsDoc = doc;
+  lyricsEmptyText = "Bu şarkıda söz yok";
   renderLyricsList();
   refreshLyricsUi();
   if (lyricsDoc) lyricsTick(engine.visualTime);
@@ -4447,23 +4490,151 @@ on("list-delete", "click", () => {
   requestBack("list");
 });
 
-// Listeden şarkı aç: oynatıcı bu listenin bağlamında açılır (geri tuşu liste ekranına döner).
-async function playListItem(index) {
-  const list = collection.getList(listView.lid);
-  if (!list || !list.items[index]) return;
+// ---- çalma: listeden başlat, otomatik geçiş, önceki/sonraki
+//
+// Oynatıcı bu listenin bağlamında açılır (geri tuşu liste ekranına döner). Şarkı bitince (engine.onEnded, ekran kapalıyken de
+// çalışan onended yolu) sıradaki çalınabilir şarkı açılıp kendiliğinden çalar. Aralar doğal yükleme süresi (cihazdaki şarkı
+// 1-2 sn); önceden hazırlama YOK (bellek: bir şarkı bırakılıp ötekisi yüklenir, tepe = tek şarkı). Anında başlatma ve sayım/bekleme yok.
+
+let listBusy = false;          // bir geçiş sürerken çift dokunma/olay yeni geçiş başlatmasın
+
+function playlistNow() {
+  if (!playlistCtx) return null;
+  const list = collection.getList(playlistCtx.lid);
+  if (!list) return null;
+  const at = indexOfItem(list.items, playlistCtx.iid);
+  if (at < 0) return null;
+  return { list, at, map: librarySongMap() };
+}
+
+function notePlayer(text, tone = "warn", ms = 6000) {
+  showMessage(el("player-message"), text, tone);
+  const mine = text;
+  setTimeout(() => {
+    if (el("player-message").textContent === mine) hideMessage(el("player-message"));
+  }, ms);
+}
+
+function updateListBar() {
+  const bar = el("list-bar");
+  if (!bar) return;
+  const now = playlistNow();
+  bar.hidden = !now;
+  media.setTrackControls(now ? { onPrevious: playlistPrevious, onNext: playlistNext } : null);
+  if (!now) return;
+  const ctx = listContext(now.map);
+  const next = nextPlayable(now.list.items, now.at, ctx);
+  el("list-bar-pos").textContent = positionLabel(now.list.name, now.at, now.list.items.length);
+  el("list-bar-sub").textContent = loopOn ? "Döngü açık: liste bekliyor"
+    : next.index >= 0 ? `Sıradaki: ${itemTitle(now.list.items[next.index], now.map)}` : "Son şarkı";
+  el("pl-prev").disabled = listBusy;
+  el("pl-next").disabled = listBusy;
+}
+
+async function playListIndex(index, { lid = playlistCtx && playlistCtx.lid, note = "" } = {}) {
+  if (listBusy) return false;
+  const list = lid ? collection.getList(lid) : null;
+  if (!list || !list.items[index]) return false;
   const map = librarySongMap();
   const ctx = listContext(map);
   const item = list.items[index];
   const state = itemState(item, ctx);
   if (state !== "ok") {
-    listMessage("list-message", {
+    const text = {
       missing: "Bu şarkı bulunamadı.", notready: "Bu şarkı henüz hazır değil.", offline: "İnternet yok, bu şarkı telefonda kayıtlı değil.",
-    }[state]);
-    return;
+    }[state];
+    if (!views.list.hidden) listMessage("list-message", text);
+    else notePlayer(text);
+    return false;
   }
+  listBusy = true;
   playlistCtx = { lid: list.id, iid: item.iid };
   collection.setCur(list.id, item.iid);
-  await openSong(map.get(item.song));
+  updateListBar();
+  let ok = false;
+  try {
+    ok = await openSong(map.get(item.song), { quiet: !views.player.hidden, fresh: true });
+  } finally {
+    listBusy = false;
+  }
+  if (!ok) {
+    updateListBar();
+    return false;
+  }
+  await startPlayback();
+  updateListBar();
+  if (note) notePlayer(note);
+  return true;
+}
+
+// Şarkı bitti: sıradaki çalınabilir var mı? Varsa geçişi başlatır ve true döner (sessiz <audio> durmasın). Yoksa liste bitti.
+function playlistAdvance() {
+  const now = playlistNow();
+  if (!now) return false;
+  const ctx = listContext(now.map);
+  const next = nextPlayable(now.list.items, now.at, ctx);
+  if (next.index < 0) {
+    collection.setCur(now.list.id, null);                    // bitti: "Devam" yok, baştan
+    notePlayer(next.skipped.length ? `Liste bitti. ${skipNote(next.skipped, (item) => itemTitle(item, now.map), ctx)}` : "Liste bitti.", "ok", 10000);
+    updateListBar();
+    return false;
+  }
+  playlistGoTo(now.list.id, next.index, next.skipped, now.map, ctx);
+  return true;
+}
+
+// Sıradakini aç; açılamazsa (ör. dosya bozuk/ağ) onu da atlanmış sayıp bir sonrakini dene (en çok liste uzunluğu kadar).
+async function playlistGoTo(lid, index, skipped, map, ctx) {
+  let at = index;
+  let skippedAll = [...skipped];
+  for (let guard = 0; guard < 120; guard += 1) {
+    const list = collection.getList(lid);
+    if (!list || !list.items[at]) return false;
+    const note = skipNote(skippedAll, (item) => itemTitle(item, map), ctx);
+    if (await playListIndex(at, { lid, note })) return true;
+    skippedAll = [...skippedAll, list.items[at]];
+    const next = nextPlayable(list.items, at, listContext(map));
+    skippedAll = [...skippedAll, ...next.skipped];
+    if (next.index < 0) {
+      notePlayer("Liste bitti (kalan şarkılar açılamadı).", "warn", 10000);
+      return false;
+    }
+    at = next.index;
+  }
+  return false;
+}
+
+async function playlistNext() {
+  const now = playlistNow();
+  if (!now || listBusy) return;
+  const ctx = listContext(now.map);
+  const next = nextPlayable(now.list.items, now.at, ctx);
+  if (next.index < 0) {
+    notePlayer("Listede sıradaki şarkı yok.", "ok", 4000);
+    return;
+  }
+  await playlistGoTo(now.list.id, next.index, next.skipped, now.map, ctx);
+}
+
+async function playlistPrevious() {
+  const now = playlistNow();
+  if (!now || listBusy) return;
+  const ctx = listContext(now.map);
+  const action = previousAction(now.list.items, now.at, engine.visualTime, ctx);
+  if (action.action === "restart") {
+    await engine.seek(0);
+    metronome.resync();
+    if (!engine.playing) await startPlayback();
+    return;
+  }
+  await playlistGoTo(now.list.id, action.index, action.skipped, now.map, ctx);
+}
+
+on("pl-prev", "click", playlistPrevious);
+on("pl-next", "click", playlistNext);
+
+async function playListItem(index) {
+  await playListIndex(index, { lid: listView.lid });
 }
 
 on("list-play", "click", () => {
@@ -5316,6 +5487,7 @@ window.addEventListener("unhandledrejection", (event) => {
 
 // Çalarken context askıya alınırsa motor kendini duraklatıyor; arayüz de
 // aynı durumu göstermeli, yoksa düğme "çalıyor" der, süre çubuğu donar.
+engine.onEnded = handleSongEnded;
 engine.onInterrupted = (state) => {
   stopPlayback();
   showMessage(el("player-message"),

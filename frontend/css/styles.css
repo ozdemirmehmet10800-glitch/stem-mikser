@@ -156,6 +156,18 @@ html, body {
 }
 .plist-choice small { color: var(--text-dim); }
 #list-edit[aria-pressed="true"] { background: var(--accent-dim); border-color: var(--accent); }
+/* Oynatıcıda çalma listesi çubuğu */
+.list-bar { display: flex; align-items: center; gap: 10px; padding: 6px 4px 10px; }
+.list-bar[hidden] { display: none; }
+.list-bar-text { flex: 1; min-width: 0; text-align: center; }
+.list-bar-pos { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.list-bar-sub { font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.list-bar-btn {
+  flex: 0 0 auto; width: 44px; height: 44px; display: grid; place-items: center; padding: 0; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 50%; color: var(--text); cursor: pointer;
+}
+.list-bar-btn svg { width: 22px; height: 22px; fill: currentColor; }
+.list-bar-btn:disabled { opacity: 0.35; cursor: default; }
 /* Satırdaki etiket çipleri (en çok 2 + "+N") */
 .song-tags { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
 .song-tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); color: var(--text-dim); border: 1px solid var(--line); }
@@ -1166,6 +1178,9 @@ input[type="range"]::-moz-range-thumb {
 .lf-track {
   list-style: none; margin: 0; padding: 0; position: relative;
 }
+/* Liste modunda yeni şarkının sözü yoksa / yükleniyorsa: ekran açık kalır, sade metin */
+.lyrics-full.empty .lf-stage { display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.lf-track .lf-empty { padding: 1rem 9%; font-size: clamp(18px, 5vw, 26px); color: rgba(255, 255, 255, 0.62); text-align: center; list-style: none; }
 .lf-track:lang(ja), .lf-line:lang(ja) {
   font-family: system-ui, -apple-system, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic",
     "Meiryo", "Noto Sans JP", "Noto Sans CJK JP", "Segoe UI", Roboto, sans-serif;

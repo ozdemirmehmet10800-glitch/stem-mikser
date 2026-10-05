@@ -155,6 +155,8 @@ export class Engine {
     // bkz. loop.js; konum her zaman currentTime'dan okunur.
     this.loop = null;
     this.epoch = 0;            // yeniden çıpalamada (başlatma, döngü kurma) artar
+    this.playGen = 0;          // play()/stop() ile artar: doğal bitiş olayı eski çalmadan geliyorsa yok sayılır
+    this.endTimer = 0;
     this.onLoopCleared = null; // döngü dışına seek -> (neden)
     this.seamGain = null;      // master'dan SONRA: dikiş çukuru buradan
     this.seamTimer = null;
@@ -1233,6 +1235,9 @@ export class Engine {
 
     await this.#rebuildStretch();
 
+    this.playGen += 1;
+    const gen = this.playGen;
+    let hooked = false;
     const startAt = this.ctx.currentTime + START_LEAD;
     // Signalsmith schedule({active:true}) olmadan hiç ses üretmiyor ve
     // kaynaklarla AYNI ana yazılması gerekiyor; SoundTouch'ta bu no-op.
@@ -1253,6 +1258,13 @@ export class Engine {
       // Altısı da AYNI startAt ile başlıyor -> aralarında sürüklenme yok.
       source.start(startAt, Math.min(this.offset, channel.buffer.duration));
       channel.source = source;
+      // DOĞAL BİTİŞ: kaynaklardan YALNIZ BİRİNE onended bağlanır (hepsi aynı anda biter). rAF döngüsü arka planda/ekran
+      // kapalıyken durur ve bitişi kaçırırdı; media olayları durmaz. stop() onended'ı sıfırlar, yani programlı duraklatma
+      // /sarma tetiklemez; döngüdeki kaynak zaten bitmez.
+      if (!hooked) {
+        hooked = true;
+        source.onended = () => this.#naturalEnd(gen);
+      }
     }
     this.startedAt = startAt;
     this.playing = true;
@@ -1260,8 +1272,30 @@ export class Engine {
     this.#startSeams();
   }
 
+  // Doğal bitiş (onended): esneticide çıkış kaynağın D (gecikme) gerisinden gelir, son notayı kesmemek için D kadar
+  // beklenir (rAF yolu currentTime ile zaten bekliyor). Aynı çalmaya ait değilse ya da döngü açıksa yok sayılır.
+  #naturalEnd(gen) {
+    if (!this.playing || gen !== this.playGen || this.loop) return;
+    clearTimeout(this.endTimer);
+    const wait = Math.max(0, Number(this.latency) || 0) * 1000 + 40;
+    this.endTimer = setTimeout(() => {
+      this.endTimer = 0;
+      if (this.playing && gen === this.playGen && !this.loop) this.#finish();
+    }, wait);
+  }
+
+  #finish() {
+    this.stop();
+    this.offset = 0; // bitince başa sar
+    if (this.onEnded) this.onEnded();
+    return true;
+  }
+
   stop() {
     this.#stopSeams();
+    this.playGen += 1;
+    clearTimeout(this.endTimer);
+    this.endTimer = 0;
     for (const channel of this.channels.values()) {
       if (channel.source) {
         try {
@@ -1310,10 +1344,7 @@ export class Engine {
     if (!this.playing) return false;
     if (this.loop) return false;   // döngü bitmez; b şarkı sonu olsa bile
     if (this.currentTime < this.duration - 0.02) return false;
-    this.stop();
-    this.offset = 0; // bitince başa sar
-    if (this.onEnded) this.onEnded();
-    return true;
+    return this.#finish();
   }
 
   dispose() {
