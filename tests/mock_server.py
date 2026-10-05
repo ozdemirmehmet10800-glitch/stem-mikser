@@ -65,6 +65,14 @@ _sub = {"mode": "done", "polls": 0, "left": {}, "state": {}}
 _lyrics = {"mode": "done", "polls": 0, "stale": False, "left": {}, "state": {}, "docs": {},
            "pending": {}}
 
+# Miks disa aktarma (Asama 12) taklidi: --export-mode done|error|busy|notready,
+# --export-polls N: POST sonrasi N durum sorgusu boyunca "running" kalir.
+# Cikti SENTETIK: sarkinin vokal stem'i dosya olarak servis edilir (gercek miks DEGIL);
+# arayuz testi istegin icerigini /__last_export ile okur.
+_export = {"mode": "done", "polls": 0, "jobs": {}, "left": {}, "last": None, "log": []}
+EXPORT_PARENT = {"lead": "vocals", "backing": "vocals", "kick": "drums", "snare": "drums",
+                 "toms": "drums", "hihat": "drums", "cymbals": "drums"}
+
 # Stem servisini yavaslatma: telefondaki ~0.6-1.2 MB/sn'yi taklit etmek ve
 # ilerleme/duraklatma davranisini gorebilmek icin.
 STEM_DELAY = 0.0
@@ -206,6 +214,32 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0]
         query = dict(re.findall(r"([^?&=]+)=([^&]*)", self.path))
+
+        match = re.fullmatch(r"/songs/([^/]+)/export", path)
+        if match:
+            if not self._authorized():
+                return
+            self._start_export(match.group(1))
+            return
+
+        match = re.fullmatch(r"/songs/([^/]+)/export/([0-9a-f]{32})/link", path)
+        if match:
+            if not self._authorized():
+                return
+            song_id, digest = match.groups()
+            job = _export["jobs"].get(digest)
+            if not job or job["state"] != "done":
+                self._json(404, {"detail": "Disa aktarma yok ya da suresi doldu"})
+                return
+            expires = int(time.time()) + DOWNLOAD_TTL
+            message = f"{song_id}|export{digest}|{job['format']}|{expires}".encode("utf-8")
+            signature = hmac.new(SIGNING_KEY.encode(), message, hashlib.sha256).hexdigest()
+            host = self.headers.get("Host", "127.0.0.1:8001")
+            url = (f"http://{host}/songs/{song_id}/export-file/{digest}"
+                   f"?format={job['format']}&exp={expires}&sig={signature}")
+            self._json(200, {"url": url, "expires_at": expires, "ttl": DOWNLOAD_TTL,
+                             "filename": job["filename"], "format": job["format"], "bytes": job["bytes"]})
+            return
 
         match = re.fullmatch(r"/songs/([^/]+)/sub", path)
         if match:
@@ -463,6 +497,62 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"songs": songs})
             return
 
+        if path == "/__last_export":
+            self._json(200, {"last": _export["last"], "log": _export["log"]})
+            return
+
+        match = re.fullmatch(r"/songs/([^/]+)/export/([0-9a-f]{32})", path)
+        if match:
+            if not self._authorized():
+                return
+            song_id, digest = match.groups()
+            job = _export["jobs"].get(digest)
+            if not job:
+                self._json(404, {"detail": "Disa aktarma yok ya da suresi doldu"})
+                return
+            if job["state"] == "running":
+                left = _export["left"].get(digest, 0)
+                if left > 0:
+                    _export["left"][digest] = left - 1
+                elif _export["mode"] == "error":
+                    job["state"] = "error"
+                    job["message"] = "sahte hata"
+                else:
+                    job["state"] = "done"
+            if job["state"] == "running":
+                self._json(200, {"id": song_id, "hash": digest, "state": "running"})
+            elif job["state"] == "error":
+                self._json(200, {"id": song_id, "hash": digest, "state": "error", "message": job["message"]})
+            else:
+                self._json(200, {"id": song_id, "hash": digest, "state": "done", "filename": job["filename"],
+                                 "format": job["format"], "bytes": job["bytes"], "duration": job["duration"]})
+            return
+
+        match = re.fullmatch(r"/songs/([^/]+)/export-file/([0-9a-f]{32})", path)
+        if match:
+            # Imzali indirme: token ISTEMEZ (gercek API ile ayni)
+            song_id, digest = match.groups()
+            fmt = query.get("format", "m4a")
+            try:
+                exp = int(query.get("exp", "0"))
+            except ValueError:
+                exp = 0
+            message = f"{song_id}|export{digest}|{fmt}|{exp}".encode("utf-8")
+            expected = hmac.new(SIGNING_KEY.encode(), message, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(query.get("sig", ""), expected):
+                self._json(403, {"detail": "Imza gecersiz"})
+                return
+            job = _export["jobs"].get(digest)
+            song = self._song(song_id)
+            if not job or job["state"] != "done" or not song:
+                self._json(404, {"detail": "Dosya bulunamadi"})
+                return
+            data = (song["dir"] / "stems" / "vocals.m4a").read_bytes()
+            ascii_name = job["filename"].encode("ascii", "ignore").decode("ascii").strip() or "export"
+            self._send(200, data, "audio/mp4" if fmt == "m4a" else "audio/wav", {
+                "Content-Disposition": f'attachment; filename="{ascii_name}"'})
+            return
+
         match = re.fullmatch(r"/songs/([^/]+)/lyrics", path)
         if match:
             if not self._authorized():
@@ -593,6 +683,82 @@ class Handler(BaseHTTPRequestHandler):
                 "manual_lines": len(manual), "low_confidence_lines": list(low),
                 "gaps": [[round(duration * 0.5, 1), round(duration * 0.5 + 18, 1), 24]]}
 
+    def _start_export(self, song_id):
+        song = self._song(song_id)
+        if not song:
+            self._json(404, {"detail": "Sarki bulunamadi"})
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            self._json(400, {"detail": "Govde JSON olmali"})
+            return
+        if not isinstance(body, dict):
+            self._json(400, {"detail": "Govde JSON nesnesi olmali"})
+            return
+        status = song["status"]
+        _export["log"].append(body)
+        _export["last"] = body
+        if _export["mode"] == "notready":
+            self._json(409, {"detail": "Sarki henuz hazir degil"})
+            return
+        fmt = body.get("format", "m4a")
+        if fmt not in ("m4a", "wav"):
+            self._json(400, {"detail": "format m4a/wav olmali"})
+            return
+        gains = body.get("gains")
+        if not isinstance(gains, dict) or not gains:
+            self._json(400, {"detail": "gains (kanal -> kazanc) gerekli"})
+            return
+        ready = set(status.get("stems") or [])
+        for group, key in (("vocals", "sub"), ("drums", "sub_drums")):
+            if ((_sub["state"].get((song_id, group)) or status.get(key) or {}).get("state")) == "done":
+                ready.update(n for n, p in EXPORT_PARENT.items() if p == group)
+        for name, value in gains.items():
+            if name not in ready:
+                self._json(400, {"detail": f"Bilinmeyen ya da kullanilamayan kanal: {name[:30]}"})
+                return
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 2:
+                self._json(400, {"detail": f"kazanc ({name}) 0..2 araliginda olmali"})
+                return
+            parent = EXPORT_PARENT.get(name)
+            if parent and gains.get(parent):
+                self._json(400, {"detail": f"{parent} ile alt parcasi ({name}) birlikte karistirilamaz"})
+                return
+        if not any(value > 0 for value in gains.values()):
+            self._json(400, {"detail": "Hicbir kanal duyulmuyor"})
+            return
+        canon = json.dumps({**body, "sv": status.get("stems_version")}, sort_keys=True,
+                           separators=(",", ":"), ensure_ascii=False)
+        digest = hashlib.sha256(canon.encode("utf-8")).hexdigest()[:32]
+        job = _export["jobs"].get(digest)
+        if job and job["state"] == "done":
+            self._json(200, {"id": song_id, "hash": digest, "state": "done", "existing": True,
+                             "filename": job["filename"], "bytes": job["bytes"], "duration": job["duration"]})
+            return
+        if any(j["state"] == "running" and h != digest for h, j in _export["jobs"].items()) \
+                or _export["mode"] == "busy":
+            self._json(409, {"detail": "Baska bir disa aktarma suruyor"})
+            return
+        region = body.get("region")
+        duration = float(status.get("duration") or 120.0)
+        rate = float(body.get("rate") or 1.0)
+        if region:
+            duration = float(region["b"]) - float(region["a"])
+        bad = set('<>:"/|?*') | {"\\"}
+        title = " ".join("".join(" " if c in bad else c for c in (status.get("title") or song_id[:12])).split())[:80]
+        tail = " - ".join([body.get("label") or "Miks"]
+                          + ([f"{rate:g}x"] if rate != 1.0 else [])
+                          + ([f"{int(body['semitones']):+d}"] if body.get("semitones") else [])
+                          + (["dongu"] if region else []))
+        filename = f"{title} - {tail}.{fmt}"
+        size = (song["dir"] / "stems" / "vocals.m4a").stat().st_size
+        _export["jobs"][digest] = {"state": "running", "format": fmt, "filename": filename,
+                                   "bytes": size, "duration": round(duration / rate, 2)}
+        _export["left"][digest] = _export["polls"]
+        self._json(200, {"id": song_id, "hash": digest, "state": "running", "format": fmt})
+
     def _finish_sub(self, song_id, song):
         """Calisan sahte alt ayrimlari, bekleme sorgulari bitince sonuclandirir."""
         for group, key in (("vocals", "sub"), ("drums", "sub_drums")):
@@ -679,6 +845,11 @@ def main():
                         help="POST /lyrics sonrasi kac durum sorgusu 'running' kalsin")
     parser.add_argument("--lyrics-stale", action="store_true",
                         help="sonuc 'eski ayristirmadan' (parent_stems_version farkli)")
+    parser.add_argument("--export-mode", default="done",
+                        choices=["done", "error", "busy", "notready"],
+                        help="POST /export sonucu (Asama 12 taklidi)")
+    parser.add_argument("--export-polls", type=int, default=0,
+                        help="POST /export sonrasi kac durum sorgusu 'running' kalsin")
     parser.add_argument("--stem-delay", type=float, default=0.0,
                         help="her stem istegini bu kadar saniye beklet (yavas ag taklidi)")
     args = parser.parse_args()
@@ -689,6 +860,8 @@ def main():
     _lyrics["mode"] = args.lyrics_mode
     _lyrics["polls"] = args.lyrics_polls
     _lyrics["stale"] = args.lyrics_stale
+    _export["mode"] = args.export_mode
+    _export["polls"] = args.export_polls
     COLD_DELAY = args.cold
     _pending["left"] = args.pending
     global STEM_DELAY

@@ -230,6 +230,30 @@ export class Api {
     return (await this.#request(`/songs/${encodeURIComponent(id)}/lyrics`)).json();
   }
 
+  // Miks dışa aktarma (Aşama 12). body: {format, gains, master, region?, rate?, semitones?, label}.
+  // Dönen {hash, state: "running" | "done", existing?, filename?, bytes?, duration?}.
+  // 400 doğrulama, 409 "başka dışa aktarma sürüyor" / "şarkı hazır değil".
+  async startExport(id, body) {
+    return (await this.#request(`/songs/${encodeURIComponent(id)}/export`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })).json();
+  }
+
+  // {state: "running" | "done" | "error", filename, format, bytes, duration, message}. 404: yok ya da süresi doldu.
+  async getExport(id, hash) {
+    return (await this.#request(
+      `/songs/${encodeURIComponent(id)}/export/${encodeURIComponent(hash)}`)).json();
+  }
+
+  // İmzalı, token'sız indirme bağlantısı: {url, filename, format, bytes, expires_at}.
+  async exportLink(id, hash) {
+    return (await this.#request(
+      `/songs/${encodeURIComponent(id)}/export/${encodeURIComponent(hash)}/link`,
+      { method: "POST" })).json();
+  }
+
   async #fetchAudio(path, onProgress, signal) {
     const response = await this.#request(path, signal ? { signal } : {});
     const total = Number(response.headers.get("content-length")) || 0;

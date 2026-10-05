@@ -122,6 +122,7 @@
     <div class="mix-bar">
       <div class="mix-presets" id="mix-presets" role="group" aria-label="Mikser ön ayarları"></div>
       <button type="button" class="chip" id="mix-reset">Sıfırla</button>
+      <button type="button" class="chip chip-primary" id="export-open" disabled>Dışa aktar</button>
     </div>
     <div class="mix-notice" id="mix-notice" hidden>
       <span>Son ayar geri yüklendi</span>
@@ -348,6 +349,61 @@
       </div>
     </form>
   </section>
+
+  <!-- miksi dışa aktar (Aşama 12) -->
+  <div class="export-sheet" id="export-sheet" hidden>
+    <div class="export-backdrop" id="export-backdrop"></div>
+    <div class="export-box" role="dialog" aria-modal="true" aria-labelledby="export-title">
+      <div class="export-head">
+        <h2 id="export-title">Dışa aktar</h2>
+        <button type="button" class="icon-btn" id="export-close" aria-label="Kapat">
+          <svg viewBox="0 0 24 24"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
+        </button>
+      </div>
+
+      <div class="export-summary">
+        <b id="export-preset">Miks</b>
+        <span id="export-summary-text"></span>
+      </div>
+
+      <fieldset class="export-field" id="export-format-field">
+        <legend>Biçim</legend>
+        <label class="export-seg">
+          <input type="radio" name="export-format" value="m4a" checked>
+          <span>m4a <small>küçük dosya</small></span>
+        </label>
+        <label class="export-seg">
+          <input type="radio" name="export-format" value="wav">
+          <span>wav <small>kayıpsız, büyük</small></span>
+        </label>
+      </fieldset>
+
+      <label class="export-check" id="export-tempo-row">
+        <input type="checkbox" id="export-tempo">
+        <span>Mikserdeki hız ve ton <small id="export-tempo-note"></small></span>
+      </label>
+      <label class="export-check" id="export-region-row" hidden>
+        <input type="checkbox" id="export-region">
+        <span>Yalnız A-B bölgesi <small id="export-region-note"></small></span>
+      </label>
+
+      <div class="export-status" id="export-status" hidden>
+        <div class="export-bar" id="export-bar" hidden><i></i></div>
+        <div class="export-status-text" id="export-status-text"></div>
+      </div>
+      <div class="message" id="export-message" hidden></div>
+
+      <div class="export-result" id="export-result" hidden>
+        <div class="export-file" id="export-file"></div>
+        <div class="export-actions">
+          <button type="button" class="btn btn-primary" id="export-download">İndir</button>
+          <button type="button" class="btn" id="export-share" hidden>Paylaş</button>
+        </div>
+      </div>
+
+      <button type="button" class="btn btn-primary export-go" id="export-go">Dışa aktar</button>
+    </div>
+  </div>
 
   <!-- yükleniyor katmanı -->
   <div class="overlay" id="overlay" hidden>
