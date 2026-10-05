@@ -457,6 +457,9 @@ def _delete_block_reason(status):
     if _sub_is_running(status):
         return ("Alt parcalar ayrilirken silinemez. "
                 "Bitmesini bekleyip tekrar dene.")
+    if _lyrics_is_running(status):
+        return ("Sozler hazirlanirken silinemez. "
+                "Bitmesini bekleyip tekrar dene.")
     return None
 
 
@@ -3308,6 +3311,434 @@ def sub_cleanup(yes: bool = False, only: str = ""):
                      ensure_ascii=False, indent=2))
 
 
+# --------------------------------------------------------------------------
+# Şarkı sözleri (Aşama 11)
+#
+# İKİ mod, tek şema: "auto" (Whisper large-v3 çıkarır) ve "pasted" (kullanıcının
+# yapıştırdığı metin sese hizalanır). Girdi SW vokal stem'i. VAD YOK (reverb'li
+# vokalde sesi konuşma saymıyor: NEM slowed'da söz hata oranı 0.97), onun yerine
+# vokal enerjisinden enerji maskesi. Ölçümler PLAN.md Aşama 11'de.
+# Ana şarkı yeniden işlenince sözler SİLİNMEZ: `parent_stems_version` ile
+# karşılaştırılıp "eski ayrıştırmadan" diye işaretlenir (`_lyr_stale`).
+# Yapıştırılan metin yalnız Volume'da (lyrics.json) durur; depoya girmez.
+# --------------------------------------------------------------------------
+
+LYRICS_LANGS = ("tr", "en", "ja")
+LYRICS_MODES = ("auto", "pasted")
+LYRICS_MODEL = "large-v3"
+LYRICS_HF_HOME = "/data/weights-lyrics/hf"      # deneyde indirilen faster-whisper ağırlığı
+LYRICS_RATE = 16000
+LYRICS_HOP = 0.05                    # sn: enerji çerçevesi
+LYRICS_SILENT_DBFS = SUB_SILENT_DBFS  # "vokal yok" kapısıyla AYNI sayı (-50 dBFS)
+LYRICS_SILENCE_MIN_SECONDS = 2.0     # >= bu kadar sessizlik "enstrümantal bölge"
+LYRICS_BREATH_GAP_SECONDS = 0.5      # bundan kısa boşluklar nefes sayılır
+LYRICS_MAX_CHARS = 30000
+LYRICS_MAX_LINES = 400
+LYRICS_RUNNING_STALE_SECONDS = 2400
+LYRICS_MIN_LINE_SECONDS = 0.2        # süzgeç: bundan kısa satır uydurma sayılır
+LYRICS_MIN_LINE_LETTERS = 2          # süzgeç: harf sayısı bundan az
+LYRICS_MAX_REPEATS = 3               # süzgeç: aynı satırın art arda en çok bu kadarı
+LYRICS_ACTIVE_LINE_FRACTION = 0.3    # süzgeç: kelimesiz satırın en az %30'u sesli
+# "Metin sesle uyuşmuyor olabilir" (yapıştır ve hizala): uyuşan hizalamalarda
+# ortalama kelime olasılığı 0.49-0.77, uyuşmayanlarda 0.05-0.15 ölçüldü (4 çift);
+# sessiz satır oranı zayıf bir işaret (uyuşmayanda 0 ve 0.05, uyuşanda 0).
+LYRICS_MISMATCH_PROB = 0.30
+LYRICS_MISMATCH_SILENT_RATIO = 0.03
+LYRICS_MISMATCH_SILENT_LINES = 2
+LYRICS_USD_PER_SECOND = SUB_USD_PER_SECOND
+
+_LYR_NVIDIA = "/usr/local/lib/python3.11/site-packages/nvidia"
+# AYRI imaj: separate_image (Hi-Fi) ve sub_image'a DOKUNULMAZ.
+lyrics_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("ffmpeg")
+    .pip_install("torch==2.5.1", "torchaudio==2.5.1", "numpy==1.26.4")
+    .pip_install(
+        "faster-whisper==1.2.1",
+        "ctranslate2==4.6.0",       # CUDA 12 + cuDNN 9 (torch 2.5.1 cu124 ile birlikte çalıştı)
+        "stable-ts==2.19.1",        # NOT: depo arşivli (2026-05-30); sürüm pinli
+        "soundfile==0.13.1",
+    )
+    .env({
+        "HF_HOME": LYRICS_HF_HOME,
+        "LD_LIBRARY_PATH": f"{_LYR_NVIDIA}/cudnn/lib:{_LYR_NVIDIA}/cublas/lib:"
+                           f"{_LYR_NVIDIA}/cuda_runtime/lib",
+    })
+)
+
+
+def _lyrics_is_running(status) -> bool:
+    lyr = (status or {}).get("lyrics") or {}
+    if lyr.get("state") != "running":
+        return False
+    return (time.time() - float(lyr.get("started") or 0)) < LYRICS_RUNNING_STALE_SECONDS
+
+
+def _lyr_stale(status) -> bool:
+    """Sözler başka bir ayrıştırmadan mı? (Ana şarkı sonradan yeniden işlendi.)"""
+    lyr = (status or {}).get("lyrics") or {}
+    if lyr.get("state") != "done":
+        return False
+    return lyr.get("parent_stems_version") != (status or {}).get("stems_version")
+
+
+def _lyr_check_text(text) -> tuple:
+    """Yapıştırılan metni satırlara böler. Dönen: (satırlar, hata ya da None).
+
+    Boş satırlar atılır, her satır kırpılır, denetim karakterleri silinir.
+    """
+    if not isinstance(text, str):
+        return [], "metin gerekli"
+    if len(text) > LYRICS_MAX_CHARS:
+        return [], f"metin en fazla {LYRICS_MAX_CHARS} karakter olabilir"
+    cleaned = "".join(ch for ch in text if ch in "\n\r\t" or ch >= " ")
+    lines = [" ".join(line.split()) for line in cleaned.splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return [], "metin bos"
+    if len(lines) > LYRICS_MAX_LINES:
+        return [], f"en fazla {LYRICS_MAX_LINES} satir olabilir"
+    return lines, None
+
+
+def _lyr_levels(audio):
+    """LYRICS_HOP çerçevelerinde RMS, dBFS (mono 16 kHz diziden)."""
+    import numpy as np
+
+    size = int(LYRICS_HOP * LYRICS_RATE)
+    count = len(audio) // size
+    frames = audio[: count * size].reshape(count, size).astype(np.float64)
+    rms = np.sqrt(np.mean(frames ** 2, axis=1))
+    return 20 * np.log10(np.maximum(rms, 1e-9))
+
+
+def _lyr_activity(levels):
+    """(aktif çerçeve maskesi, eşik dBFS, p95). Eşik: mutlak -50 ile (tepe - 40 dB)'nin büyüğü."""
+    import numpy as np
+
+    p95 = float(np.percentile(levels, 95))
+    threshold = max(LYRICS_SILENT_DBFS, p95 - 40.0)
+    return levels > threshold, threshold, p95
+
+
+def _lyr_fill_gaps(active, max_gap_frames: int):
+    """Kısa nefes boşluklarını aktif say."""
+    out = active.copy()
+    n = len(out)
+    i = 0
+    while i < n:
+        if out[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and not out[j]:
+            j += 1
+        if i > 0 and j < n and (j - i) <= max_gap_frames:
+            out[i:j] = True
+        i = j
+    return out
+
+
+def _lyr_silences(active):
+    """Ardışık sessiz çerçeve aralıkları >= LYRICS_SILENCE_MIN_SECONDS: [(a, b)] (b hariç)."""
+    filled = _lyr_fill_gaps(active, int(LYRICS_BREATH_GAP_SECONDS / LYRICS_HOP))
+    regions = []
+    n = len(filled)
+    i = 0
+    while i < n:
+        if filled[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and not filled[j]:
+            j += 1
+        if (j - i) * LYRICS_HOP >= LYRICS_SILENCE_MIN_SECONDS:
+            regions.append((i, j))
+        i = j
+    return regions
+
+
+def _lyr_lines_in_silence(lines, silences) -> int:
+    """Süresinin >= %50'si enstrümantal (sessiz) bölgeye düşen satır sayısı."""
+    count = 0
+    for line in lines:
+        a, b = int(line["start"] / LYRICS_HOP), int(line["end"] / LYRICS_HOP)
+        span = max(b - a, 1)
+        covered = sum(max(0, min(b, e) - max(a, s)) for s, e in silences)
+        if covered / span >= 0.5:
+            count += 1
+    return count
+
+
+def _lyr_join(words) -> str:
+    """Kelimelerden satır metni: boşluklu yazıda (tr/en) arada boşluk, Japoncada bitişik."""
+    if any(w["w"].startswith(" ") or w["w"].endswith(" ") for w in words):
+        return " ".join(w["w"].strip() for w in words if w["w"].strip())
+    return "".join(w["w"] for w in words).strip()
+
+
+def _lyr_mask_filter(lines, active):
+    """Enerji maskesi: orta noktası sessiz çerçevede kalan KELİMELER atılır; kelimesi
+    kalmayan (ya da kelime bilgisi yokken çerçevelerinin %30'undan azı sesli) satır
+    atılır. Satır aralığı kalan kelimelerden yeniden hesaplanır."""
+    n = len(active)
+    out = []
+    for line in lines:
+        words = line.get("words") or []
+        if words:
+            alive = []
+            for w in words:
+                mid = int(((w["s"] + w["e"]) / 2) / LYRICS_HOP)
+                if 0 <= mid < n and active[mid]:
+                    alive.append(w)
+            if not alive:
+                continue
+            line = dict(line, words=alive, start=alive[0]["s"], end=alive[-1]["e"],
+                        text=_lyr_join(alive))
+        else:
+            a = int(line["start"] / LYRICS_HOP)
+            b = max(int(line["end"] / LYRICS_HOP), a + 1)
+            if b > n or active[a:b].mean() < LYRICS_ACTIVE_LINE_FRACTION:
+                continue
+        out.append(line)
+    return out
+
+
+def _lyr_clean_lines(lines):
+    """Kısa ve tekrar süzgeçleri (yalnız auto): çok kısa süreli ya da harfsiz satırlar
+    ve aynı satırın art arda LYRICS_MAX_REPEATS'ten fazla tekrarı atılır."""
+    kept = []
+    for line in lines:
+        text = str(line.get("text") or "").strip()
+        letters = sum(1 for ch in text if ch.isalpha())
+        if letters < LYRICS_MIN_LINE_LETTERS:
+            continue
+        if (line["end"] - line["start"]) < LYRICS_MIN_LINE_SECONDS:
+            continue
+        kept.append(dict(line, text=text))
+    out, run = [], 0
+    for line in kept:
+        if out and out[-1]["text"] == line["text"]:
+            run += 1
+            if run >= LYRICS_MAX_REPEATS:
+                continue
+        else:
+            run = 0
+        out.append(line)
+    return out
+
+
+def _lyr_quality(lines, silences) -> dict:
+    probs = [w["p"] for line in lines for w in (line.get("words") or []) if "p" in w]
+    silent = _lyr_lines_in_silence(lines, silences)
+    return {
+        "silent_lines": silent,
+        "silent_line_ratio": round(silent / max(len(lines), 1), 4),
+        "mean_word_prob": round(sum(probs) / len(probs), 3) if probs else None,
+    }
+
+
+def _lyr_mismatch(quality: dict) -> bool:
+    """Yapıştırılan metin sesle uyuşmuyor olabilir mi? (yalnız pasted)"""
+    prob = quality.get("mean_word_prob")
+    if prob is not None and prob < LYRICS_MISMATCH_PROB:
+        return True
+    return (quality["silent_lines"] >= LYRICS_MISMATCH_SILENT_LINES
+            and quality["silent_line_ratio"] >= LYRICS_MISMATCH_SILENT_RATIO)
+
+
+def _lyr_doc(source: str, language: str, lines, duration: float, version: int) -> dict:
+    """lyrics.json şeması (schema 1). Zamanlar ŞARKI saniyesinde (hızdan bağımsız)."""
+    return {
+        "schema": 1, "version": version, "source": source, "language": language,
+        "duration": round(float(duration), 2),
+        "lines": [
+            {"t": round(float(line["start"]), 2), "e": round(float(line["end"]), 2),
+             "text": str(line["text"]),
+             "w": [[round(float(w["s"]), 2), round(float(w["e"]), 2), str(w["w"]).strip()]
+                   for w in (line.get("words") or [])]}
+            for line in lines
+        ],
+    }
+
+
+def _lyr_language_windows(audio, count: int = 4):
+    """Vokal enerjisi en yüksek, birbiriyle çakışmayan 30 sn'lik pencereler."""
+    import numpy as np
+
+    size = 30 * LYRICS_RATE
+    if len(audio) <= size:
+        return [audio]
+    step = 10 * LYRICS_RATE
+    starts = list(range(0, len(audio) - size + 1, step))
+    ranked = sorted(starts, key=lambda s: -float(np.mean(audio[s:s + size].astype(np.float64) ** 2)))
+    chosen = []
+    for start in ranked:
+        if all(abs(start - other) >= size for other in chosen):
+            chosen.append(start)
+        if len(chosen) == count:
+            break
+    return [audio[s:s + size] for s in sorted(chosen)]
+
+
+def _lyr_pick_language(window_scores) -> tuple:
+    """Pencere başına {dil: olasılık} listesinden tr/en/ja içinde kazanan.
+
+    Yalnız desteklenen üç dil sayılır (ilk sürümde tek dil, tr/en/ja). Dönen:
+    (dil, ayrıntı). Skor yoksa dil None."""
+    totals = {lang: 0.0 for lang in LYRICS_LANGS}
+    for scores in window_scores:
+        for lang in LYRICS_LANGS:
+            totals[lang] += float(scores.get(lang, 0.0))
+    count = max(len(window_scores), 1)
+    mean = {lang: round(totals[lang] / count, 3) for lang in LYRICS_LANGS}
+    if not window_scores or max(totals.values()) <= 0:
+        return None, {"windows": len(window_scores), "scores": mean}
+    return max(totals, key=totals.get), {"windows": len(window_scores), "scores": mean}
+
+
+def _lyr_detect_language(model, audio) -> tuple:
+    scores = []
+    for window in _lyr_language_windows(audio):
+        _, _, all_probs = model.detect_language(audio=window)
+        scores.append({lang: float(prob) for lang, prob in all_probs})
+    return _lyr_pick_language(scores)
+
+
+def _lyr_segments(result) -> list:
+    """stable-ts sonucundan satır sözlükleri (kelime olasılıklarıyla)."""
+    lines = []
+    for seg in result.segments:
+        words = [{"s": float(w.start), "e": float(w.end), "w": w.word,
+                  "p": float(getattr(w, "probability", 0.0) or 0.0)}
+                 for w in (seg.words or [])]
+        lines.append({"start": float(seg.start), "end": float(seg.end),
+                      "text": str(seg.text).strip(), "words": words})
+    return lines
+
+
+def _lyr_restore(song_id: str, previous, message: str, kind: str):
+    """İş başarısız / sonuçsuz: ÖNCEKİ tamam kayıt varsa geri koy (dosyası hâlâ yerinde)."""
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if previous and previous.get("state") == "done":
+        record = dict(previous, last_attempt={"state": kind, "message": message[:300],
+                                              "finished_at": stamp})
+    else:
+        record = {"state": kind, "message": message[:300], "finished_at": stamp}
+    _write_status(song_id, lyrics=record)
+
+
+@app.function(
+    image=lyrics_image,
+    gpu="T4",
+    volumes={DATA_DIR: volume},
+    timeout=1800,
+    max_containers=1,       # min_containers YOK: boştayken maliyet sıfır
+)
+def extract_lyrics(song_id: str, mode: str = "auto", language: str = "auto",
+                   text: str = "") -> dict:
+    """SW vokal stem'inden sözleri çıkarır (auto) ya da verilen metni hizalar (pasted).
+
+    "Vokal yok" kapısı BURADA DEĞİL, API'de (CPU): GPU konteyneri açılmadan elenir.
+    Hata olursa ÖNCEKİ tamam kayıt geri konur (yoksa state=error).
+    """
+    volume.reload()
+    previous = None
+    with contextlib.suppress(Exception):
+        previous = (json.loads((_song_dir(song_id) / "status.json").read_text(encoding="utf-8"))
+                    .get("lyrics") or {}).get("previous")
+    try:
+        return _extract_lyrics_impl(song_id, mode, language, text, previous)
+    except Exception as error:
+        with contextlib.suppress(Exception):
+            volume.reload()
+            _lyr_restore(song_id, previous, f"{type(error).__name__}: {error}", "error")
+        raise
+
+
+def _extract_lyrics_impl(song_id: str, mode: str, language: str, text: str, previous) -> dict:
+    import stable_whisper
+
+    started = time.time()
+    if mode not in LYRICS_MODES:
+        raise ValueError(f"bilinmeyen mod: {mode!r}")
+    if language != "auto" and language not in LYRICS_LANGS:
+        raise ValueError(f"bilinmeyen dil: {language!r}")
+    status = json.loads((_song_dir(song_id) / "status.json").read_text(encoding="utf-8"))
+    vocal_path = _song_dir(song_id) / "master" / "vocals.flac"
+    if not vocal_path.is_file():
+        raise FileNotFoundError(f"master/vocals.flac yok: {song_id}")
+    pasted_lines = []
+    if mode == "pasted":
+        pasted_lines, problem = _lyr_check_text(text)
+        if problem:
+            raise ValueError(problem)
+
+    audio = _decode_mono(vocal_path, LYRICS_RATE)
+    duration = len(audio) / LYRICS_RATE
+    active, threshold, _p95 = _lyr_activity(_lyr_levels(audio))
+    silences = _lyr_silences(active)
+
+    load_started = time.time()
+    model = stable_whisper.load_faster_whisper(LYRICS_MODEL, device="cuda", compute_type="float16")
+    load_seconds = round(time.time() - load_started, 1)
+
+    detect = None
+    lang = language
+    if language == "auto":
+        lang, detect = _lyr_detect_language(model, audio)
+        if lang is None:
+            raise RuntimeError("dil algilanamadi (tr/en/ja olasiligi sifir)")
+
+    work_started = time.time()
+    if mode == "auto":
+        result = model.transcribe(audio, language=lang, vad=False, word_timestamps=True,
+                                  condition_on_previous_text=False, regroup=True)
+        raw = _lyr_segments(result)
+        lines = _lyr_clean_lines(_lyr_mask_filter(raw, active))
+        dropped = len(raw) - len(lines)
+    else:
+        result = model.align(audio, "\n".join(pasted_lines), language=lang, original_split=True)
+        lines = _lyr_segments(result)          # kullanıcı metni: satır süzülmez
+        dropped = 0
+    work_seconds = round(time.time() - work_started, 1)
+
+    if not lines:
+        _lyr_restore(song_id, previous, "Bu sesten soz cikarilamadi", "no_lyrics")
+        return _assert_plain({"song_id": song_id, "state": "no_lyrics", "mode": mode,
+                              "language": lang})
+
+    quality = _lyr_quality(lines, silences)
+    warning = "text_mismatch" if (mode == "pasted" and _lyr_mismatch(quality)) else None
+    version = int(time.time())
+    doc = _lyr_doc(mode, lang, lines, duration, version)
+    path = _song_dir(song_id) / "lyrics.json"
+    tmp = path.with_name("lyrics.json.tmp")
+    tmp.write_text(json.dumps(doc, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    os.replace(tmp, path)                      # önce dosya (atomik), SONRA status
+    wall = round(time.time() - started, 1)
+    record = {
+        "state": "done", "source": mode, "language": lang, "language_requested": language,
+        "language_detect": detect, "version": version,
+        "lines": len(doc["lines"]), "words": sum(len(x["w"]) for x in doc["lines"]),
+        "dropped_lines": dropped, "warning": warning, "quality": quality,
+        "parent_stems_version": status.get("stems_version"),
+        "parent_pipeline": status.get("pipeline"),
+        "model": {"name": f"faster-whisper {LYRICS_MODEL} + stable-ts", "vad": False,
+                  "input": "stem"},
+        "thresholds": {"silent_dbfs": LYRICS_SILENT_DBFS, "activity_dbfs": round(threshold, 1),
+                       "mismatch_prob": LYRICS_MISMATCH_PROB},
+        "seconds": {"model_load": load_seconds, "work": work_seconds, "wall": wall},
+        "cost_usd_estimate": round(wall * LYRICS_USD_PER_SECOND, 4),
+        "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    _write_status(song_id, lyrics=record)
+    print(f"[soz] {mode} {lang}: {record['lines']} satir, {record['words']} kelime, "
+          f"{wall} sn, uyari={warning}")
+    return _assert_plain({"song_id": song_id, "state": "done", "mode": mode, "language": lang,
+                          "lines": record["lines"], "warning": warning, "wall_s": wall})
+
+
 @app.function(
     image=separate_image,
     gpu="T4",
@@ -4632,6 +5063,10 @@ def api():
                         "sub_version": (data.get("sub") or {}).get("version"),
                         "sub_drums_state": (data.get("sub_drums") or {}).get("state"),
                         "sub_drums_version": (data.get("sub_drums") or {}).get("version"),
+                        "lyrics_state": (data.get("lyrics") or {}).get("state"),
+                        "lyrics_version": (data.get("lyrics") or {}).get("version"),
+                        "lyrics_source": (data.get("lyrics") or {}).get("source"),
+                        "lyrics_stale": _lyr_stale(data),
                     }
                 )
             return found
@@ -4755,6 +5190,95 @@ def api():
                 "call_id": str(call.object_id), "rms_dbfs": level,
                 **({"vocal_rms_dbfs": level} if group == "vocals" else {})}
 
+    # ---------------- şarkı sözleri (Aşama 11) --------------------------------
+
+    @web.post("/songs/{song_id}/lyrics")
+    async def start_lyrics(song_id: str, request: Request, _=auth):
+        """Sözleri çıkarır ("auto") ya da yapıştırılan metni sese hizalar ("pasted").
+
+        Gövde (JSON): {"mode": "auto|pasted", "language": "auto|tr|en|ja",
+        "text": "...", "replace": false}. Sıra: doğrulama, CPU'da "vokal yok"
+        kontrolü (GPU AÇILMAZ), sonra GPU işi. Mevcut sonuç varsa auto tekrar
+        koşmaz (`replace: true` ister; YAPIŞTIRILMIŞ sözün üstüne yazmak da
+        buna bağlı). pasted her zaman koşar. Metin yalnız Volume'da durur.
+        """
+        try:
+            body = await request.json()
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Govde JSON olmali")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Govde JSON nesnesi olmali")
+        mode = body.get("mode", "auto")
+        language = body.get("language", "auto")
+        replace = body.get("replace") is True
+        if mode not in LYRICS_MODES:
+            raise HTTPException(status_code=400, detail="Gecersiz mod")
+        if language != "auto" and language not in LYRICS_LANGS:
+            raise HTTPException(status_code=400, detail="Gecersiz dil")
+        text = ""
+        if mode == "pasted":
+            lines, problem = _lyr_check_text(body.get("text"))
+            if problem:
+                raise HTTPException(status_code=400, detail=problem)
+            text = "\n".join(lines)
+
+        await gate.refresh(force=True)
+        status = await require_status(song_id)
+        if status.get("state") != "done" or not status.get("stems"):
+            raise HTTPException(status_code=409, detail="Sarki henuz hazir degil")
+        if _lyrics_is_running(status):
+            return {"id": song_id, "state": "running", "existing": True}
+        previous = status.get("lyrics") or {}
+        if (mode == "auto" and not replace
+                and previous.get("state") in ("done", "no_vocals", "no_lyrics")):
+            return {"id": song_id, "state": previous["state"], "existing": True,
+                    "source": previous.get("source")}
+
+        stem_path = _song_dir(song_id) / "master" / "vocals.flac"
+        if not await asyncio.to_thread(stem_path.exists):
+            raise HTTPException(status_code=409, detail="vocals stem'i yok")
+        async with gate.reading():
+            level = await asyncio.to_thread(_sub_vocal_level, stem_path)
+        level = round(level, 2)
+        if level < LYRICS_SILENT_DBFS:
+            if previous.get("state") != "done":
+                await asyncio.to_thread(_write_status, song_id, lyrics={
+                    "state": "no_vocals", "rms_dbfs": level,
+                    "parent_stems_version": status.get("stems_version"),
+                    "thresholds": {"silent_dbfs": LYRICS_SILENT_DBFS},
+                    "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+            return {"id": song_id, "state": "no_vocals", "rms_dbfs": level}
+
+        keep = dict(previous) if previous.get("state") == "done" else None
+        if keep:
+            keep.pop("previous", None)
+        await asyncio.to_thread(_write_status, song_id, lyrics={
+            "state": "running", "started": int(time.time()), "mode": mode,
+            "language_requested": language, "rms_dbfs": level, "previous": keep})
+        call = extract_lyrics.spawn(song_id, mode, language, text)
+        return {"id": song_id, "state": "running", "mode": mode, "language": language,
+                "call_id": str(call.object_id), "rms_dbfs": level}
+
+    @web.get("/songs/{song_id}/lyrics")
+    async def get_lyrics(song_id: str, _=auth):
+        """lyrics.json + durum özeti. Söz yoksa 404. `stale`: ana şarkı sonradan
+        yeniden işlendi ("eski ayrıştırmadan")."""
+        await gate.refresh()
+        status = await require_status(song_id)
+        path = _song_dir(song_id) / "lyrics.json"
+        if not await asyncio.to_thread(path.exists):
+            await gate.refresh(force=True)
+            if not await asyncio.to_thread(path.exists):
+                raise HTTPException(status_code=404, detail="Soz yok")
+        raw = await asyncio.to_thread(_read_slice, path)
+        lyr = status.get("lyrics") or {}
+        return JSONResponse(
+            {"state": lyr.get("state"), "stale": _lyr_stale(status),
+             "source": lyr.get("source"), "language": lyr.get("language"),
+             "version": lyr.get("version"), "warning": lyr.get("warning"),
+             "lyrics": json.loads(raw.decode("utf-8"))},
+            headers={"Cache-Control": "private, max-age=0, must-revalidate"})
+
     # ---------------- imzalı indirme ----------------------------------------
 
     @web.post("/songs/{song_id}/download-link")
@@ -4841,6 +5365,9 @@ def api():
         if _sub_is_running(status):
             raise HTTPException(status_code=409,
                                 detail="Alt parcalar ayrilirken yeniden islenemez")
+        if _lyrics_is_running(status):
+            raise HTTPException(status_code=409,
+                                detail="Sozler hazirlanirken yeniden islenemez")
         chosen = quality if quality in QUALITIES else DEFAULT_QUALITY
         call = separate.spawn(song_id, chosen, True)
         return {"id": song_id, "call_id": str(call.object_id),

@@ -63,7 +63,7 @@ SONGS = {
     "ado": ("うっせぇわ", "ja", "ado.txt"),
     "finalduet": ("Final Duet", None, None),
 }
-VARIANTS = ("raw", "guard", "guard_gate", "novad", "novad_gate", "stable", "stable_gate")
+VARIANTS = ("raw", "guard", "guard_gate", "novad", "novad_gate", "stable", "stable_gate", "stable_novad")
 
 _NVIDIA = "/usr/local/lib/python3.11/site-packages/nvidia"
 lyrics_image = (
@@ -169,7 +169,9 @@ def _gate_audio(audio, active):
 def _line_dict(start, end, text, words=None, **extra):
     line = {"start": round(float(start), 3), "end": round(float(end), 3), "text": text.strip()}
     if words is not None:
-        line["words"] = [{"s": round(float(w[0]), 3), "e": round(float(w[1]), 3), "w": w[2]} for w in words]
+        line["words"] = [dict({"s": round(float(w[0]), 3), "e": round(float(w[1]), 3), "w": w[2]},
+                              **({"p": round(float(w[3]), 3)} if len(w) > 3 and w[3] is not None else {}))
+                         for w in words]
     line.update(extra)
     return line
 
@@ -242,7 +244,10 @@ def _metrics(lines, active, silences, duration):
                        if 0 <= int(line["start"] / HOP) < n and not filled[int(line["start"] / HOP)])
     abserr = [abs(e) for e in errors]
     words = sum(len(l.get("words") or []) for l in lines)
+    probs = [w["p"] for l in lines for w in (l.get("words") or []) if "p" in w]
     return {
+        "silent_line_ratio": round(in_silence / max(len(lines), 1), 3),
+        "mean_word_prob": round(sum(probs) / len(probs), 3) if probs else None,
         "lines": len(lines), "words": words,
         "lines_in_silence": in_silence,
         "silence_regions": len(silences),
@@ -302,7 +307,7 @@ def _fw_lines(segments):
 def _stable_lines(result):
     lines = []
     for seg in result.segments:
-        words = [(w.start, w.end, w.word) for w in (seg.words or [])]
+        words = [(w.start, w.end, w.word, getattr(w, "probability", None)) for w in (seg.words or [])]
         lines.append(_line_dict(seg.start, seg.end, seg.text, words))
     return lines
 
@@ -408,7 +413,7 @@ def transcribe_song(key: str, variants: list, inputs: list, ref_text: str = "") 
                         smodel_holder["m"] = stable_whisper.load_faster_whisper(
                             MODEL_NAME, device="cuda", compute_type="float16")
                     smodel = smodel_holder["m"]
-                    res = smodel.transcribe(source, language=language, vad=True, word_timestamps=True,
+                    res = smodel.transcribe(source, language=language, vad=not variant.startswith("stable_novad"), word_timestamps=True,
                                             condition_on_previous_text=False, regroup=True)
                     lines = _stable_lines(res)
             except Exception as error:
@@ -543,15 +548,15 @@ def run(songs: str = "zeus", variants: str = ",".join(VARIANTS), inputs: str = "
 
 
 @app.local_entrypoint()
-def align(songs: str = "zeus", inputs: str = "vocals"):
+def align(songs: str = "zeus", inputs: str = "vocals", ref: str = ""):
     for key in [s.strip() for s in songs.split(",") if s.strip()]:
-        ref = REF_DIR / (SONGS[key][2] or "")
-        if not ref.is_file():
-            print(f"{key}: referans yok ({ref.name}), atlandı")
+        ref_path = REF_DIR / (ref or SONGS[key][2] or "")
+        if not ref_path.is_file():
+            print(f"{key}: referans yok ({ref_path.name}), atlandı")
             continue
-        text = "\n".join(l.strip() for l in ref.read_text(encoding="utf-8").splitlines() if l.strip())
+        text = "\n".join(l.strip() for l in ref_path.read_text(encoding="utf-8").splitlines() if l.strip())
         result = align_song.remote(key, text, inputs.split(","))
-        _save(f"{key}__align.json", result)
+        _save(f"{key}__align{'_x_' + ref_path.stem if ref else ''}.json", result)
         print(f"\n== {key} hizalama ({result.get('align_backend')}): "
               f"toplam {result['timing']['total_s']} sn ~${result['timing']['est_dollars_total']}")
         for input_name, entry in result["inputs"].items():
@@ -560,7 +565,8 @@ def align(songs: str = "zeus", inputs: str = "vocals"):
                     print(f"  [{input_name}/{tag}] HATA: {sub['error']}")
                 else:
                     m = sub["metrics"]
-                    print(f"  [{input_name}/{tag}] {sub['seconds']} sn satır {m['lines']} kelime {m['words']} "
+                    print(f"  [{input_name}/{tag}] ORAN sessiz {m['silent_line_ratio']} olasilik {m['mean_word_prob']} "
+                          f"{sub['seconds']} sn satır {m['lines']} kelime {m['words']} "
                           f"sessizde {m['lines_in_silence']} başlangıç med {m['onset_err_median_s']} "
                           f"p90 {m['onset_err_p90_s']} n={m['onset_pairs']}")
 
