@@ -461,6 +461,8 @@ const near = (x, y, eps = 1e-6) => Math.abs(x - y) <= eps;
   const guitar = e.channels.get("guitar");
   check("pan: gitar seridi kuruldu (3 biquad + panner + gonderim = 5), gonderimsiz -> konvolver YOK", fxLive() === 5 && nodesOf("convolver").length === 0 && !e.sendBus);
   const strip = guitar.strip;
+  check("mono (Tasarruf) kaynakta panner girisi 2 kanala acilir (explicit): ortada -3 dB sicramasi yok (tests/mono_level.html olcumu)",
+    strip.pan.channelCount === 2 && strip.pan.channelCountMode === "explicit");
   check("zincir: gain -> bas -> orta -> tiz -> panner -> master", [...guitar.gainNode.targets][0] === strip.lo && [...strip.lo.targets][0] === strip.mid
     && [...strip.mid.targets][0] === strip.hi && [...strip.hi.targets][0] === strip.pan && strip.pan.targets.has(e.master) && !strip.send.targets.size);
   check("zincir: gitar seridinden geciyor, ote kanallar dogrudan", [...guitar.gainNode.targets][0] === strip.lo

@@ -204,6 +204,10 @@ node tests\engine_leak_test.mjs
 sızıntıyı ve söküm sayaçlarını denetler. CPU: `frontend/bench.html` içinde "Şerit + yankı ölçümü" (telefonda da koşturulur).
 Hiza testi (Ayarlar) plak gibi ve EQ+pan+yankı satırlarını da içerir.
 
+Tasarruf (mono) kipinde şeridin seviye sıçramaması (gerçek `Engine` + OfflineAudioContext, mono tampon; şeritsiz ve
+şeritli çıkış seviyesi 0,00 dB fark vermeli): depo kökünde `python -m http.server 8000`, tarayıcıda
+`http://127.0.0.1:8000/tests/mono_level.html`.
+
 **Dışa aktarma: pan / EQ / yankı (Aşama 15, 3. oturum):** istek doğrulama, hash, ffmpeg zinciri ve impuls yanıtının
 JS<->Python eşitliği (Modal/ffmpeg gerekmez), gerçek sesle ve gerçek tarayıcıyla ölçüm (canlı ffmpeg):
 
@@ -220,7 +224,7 @@ Tarayıcı<->sunucu farkı: önce yerel sunucu (sentetik giriş üretir, tarayı
 .\.venv\Scripts\python.exe -m modal run backend/app.py::export_validate
 ```
 
-Tarayıcı verisi yoksa `export_validate` yalnız sunucu satırlarını koşar (J satırları "ATLANDI").
+Tarayıcı verisi yoksa `export_validate` yalnız sunucu satırlarını koşar (J satırları "ATLANDI"). K satırları (en kötü durum: 11 kanal + salon + 7,9 dk şarkı, süre ve ffmpeg bellek tepesi) her koşuda gelir.
 
 **Söz çevirisi (Aşama 14):** arayüz mantığı (node) ve sunucu (Python, Modal'a/ağa bağlanmaz, Gemini sahte HTTP ile):
 

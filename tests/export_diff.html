@@ -22,9 +22,23 @@ import { DEFAULT_ROOM } from "../frontend/js/fx.js";
 const logEl = document.getElementById("log");
 const say = (text) => { logEl.textContent += `\n${text}`; console.log(text); };
 
+// Yerel bağlantı (özellikle antivirüs web taraması olan makinelerde) ara sıra sıfırlanıyor: birkaç kez dene.
+async function retry(fn, tries = 6) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (attempt >= tries) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 300 * attempt));
+    }
+  }
+}
+
 async function post(name, floats) {
-  const response = await fetch(`/__result/${name}`, { method: "POST", body: floats });
-  if (!response.ok) throw new Error(`sonuç yollanamadı: ${name} ${response.status}`);
+  await retry(async () => {
+    const response = await fetch(`/__result/${name}`, { method: "POST", body: floats });
+    if (!response.ok) throw new Error(`sonuç yollanamadı: ${name} ${response.status}`);
+  });
 }
 
 // soundfile'ın yazdığı float WAV'dan ham örnekler (decodeAudioData ile birebir mi diye bakmak için)
@@ -44,7 +58,11 @@ async function runScenario(config, sc) {
   const rate = config.rate;
   const lead = 0.08;                                              // engine.js START_LEAD
   const leadFrames = Math.round(lead * rate);
-  const keep = Math.ceil((sc.seconds / sc.rate) * rate);
+  // Yankı kuyruğu: sunucu, yankı kullanılıyorsa ve A-B bölgesi yoksa dosyayı oda süresi (en çok 3 sn) kadar uzatır;
+  // tarayıcı da aynı kadar fazla render eder (kaynaklar bitince konvolver kuyruğu sürdürür).
+  const room = sc.body.room;
+  const tail = room && !sc.body.region ? Math.round(Math.min(room.decay, 3) * rate) : 0;
+  const keep = Math.ceil((sc.seconds / sc.rate) * rate) + tail;
   const offline = new OfflineAudioContext({ numberOfChannels: 2, length: leadFrames + keep + rate, sampleRate: rate });
   offline.resume = async () => {};                                // çevrimdışı bağlam resume()/close() kabul etmez
   offline.close = async () => {};
@@ -52,7 +70,7 @@ async function runScenario(config, sc) {
   const engine = new Engine();
   const raw = {};
   await engine.loadStems(sc.channels, async (name) => {
-    const bytes = await (await fetch(`export_diff_out/inputs/${name}.wav`, { cache: "no-store" })).arrayBuffer();
+    const bytes = await retry(async () => (await fetch(`export_diff_out/inputs/${name}.wav`, { cache: "no-store" })).arrayBuffer());
     raw[name] = wavSamples(bytes.slice(0));
     return bytes;
   });

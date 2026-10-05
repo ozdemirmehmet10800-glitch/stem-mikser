@@ -607,6 +607,12 @@ export class Engine {
       lo: make(loBand), mid: make(midBand), hi: make(hiBand),
       pan: this.#fxNode("panner"), send: this.#fxNode("gain"), active: false, sending: false,
     };
+    // Tasarruf (mono) kipinde kaynak mono: StereoPanner mono girişte eşit güç formülünü kullanıp ortada -3 dB düşüyordu
+    // (yalnız EQ verilen kanalın seviyesi sıçrıyordu, ölçüldü). Girişi panner'da L=R'ye açınca stereo formül işler: pan 0
+    // kimlik, sunucuyla (stereo) aynı.
+    strip.pan.channelCount = 2;
+    strip.pan.channelCountMode = "explicit";
+    strip.pan.channelInterpretation = "speakers";
     strip.send.gain.value = 0;
     strip.lo.connect(strip.mid);
     strip.mid.connect(strip.hi);

@@ -6643,6 +6643,10 @@ def _export_check(body, status) -> tuple:
         spec["fx_v"] = FX_VERSION
         if room:
             spec["room"] = room
+            if not region:
+                # Yankı kuyruğu: şarkı bittikten sonra oda süresi (RT60, en çok 3 sn) kadar yankı sürer (uygulamada
+                # çalma şarkı bitince duruyor, dışa aktarma bilerek ayrılıyor). A-B bölgesinde YOK: bölge döngü malzemesi.
+                spec["reverb_tail"] = round(min(room["decay"], FX_DECAY_MAX), 2)
     return spec, None
 
 
@@ -6795,8 +6799,8 @@ def _export_command_fx(spec: dict, paths: dict, out_path, title: str = "", ir_pa
       kuru + ıslak -> ana ses -> [15 ms fade] -> [rubberband YALNIZ ton düzeltmesi: pitch = 2^(ton/12)/hız, tempo 1]
       -> alimiter.
 
-    Plak gibi kipte rubberband HİÇ yok. Yankı kuyruğu hızlandırılmış sinyale gerçek saniyede uygulanır (IR
-    ölçeklenmez) ve çıktı süresi girişle aynı (kuyruk son örnekten sonra uzatılmaz).
+    Plak gibi kipte rubberband HİÇ yok. Yankı hızlandırılmış sinyale gerçek saniyede uygulanır (IR ölçeklenmez).
+    Çıktı süresi girişle aynı; yalnız `reverb_tail` varsa (yankı kullanılıyor, A-B bölgesi yok) o kadar sn uzar.
     """
     names = list(spec["gains"])
     cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y"]
@@ -6835,10 +6839,15 @@ def _export_command_fx(spec: dict, paths: dict, out_path, title: str = "", ir_pa
         # onarılır, ıslak sonsuza uzatılır (apad) ve kuruyla `amerge` + `pan` (birim katsayılı toplama) ile toplanır:
         # amerge en KISA girişte biter = kuru, yani çıktı süresi ve içerik kuruyla birebir (sıfır seviyede fark 0).
         stereo = "aformat=sample_fmts=fltp:channel_layouts=stereo"
-        chains.append(f"[sendsum]apad=pad_len=2048[sendpad]")
+        reverb_tail = float(spec.get("reverb_tail") or 0)
+        # Kuyruk varsa kuru toplam reverb_tail sn sessizlikle uzatılır (amerge en kısa girişte biter = kuru + kuyruk),
+        # afir girişi de kuyruk + 0,1 sn uzatılır ki ıslak kısım kuyruğun sonuna kadar dolsun.
+        send_pad = f"apad=pad_dur={reverb_tail + 0.1:.3f}" if reverb_tail else "apad=pad_len=2048"
+        dry_pad = f"apad=pad_dur={reverb_tail:.3f}," if reverb_tail else ""
+        chains.append(f"[sendsum]{send_pad}[sendpad]")
         chains.append(f"[sendpad][{len(names)}:a]afir=dry=1:wet=1:gtype=none:minp=1024:maxp=1024[conv]")
         chains.append(f"[conv]asetpts=PTS-STARTPTS,volume={room['level'] * FX_AFIR_COMPENSATION:.6f},apad,{stereo}[wet]")
-        chains.append(f"[dry]{stereo}[dryf]")
+        chains.append(f"[dry]{dry_pad}{stereo}[dryf]")
         chains.append("[dryf][wet]amerge=inputs=2,pan=stereo|c0=c0+c2|c1=c1+c3[mix]")
     else:
         chains.append("[dry]anull[mix]")
@@ -7068,6 +7077,8 @@ def _export_diff_build():
         return np.stack([left, right], axis=1) * level
 
     seconds = 6.0
+    # yankılı senaryolar (B, D) 4 sn: kuyruk eklenince tarayıcı sonucu Modal'ın 2 MiB satır içi sınırının altında kalsın
+    MIX_SECONDS = 4.0
     scenarios = []
     inputs = {"A": noise(seconds, 0.1).astype(np.float32)}
 
@@ -7086,7 +7097,7 @@ def _export_diff_build():
         add(f"A_{name}", "response", ["A"], {"gains": {"A": 1.0}, "fx": {"A": fx}})
 
     for i, stem in enumerate(EXPORT_DIFF_STEMS):
-        inputs[stem] = (noise(seconds, 0.05) + tones(seconds, 110 * (i + 1), 0.015)).astype(np.float32)
+        inputs[stem] = (noise(MIX_SECONDS, 0.05) + tones(MIX_SECONDS, 110 * (i + 1), 0.015)).astype(np.float32)
     mix_fx = {
         "vocals": {"pan": 0.0, "eq": [0, 3, 4], "send": 0.65},
         "drums": {"pan": -0.25, "eq": [4, 0, 0], "send": 0.5},
@@ -7097,34 +7108,35 @@ def _export_diff_build():
     }
     gains = {"vocals": 1.0, "drums": 0.9, "bass": 0.8, "guitar": 1.0, "piano": 0.7, "other": 1.0}
     add("B_mix_room", "mix", EXPORT_DIFF_STEMS,
-        {"gains": gains, "fx": mix_fx, "room": {"size": 0.7, "decay": 2.2, "level": 0.8}}, pair="B_mix_dry")
+        {"gains": gains, "fx": mix_fx, "room": {"size": 0.7, "decay": 2.2, "level": 0.8}}, pair="B_mix_dry",
+        seconds_=MIX_SECONDS)
     add("B_mix_dry", "mix", EXPORT_DIFF_STEMS,
-        {"gains": gains, "fx": {key: dict(value, send=0) for key, value in mix_fx.items()}})
+        {"gains": gains, "fx": {key: dict(value, send=0) for key, value in mix_fx.items()}}, seconds_=MIX_SECONDS)
 
     click = np.zeros((int(4.0 * rate), 2), dtype=np.float32)
-    click[rate, 0] = 1.0
-    click[rate, 1] = 0.7
+    click[int(3.5 * rate), 0] = 1.0
+    click[int(3.5 * rate), 1] = 0.7
     inputs["C"] = click
     add("C_click_room", "reverb", ["C"],
         {"gains": {"C": 1.0}, "fx": {"C": {"pan": 0, "eq": [0, 0, 0], "send": 1.0}},
          "room": {"size": 0.5, "decay": 1.6, "level": 1.0}}, seconds_=4.0)
 
     for stem in ("vocals", "drums", "piano"):
-        inputs[f"V_{stem}"] = (noise(seconds, 0.05, lowpass=0.06) + tones(seconds, 220, 0.02)).astype(np.float32)
+        inputs[f"V_{stem}"] = (noise(MIX_SECONDS, 0.05, lowpass=0.06) + tones(MIX_SECONDS, 220, 0.02)).astype(np.float32)
     add("D_vinyl", "vinyl", ["V_vocals", "V_drums", "V_piano"],
         {"gains": {"V_vocals": 1.0, "V_drums": 1.0, "V_piano": 0.9},
          "fx": {"V_vocals": {"pan": 0.0, "eq": [0, 3, 0], "send": 0.65},
                 "V_drums": {"pan": -0.4, "eq": [3, 0, 0], "send": 0.5},
                 "V_piano": {"pan": 0.5, "eq": [0, 0, 4], "send": 0.5}},
          "room": {"size": 0.7, "decay": 2.2, "level": 0.8}, "rate": 0.85, "vinyl": True},
-        rate_=0.85, vinyl=True, pair="D_vinyl_dry")
+        rate_=0.85, vinyl=True, pair="D_vinyl_dry", seconds_=MIX_SECONDS)
     vfx = scenarios[-1]["body"]["fx"]
     add("D_vinyl_dry", "vinyl", ["V_vocals", "V_drums", "V_piano"],
         {"gains": scenarios[-1]["body"]["gains"], "fx": {key: dict(value, send=0) for key, value in vfx.items()},
-         "rate": 0.85, "vinyl": True}, rate_=0.85, vinyl=True)
+         "rate": 0.85, "vinyl": True}, rate_=0.85, vinyl=True, seconds_=MIX_SECONDS)
     add("D_vinyl_plain", "vinyl", ["V_vocals", "V_drums", "V_piano"],
         {"gains": scenarios[-1]["body"]["gains"], "fx": {"V_vocals": {"pan": 0, "eq": [0, 0, 0], "send": 0}},
-         "rate": 0.85, "vinyl": True}, rate_=0.85, vinyl=True)
+         "rate": 0.85, "vinyl": True}, rate_=0.85, vinyl=True, seconds_=MIX_SECONDS)
     return scenarios, inputs
 
 
@@ -7221,6 +7233,18 @@ def export_diff_case(name: str, result: bytes, twin_left: bytes = None) -> list:
     kind = sc["kind"]
     limit_db = 20 * np.log10(EXPORT_LIMIT_BY_FORMAT["wav"])
     wet_ok, wet_note = True, ""
+    # Yankı kuyruğu (dosya sonundan sonra): tarayıcı o kadar fazla render ediyor; kuyruk bölgesi ayrıca karşılaştırılır
+    tail_ok, tail_note = True, ""
+    if spec.get("reverb_tail"):
+        dry_len = int(np.ceil(sc["seconds"] / sc["rate"] * EXPORT_DIFF_RATE))
+        tail_b, tail_s = browser[:, dry_len:n], server[:, dry_len:n]
+        expected = dry_len + int(round(spec["reverb_tail"] * EXPORT_DIFF_RATE)) - EXPORT_LIMITER_DELAY_SAMPLES
+        tail_energy = 10 * np.log10((tail_b ** 2).sum() / ((tail_s ** 2).sum() + 1e-30))
+        tail_lag = _xd_lag(np, tail_b[0], tail_s[0], 100)
+        tail_ok = (abs(tail_energy) < 0.5 and tail_lag == 0 and abs(server.shape[1] - expected) <= 4
+                   and float(np.abs(server[:, -1]).max()) < 1e-3)
+        tail_note = (f"; kuyruk {spec['reverb_tail']} sn: sunucu uzunluk {server.shape[1]} (beklenen {expected}), "
+                     f"enerji {tail_energy:+.3f} dB, hiza {tail_lag}, kalinti {_xd_residual_db(np, tail_b, tail_s):.1f} dB")
     if server_twin is not None:
         twin_b = np.frombuffer(twin_left, dtype="<i2").astype(np.float64) / 32768.0
         m = min(n, len(twin_b), server_twin.shape[1])
@@ -7235,32 +7259,105 @@ def export_diff_case(name: str, result: bytes, twin_left: bytes = None) -> list:
                     f"(3 kHz alti {wet_low:.1f} dB)")
     if kind == "response":
         worst = max((_xd_bands_db(np, browser[c, :n], server[c, :n]) for c in (0, 1)), key=lambda item: abs(item[0]))
-        ok = abs(worst[0]) <= 0.1 and lag == 0
+        ok = abs(worst[0]) <= 0.1 and lag == 0 and tail_ok
         detail = f"en kotu {worst[0]:+.3f} dB @ {worst[1]:.0f} Hz, kalinti {residual:.1f} dB, hiza {lag} ornek"
         label = "frekans yaniti farki <= 0,1 dB (1/3 oktav, L ve R)"
     elif kind == "mix":
-        ok = residual < -40.0 and lag == 0 and wet_ok
+        ok = residual < -40.0 and lag == 0 and wet_ok and tail_ok
         detail = (f"kalinti {residual:.1f} dB, hiza {lag} ornek, sunucu tepe {measured['peak_db']} dB "
-                  f"(sinir {limit_db:.1f}), {render_s} sn{wet_note}")
+                  f"(sinir {limit_db:.1f}), {render_s} sn{wet_note}{tail_note}")
         label = "tam miks null-testi kalintisi < -40 dB, hiza 0"
     elif kind == "reverb":
-        start = EXPORT_DIFF_RATE + 200
+        start = int(3.5 * EXPORT_DIFF_RATE) + 200     # tik 3,5. saniyede (dosya sonuna 0,5 sn kala: kuyruk yeterince yuksek, int16 tabanina gomulmez)
         tail_b, tail_s = browser[:, start:n], server[:, start:n]
         energy = 10 * np.log10((tail_b ** 2).sum() / ((tail_s ** 2).sum() + 1e-30))
         lag_tail = _xd_lag(np, tail_b[0], tail_s[0], 100)
-        ok = lag_tail == 0 and abs(energy) < 0.5
-        detail = f"hiza {lag_tail} ornek, kuyruk enerji farki {energy:+.3f} dB, kalinti {residual:.1f} dB"
+        ok = lag_tail == 0 and abs(energy) < 0.5 and tail_ok
+        detail = f"hiza {lag_tail} ornek, yanki enerji farki {energy:+.3f} dB, kalinti {residual:.1f} dB{tail_note}"
         label = "yanki hizasi 0 ornek, kuyruk enerji farki < 0,5 dB"
     else:
         # Tarayıcı kaynak hızıyla (playbackRate) çalıyor, sunucu asetrate + aresample: iki yeniden örnekleme çekirdeği
         # HF'te ayrışır, bu yüzden giriş HF'ten arındırılmış (ölçülen: ~ -50 dB). Islak kısım da kendi içinde tutmalı.
         ok = residual < -45.0
-        ok = (ok and abs(lag) <= 1 and wet_ok
+        ok = (ok and abs(lag) <= 1 and wet_ok and tail_ok
               and 0 <= browser.shape[1] - server.shape[1] <= EXPORT_LIMITER_DELAY_SAMPLES + 4)
         detail = (f"kalinti {residual:.1f} dB, hiza {lag} ornek, uzunluk {browser.shape[1]} vs {server.shape[1]}"
-                  f"{wet_note}")
+                  f"{wet_note}{tail_note}")
         label = "plak gibi 0,85 + fx (yeniden ornekleme cekirdegi farki dahil) null-testi, sure"
     return _assert_plain([{"name": f"J) {name}: {label}", "ok": bool(ok), "detail": detail}])
+
+
+def _cgroup_memory_peak_mb():
+    """Konteynerin bellek tepesi (cgroup v2 memory.peak; yoksa None)."""
+    for path in ("/sys/fs/cgroup/memory.peak", "/sys/fs/cgroup/memory/memory.max_usage_in_bytes"):
+        try:
+            return round(int(pathlib.Path(path).read_text().strip()) / 1048576, 0)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+@app.function(image=light_image, volumes={DATA_DIR: volume}, timeout=1500, memory=2048)
+def export_worst_case_run(song_id: str) -> list:
+    """EN KÖTÜ DURUM ölçümü: `export_mix` ile AYNI kaynak sınırı (2048 MB), 11 kanal (6 stem + 5 kopya: alt parçalar
+    açıkmış gibi) x pan/EQ/gönderim x salon odası (3 sn, seviye 1) x plak gibi 0,85 x m4a; ~2,6 dk ve ~7,9 dk (şarkı 3
+    kez art arda). Süre, ffmpeg bellek tepesi (RUSAGE_CHILDREN) ve konteyner tepesi (cgroup) raporlanır; bellek
+    yetmezse konteyner öldürülür, yani bu satır hiç gelmez."""
+    import resource
+
+    volume.reload()
+    song_dir = _song_dir(song_id)
+    status = json.loads((song_dir / "status.json").read_text(encoding="utf-8"))
+    stems = list(status.get("stems") or [])
+    duration = float(status.get("duration") or 0)
+    rows = []
+    with tempfile.TemporaryDirectory() as workdir:
+        work = pathlib.Path(workdir)
+        local = {}
+        for name in stems:
+            local[name] = work / f"{name}.flac"
+            with (song_dir / "master" / f"{name}.flac").open("rb") as src, local[name].open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+        for loops in (1, 3):
+            paths = {}
+            for name, path in local.items():
+                if loops == 1:
+                    paths[name] = path
+                else:
+                    paths[name] = work / f"{name}_x{loops}.flac"
+                    _run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-stream_loop", str(loops - 1), "-i", str(path),
+                          "-c:a", "flac", str(paths[name])])
+            channels = dict(paths)
+            for base in [name for name in stems if name != stems[0]][:5]:
+                channels[f"{base}_b"] = paths[base]
+            names = list(channels)
+            body = {
+                "gains": {name: 0.8 for name in names},
+                "fx": {name: {"pan": (-0.6 if i % 2 else 0.6), "eq": [3, -2, 4], "send": 0.5} for i, name in enumerate(names)},
+                "room": {"size": 1.0, "decay": 3.0, "level": 1.0},
+                "rate": 0.85, "vinyl": True,
+            }
+            spec = _xd_spec(names, body, duration * loops, fmt="m4a")
+            out = work / f"worst_{loops}.m4a"
+            before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+            started = time.time()
+            measured = _export_render(spec, channels, out, "worst")
+            seconds = round(time.time() - started, 1)
+            after = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+            expect = duration * loops / 0.85 + 3.0
+            rows.append({
+                "name": f"K) en kotu durum: {len(names)} kanal + pan/EQ/gonderim + salon (3 sn) + plak gibi 0,85, m4a, "
+                        f"{duration * loops / 60:.1f} dk sarki",
+                "ok": abs(measured["duration"] - expect) <= 0.5 and measured["peak_db"] is not None,
+                "detail": f"cikti {measured['duration']} sn (beklenen {expect:.2f}), render {seconds} sn "
+                          f"({duration * loops / 0.85 / max(seconds, 0.1):.1f}x gercek zaman), ffmpeg bellek tepesi "
+                          f"{max(before, after) / 1024:.0f} MB, konteyner tepesi {_cgroup_memory_peak_mb()} MB / 2048, "
+                          f"{measured['bytes']} bayt"})
+            out.unlink()
+            if loops > 1:
+                for path in paths.values():
+                    path.unlink()
+    return _assert_plain(rows)
 
 
 @app.function(image=sub_cpu_image, volumes={DATA_DIR: volume}, timeout=1200, memory=8192)
@@ -7461,11 +7558,11 @@ def export_validate_run(song_id: str) -> dict:
         # I1) fx + hiz/ton: tek ton ile (frekans = beklenen, sure dogru)
         tone_fx = {"vocals": {"pan": -0.3, "eq": [0, 3, 0], "send": 0.5}}
         tone_cases = (
-            ("I1) fx + bagimsiz 0.8x + ton +2 (rubberband yalniz ton duzeltmesi)",
-             {"rate": 0.8, "semitones": 2}, 440.0 * 2 ** (2 / 12), 12.5),
-            ("I2) fx + plak gibi 0.8x (352 Hz, rubberband yok)", {"rate": 0.8, "vinyl": True}, 352.0, 12.5),
-            ("I3) fx + yalniz hiz 0.8x bagimsiz (ton ayni 440 Hz)", {"rate": 0.8}, 440.0, 12.5),
-            ("I4) fx + ton -3 (hiz 1)", {"semitones": -3}, 440.0 * 2 ** (-3 / 12), 10.0),
+            ("I1) fx + bagimsiz 0.8x + ton +2 (rubberband yalniz ton duzeltmesi; + 1,2 sn kuyruk)",
+             {"rate": 0.8, "semitones": 2}, 440.0 * 2 ** (2 / 12), 12.5 + 1.2),
+            ("I2) fx + plak gibi 0.8x (352 Hz, rubberband yok; + 1,2 sn kuyruk)", {"rate": 0.8, "vinyl": True}, 352.0, 12.5 + 1.2),
+            ("I3) fx + yalniz hiz 0.8x bagimsiz (ton ayni 440 Hz; + 1,2 sn kuyruk)", {"rate": 0.8}, 440.0, 12.5 + 1.2),
+            ("I4) fx + ton -3 (hiz 1; + 1,2 sn kuyruk)", {"semitones": -3}, 440.0 * 2 ** (-3 / 12), 10.0 + 1.2),
         )
         for name, over, expect_hz, expect_len in tone_cases:
             body = {"gains": {"vocals": 1.0}, "fx": tone_fx, "room": {"size": 0.4, "decay": 1.2, "level": 0.5}}
@@ -7487,10 +7584,10 @@ def export_validate_run(song_id: str) -> dict:
             limit_db = 20 * np.log10(EXPORT_LIMIT_BY_FORMAT[fmt])
             tolerance = 0.1 if fmt == "wav" else 0.3
             decoded = _decode_pcm(out, 44100, 2)
-            ok = (abs(m["duration"] - duration / 0.85) <= 0.3 and m["peak_db"] <= limit_db + tolerance
+            ok = (abs(m["duration"] - (duration / 0.85 + 2.2)) <= 0.3 and m["peak_db"] <= limit_db + tolerance
                   and abs(decoded.shape[1] / 44100 - m["duration"]) <= 0.1)
             record(f"I6) Slowed + reverb ({fmt}): sure, tepe sinir, kod cozulur", ok,
-                   f"{m['duration']} sn (beklenen {duration / 0.85:.2f}), tepe {m['peak_db']} dB, ort {m['mean_db']} dB, "
+                   f"{m['duration']} sn (beklenen {duration / 0.85 + 2.2:.2f} = sure/0.85 + 2,2 sn kuyruk), tepe {m['peak_db']} dB, ort {m['mean_db']} dB, "
                    f"{m['bytes']} bayt, {m['render_s']} sn")
         dry_slow = make_spec({"rate": 0.85, "vinyl": True})
         out, m_dry = render(dry_slow, "slowed_dry")
@@ -7498,6 +7595,23 @@ def export_validate_run(song_id: str) -> dict:
         record("I7) Slowed + reverb: yanki enerji ekler (ortalama seviye >= yankisiz)",
                m_wet["mean_db"] is not None and m_wet["mean_db"] >= m_dry["mean_db"] - 0.2,
                f"yankili {m_wet['mean_db']} dB, yankisiz {m_dry['mean_db']} dB")
+
+        # I8) yanki kuyrugu: sure = giris + oda suresi, kuyruk dogal soner (tik yok), bolgede ve yankisizda kuyruk YOK
+        tail_body = {"gains": {"vocals": 1.0}, "fx": {"vocals": {"send": 0.8}}, "room": {"size": 0.6, "decay": 2.0, "level": 1.0}}
+        out, m = render(_xd_spec(["vocals"], tail_body, 10.0), "tail_on", tone_paths)
+        wav, _ = read_wav(out)
+        peak_level = float(np.abs(wav).max())
+        just_after = db(rms(wav[:, int(10.0 * 44100):int(10.3 * 44100)]))
+        last = db(rms(wav[:, -int(0.05 * 44100):]))
+        record("I8) yanki kuyrugu: sure = 10 + 2,0 sn, dosya sonundan sonra yanki surer, sonda sessiz, tik yok",
+               abs(m["duration"] - 12.0) <= 0.05 and just_after > -50.0 and last < -60.0 and float(np.abs(wav[:, -1]).max()) < 1e-3,
+               f"{m['duration']} sn, bitisten hemen sonra {just_after:.1f} dBFS, son 50 ms {last:.1f} dBFS, tepe {db(peak_level):.1f} dB")
+        out, m = render(_xd_spec(["vocals"], dict(tail_body, region={"a": 2.0, "b": 6.0}), 10.0), "tail_region", tone_paths)
+        out2, m2 = render(_xd_spec(["vocals"], {"gains": {"vocals": 1.0}, "fx": {"vocals": {"pan": 0.4, "eq": [2, 0, 0]}}}, 10.0),
+                          "tail_dry_fx", tone_paths)
+        record("I9) kuyruk YOK: A-B bolgesinde (4,0 sn) ve yankisiz fx'te (10,0 sn)",
+               abs(m["duration"] - 4.0) <= 0.05 and abs(m2["duration"] - 10.0) <= 0.05,
+               f"bolge {m['duration']} sn, yankisiz {m2['duration']} sn")
 
     return _assert_plain({"title": str(status.get("title") or ""), "duration": duration,
                           "results": results})
@@ -7533,6 +7647,7 @@ def export_validate(song: str = "Zeus", diff_dir: str = ""):
     else:
         print("tarayici verisi yok: J satirlari atlanacak (tests\\export_diff.py + export_diff.html)")
     pending = list(export_diff_case.starmap(cases)) if cases else []
+    worst = export_worst_case_run.spawn(song_id)
     report = export_validate_run.remote(song_id)
     if decode_error is not None:
         report["results"].append({"name": "J0) tarayici: giris cozme (decodeAudioData float WAV) birebir",
@@ -7542,6 +7657,7 @@ def export_validate(song: str = "Zeus", diff_dir: str = ""):
                                   "detail": "ATLANDI: tests/export_diff_out yok"})
     for rows in pending:
         report["results"].extend(rows)
+    report["results"].extend(worst.get())
     failed = 0
     print(f"\n{title} ({report['duration']} sn)")
     for item in report["results"]:

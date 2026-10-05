@@ -258,12 +258,14 @@ def main():
     check("fx komutu: notr kanal (bass) sirasi: yalniz volume", "[1:a]volume=1.0000[d1]" in fg, fg)
     check("fx komutu: gonderim = asplit + volume + amix + afir + seviye, IR girdisi",
           "asplit=2[d2][s2]" in fg and "[s2]volume=0.4000[w2]" in fg and "[w2]anull[sendsum]" in fg
-          and "[sendsum]apad=pad_len=2048[sendpad]" in fg
+          and "[sendsum]apad=pad_dur=2.300[sendpad]" in fg
           and f"[sendpad][{len(fspec['gains'])}:a]afir=dry=1:wet=1:gtype=none:minp=1024:maxp=1024[conv]" in fg
           and f"[conv]asetpts=PTS-STARTPTS,volume={0.8 * app.FX_AFIR_COMPENSATION:.6f},apad," in fg, fg)
     check("fx komutu: kuru + islak amerge + pan (birim toplama, cikti suresi = kuru)",
           "[dryf][wet]amerge=inputs=2,pan=stereo|c0=c0+c2|c1=c1+c3[mix]" in fg and ",apad," in fg, fg)
     check("fx komutu: afir limiter'dan ONCE", fg.index("afir") < fg.index("alimiter"))
+    check("fx komutu: yanki kuyrugu = kuru toplam oda suresi (2.2 sn) kadar uzar (apad pad_dur=2.200 [dry] uzerinde)",
+          fspec["reverb_tail"] == 2.2 and "[dry]apad=pad_dur=2.200,aformat" in fg, fg)
     check("fx komutu: pan kati sayilari sabit (-0.5 -> L<-R cos(pi/4), R<-R sin(pi/4))",
           "pan=stereo|c0=1.0000000000*c0+0.7071067812*c1|c1=0.0000000000*c0+0.7071067812*c1" in fg, fg)
     check("fx komutu: rate 1, ton 0 -> hiz adimi ve rubberband YOK",
@@ -303,6 +305,24 @@ def main():
         check("yanki icin IR yolu yoksa hata", False)
     except ValueError:
         check("yanki icin IR yolu yoksa hata", True)
+
+    # --- yanki kuyrugu (Asama 15, 4. oturum): yalniz yanki fiilen kullaniliyorsa ve A-B bolgesi yoksa
+    tail_body = dict(fx={"drums": {"send": 0.5}}, room={"size": 0.5, "decay": 3.0, "level": 0.5})
+    check("kuyruk: yanki var, bolge yok -> reverb_tail = oda suresi", chk(body(**tail_body))[0]["reverb_tail"] == 3.0)
+    check("kuyruk: A-B bolgesi varsa YOK", "reverb_tail" not in chk(body(region={"a": 10, "b": 20}, **tail_body))[0])
+    check("kuyruk: yanki yoksa YOK (gonderim 0)", "reverb_tail" not in chk(body(fx={"drums": {"pan": 0.5}}))[0])
+    check("kuyruk: fx yoksa YOK (eski hash'ler ayni)", "reverb_tail" not in chk(body())[0])
+    check("kuyruk: oda suresi 1.2 -> 1.2 (3 sn tavani)", chk(body(fx={"drums": {"send": 0.5}}, room={"decay": 1.2}))[0]["reverb_tail"] == 1.2)
+    check("kuyruk: hash'e girer (bolgeli ve bolgesiz farkli)",
+          app._export_hash(chk(body(**tail_body))[0]) != app._export_hash(chk(body(region={"a": 10, "b": 20}, **tail_body))[0]))
+    tcmd = app._export_command(chk(body(**tail_body))[0], {n: f"/w/{n}.flac" for n in chk(body(**tail_body))[0]["gains"]},
+                               "/w/o.wav", ir_path="/w/ir.wav")
+    tg = tcmd[tcmd.index("-filter_complex") + 1]
+    check("kuyruk komutu: kuru 3 sn, gonderim girisi 3.1 sn uzar", "[dry]apad=pad_dur=3.000," in tg and "[sendsum]apad=pad_dur=3.100[sendpad]" in tg, tg)
+    rcmd = app._export_command(chk(body(region={"a": 10, "b": 20}, **tail_body))[0],
+                               {n: f"/w/{n}.flac" for n in chk(body(**tail_body))[0]["gains"]}, "/w/o.wav", ir_path="/w/ir.wav")
+    rg = rcmd[rcmd.index("-filter_complex") + 1]
+    check("kuyruk komutu: bolgede kuru uzatilmaz (pad_len=2048), fade son", "[dry]aformat" in rg and "pad_len=2048" in rg and "pad_dur" not in rg, rg)
 
     # --- impuls yanıtı: JS portuyla örnek eşitliği (node varsa), uzunluk, enerji, PRNG
     import array
