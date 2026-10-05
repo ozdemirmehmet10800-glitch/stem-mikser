@@ -24,7 +24,7 @@ import { BeatTracker, wantsFlow, wantsPulse } from "./beatpulse.js";
 
 // Ortadaki satırın üstünde ve altında görünen satır sayısı. TEK AYAR: CSS opaklık/ölçek
 // kademesi bu sayıya göre hesaplanır (--lf-window). Ekran kısaysa sığmayanlar zaten kesilir.
-export const WINDOW = 4;
+export const WINDOW = 3;
 const POSITION_CLASSES = ["cur", "next", "dist"];
 const PULSE_MS = 420;
 

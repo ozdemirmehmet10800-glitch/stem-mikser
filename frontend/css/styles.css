@@ -1052,10 +1052,10 @@ input[type="range"]::-moz-range-thumb {
   transition: opacity 0.5s ease, transform 0.5s ease;
 }
 .lf-line:lang(ja) { word-break: auto-phrase; }
-/* kademeli solma: k=1 en belirgin (0.66), k=WINDOW en soluk ama okunur (0.24) */
+/* kademeli solma: k=1 en belirgin (0.5), k=WINDOW en soluk ama okunur (0.2) */
 .lf-line.dist {
   --f: calc((var(--k, 1) - 1) / var(--lf-span, 1));
-  opacity: calc(0.66 - var(--f) * 0.42);
+  opacity: calc(0.5 - var(--f) * 0.3);
   transform: scale(calc(0.88 - var(--f) * 0.14));
   pointer-events: auto;
 }
@@ -1063,7 +1063,7 @@ input[type="range"]::-moz-range-thumb {
 .lf-line.cur { opacity: 1; transform: scale(1); pointer-events: auto; }
 /* düşük güven: metin sesle eşleşmedi, yeri kestirme (daha soluk + kesik çizgi) */
 .lf-line.low { text-decoration: underline dotted rgba(255, 255, 255, 0.5); text-underline-offset: 6px; }
-.lf-line.low.dist { opacity: calc((0.66 - var(--f) * 0.42) * 0.6); }
+.lf-line.low.dist { opacity: calc((0.5 - var(--f) * 0.3) * 0.6); }
 .lf-line.low.next { opacity: 0.4; }
 .lf-line.low.cur { opacity: 0.7; }
 
