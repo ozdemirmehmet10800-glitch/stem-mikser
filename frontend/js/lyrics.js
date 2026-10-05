@@ -16,6 +16,14 @@ export const LANGS = ["tr", "en", "ja"];
 // Şu anki satır: son başlayan satır; sonrasında bu kadar sn geçtiyse (ara müzik)
 // vurgu kalkar.
 export const HOLD_SECONDS = 3.0;
+// Vurgu ve otomatik kaydırma satırı bu kadar ERKEN başlatır: ölçümde stable yolu satır
+// başları ortanca +0.25 sn geç çıkmıştı. YALNIZ görsel; dokunup atlama (satır t'si) ve
+// uzun-basma döngüsü uçları DEĞİŞMEZ.
+export const HIGHLIGHT_LEAD_SECONDS = 0.25;
+
+export function highlightTime(time) {
+  return time + HIGHLIGHT_LEAD_SECONDS;
+}
 // Uzun-basma döngüsünde sonraki satır bu kadar sn'den uzaksa (ara müzik) döngü
 // satırın bitişinden kısa bir pay sonra biter: sessizlikte dönmesin.
 export const GAP_CAP_SECONDS = 6.0;

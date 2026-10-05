@@ -655,7 +655,7 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
        **Henüz dinlenmedi; sonuç yazılınca karar (stem mi karışım mı) verilecek.**
 
 
-9. [ ] **Aşama 11 - şarkı sözleri: OTURUM 1 (deney) ve OTURUM 2 (üretim backend'i) YAPILDI (2026-10-05); arayüz oturum 3.**
+9. [x] **Aşama 11 - şarkı sözleri KAPANDI (2026-10-05): deney, üretim backend'i ve arayüz canlıda, telefonda doğrulandı (SW v34, cila SW v35).**
    Kararlar: tek dil (tr/en/ja; otomatik algılama + elle seçim), karışık dil YOK; girdi SW vokal stem'i
    (lead elendi: Zeus'ta fark yok, Ado'da içerik kaybı); "yapıştır ve hizala" ilk sürümde; zaman
    doğruluğu için ayrı araç YOK (arayüz gelince telefonda gözle). Gerçek sözler ve ham çıktılar
@@ -692,6 +692,12 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      kaydedince `mode: pasted` ile yeniden hizalanır; mevcut sözün üstüne yazmadan önce `confirm`. Stale ise "Yeniden hizala". Sunucu "söz yok"
      derse cihaz kopyası silinir. Mock sunucu: `--lyrics-mode`, `--lyrics-polls`, `--lyrics-stale` (sentetik satırlar). Tarayıcıda uçtan uca denendi
      (çıkar, yoklama, dokun, uzun bas, kaydırma, düzenle + Japonca, uyarı, stale, vokal yok, çevrimdışı açılış), hiza testi geçti, `engine_leak_test` geçti.
+
+   - **OTURUM 3 TELEFONDA DOĞRULANDI (2026-10-05, SW v34):** Zeus'ta satırlar sesle akıyor (ufak gecikmeler kabul edildi), dokunup atlama,
+     uzun basma döngüsü, "Şimdiye dön", NEM'de yapıştırılmış sözler: sorunsuz. **Cila (SW v35):** satır vurgusu ve otomatik kaydırma 0.25 sn ERKEN
+     (`HIGHLIGHT_LEAD_SECONDS`; stable yolu satır başları ortanca +0.25 sn geç çıkmıştı); dokunup atlama ve uzun basma döngü uçları DEĞİŞMEDİ.
+     **Aşama 11 kapandı.** Açık/ileride: sözleri silme ucu yok; kelime düzeyi vurgu yok (veri `w` alanında hazır); karışık dil yok; zaman doğruluğu
+     için otomatik araç yazılmadı (telefonda gözle).
 
 ### Sonra (şimdilik gerek yok)
 **Anında başlatma (önizleme dosyaları).** KOD YOK, plan. **ERTELENDİ

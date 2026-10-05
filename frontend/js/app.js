@@ -22,7 +22,7 @@ import {
   SUB_GROUPS, GROUP_ORDER, subNames, subOf, subView, subVersion, isRunning, groupThresholdSec,
 } from "./sub.js";
 import {
-  LANG_CHOICES, lyricsOf, sectionView, findLine, scrollTarget, lineLoop, linesToText,
+  LANG_CHOICES, lyricsOf, sectionView, findLine, highlightTime, scrollTarget, lineLoop, linesToText,
   checkText as checkLyricsText, normalizeDoc as normalizeLyricsDoc, isRunning as lyricsIsRunning,
   readCache as readLyricsCache, writeCache as writeLyricsCache, dropCache as dropLyricsCache,
 } from "./lyrics.js";
@@ -2436,7 +2436,7 @@ function paintLyrics(index) {
 // Her karede çağrılıyor: satır değişmedikçe DOM'a dokunmaz.
 function lyricsTick(time) {
   if (!lyricsDoc || el("lyrics-body").hidden) return;
-  const index = findLine(lyricsDoc.lines, time);
+  const index = findLine(lyricsDoc.lines, highlightTime(time));
   if (index !== lyricsIndex) paintLyrics(index);
 }
 
@@ -2450,7 +2450,7 @@ function lyricsResumeFollow() {
   lyricsFollow = true;
   el("lyrics-follow").hidden = true;
   if (!lyricsDoc) return;
-  const target = scrollTarget(lyricsDoc.lines, engine.visualTime);
+  const target = scrollTarget(lyricsDoc.lines, highlightTime(engine.visualTime));
   if (target >= 0) scrollLyricsTo(target);
 }
 

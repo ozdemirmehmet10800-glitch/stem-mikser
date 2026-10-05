@@ -5,7 +5,7 @@
 import {
   LANG_CHOICES, HOLD_SECONDS, GAP_CAP_SECONDS, GAP_TAIL_SECONDS, LYRICS_STALE_SECONDS,
   MAX_TEXT_LINES, MAX_TEXT_CHARS, CACHE_PREFIX, CACHE_LIMIT,
-  isRunning, isStale, normalizeDoc, findLine, scrollTarget, lineLoop, linesToText, checkText,
+  HIGHLIGHT_LEAD_SECONDS, highlightTime, isRunning, isStale, normalizeDoc, findLine, scrollTarget, lineLoop, linesToText, checkText,
   estimateLyrics, sectionView, LYRICS_MESSAGES, readCache, writeCache, dropCache, pruneCache,
 } from "../frontend/js/lyrics.js";
 import { minLoopLength } from "../frontend/js/loop.js";
@@ -44,6 +44,11 @@ check("findLine: 400 satirda dogru", findLine(many, 3 * 123 + 0.5) === 123 && fi
 // ayni baslangicli satirlar
 const same = [L(1, 2), L(1, 3)];
 check("findLine: ayni baslangic -> sonuncusu", findLine(same, 1.5) === 1);
+
+// --- vurgu 0.25 sn erken (yalniz gorsel)
+check("vurgu payi 0.25 sn", HIGHLIGHT_LEAD_SECONDS === 0.25 && highlightTime(10) === 10.25);
+check("vurgu: satir basindan 0.25 sn ONCE yanar", findLine(lines, highlightTime(1.8)) === 0 && findLine(lines, highlightTime(1.7)) === -1);
+check("vurgu: ayni anda dokunup atlama satir t'sini degistirmez", lines[1].t === 6 && lineLoop(lines, 1, 200, minLoopLength(null)).a === 6);
 
 // --- kaydirma hedefi
 check("scrollTarget: sarki basinda ilk satir", scrollTarget(lines, 0) === 0);
