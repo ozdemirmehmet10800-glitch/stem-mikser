@@ -699,6 +699,29 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      **Aşama 11 kapandı.** Açık/ileride: sözleri silme ucu yok; kelime düzeyi vurgu yok (veri `w` alanında hazır); karışık dil yok; zaman doğruluğu
      için otomatik araç yazılmadı (telefonda gözle).
 
+10. [ ] **Aşama 12 - miks dışa aktarma: OTURUM 1 (backend) YAPILDI ve YAYINDA (2026-10-05); arayüz oturum 2.**
+   Kararlar: sunucuda, 24-bit master FLAC'lardan, CPU (GPU yok); biçim m4a (varsayılan) + wav, mp3 YOK; hız/ton rubberband; varsayılan
+   "orijinal hız ve ton", işaret kutusuyla "mikserdeki hız ve ton"; A-B bölgesi seçeneği; teslim İndir + (destekleniyorsa) Paylaş.
+   - **Rubberband kararı:** Debian ffmpeg 5.1.9 `--enable-librubberband` ile geliyor (Rubber Band 3.1.2, canlı konteynerde ölçüldü), ayrı CLI/Python
+     bağlamasına gerek yok. `rubberband=tempo:pitch:pitchq=quality:channels=together[:formant=preserved]` + **`transients=smooth`**: saf tonla ölçüldü
+     (5 frekans x 8 hız/ton durumu), varsayılan `crisp` ve `mixed` perdeyi 76 sente (%4) kadar kaydırıyor, `smooth` en kötü 0,4 sent. Bedel: davul
+     vuruşları esnetmede biraz yumuşar (kulak testi). `atempo` kullanılmadı (kullanıcı kararı + müzikte yapay).
+   - **Zincir (tek ffmpeg):** dosya başına `volume` -> `amix=normalize=0` -> ana ses -> [A-B `atrim` + 15 ms fade, esnetmeden ÖNCE] -> [rubberband] ->
+     `alimiter` (wav -0,1 dBFS, m4a -1 dBFS: AAC aşımı) -> **`atrim=start_sample=219`** (alimiter çıktıyı ileri-bakış kadar geciktiriyor: attack 5 ms = 219
+     örnek; telafi yokken karışım stem toplamından +4 dB farklı çıkmıştı) -> wav 16-bit (üçgen dither) / m4a AAC 256k. Alt parçalar `master/sub/*.flac`.
+   - **Uçlar:** `POST /songs/{id}/export` {format, gains{kanal:0..2}, master 0..1.5, region{a,b}, rate 0.5..1.5, semitones ±6, label}; `GET .../export/{hash}`;
+     `POST .../export/{hash}/link` (imzalı); `GET .../export-file/{hash}` (token'sız, imza). İstemci `effectiveGain` ile dosya başına nihai kazancı hesaplayıp yollar;
+     sunucu yalnız doğrular (bilinen kanallar, alt parça yalnız grubu done ise, ana kanal + alt parçası birlikte REDDEDİLİR). Aynı ayar = aynı hash (kaynak
+     sürümleri dahil) = yeniden üretilmez, önbellek isabeti 24 saati yeniler; bir şarkıda tek iş (farklı ayar 409); silme/yeniden işleme sürerken 409.
+     Dosyalar `songs/<id>/exports/<hash>.<ext>` + `.json` (şarkı silinince gider); 24 saatten eskiler her işte ve günlük `export_sweep` ile silinir.
+   - **Gerçek ses ölçümü (`modal run backend/app.py::export_validate`, Zeus, 14/14):** hepsi 1 iken stem toplamından fark -78,4 dB ve kayma 0 örnek;
+     orijinal karışımdan fark -29,9 dB (bu ayrıştırmanın kendi artığı, dışa aktarmadan bağımsız); vokal 0 iken çıkan enerji = vokal stem'i (0,00 dB,
+     kalıntı -73,9 dB); A-B 10,0 sn; A-B + 0,8x 12,5 sn; tam 0,8x 197,86 sn; ton +3 = 523,3 Hz, -5 = 329,6 Hz, 1,25x ton 440,0 Hz, 0,8x + 2 yarım ses = 493,9 Hz;
+     tepe wav -0,1, m4a -0,7 dB; m4a kodu çözülüyor. Hız/maliyet: 158 sn'lik şarkı ~9-14 sn CPU render (toplam bekleme 30-38 sn soğuk dahil), maliyet kuruşun altında.
+   - **CANLI (deploy 2026-10-05, token'lı):** Zeus "Karaoke (arka vokal kalsın)" m4a (4,84 MB, 158,29 sn, tepe -4,4 dB) ve Zeus tam miks 0,8x m4a (5,95 MB, 197,86 sn,
+     tepe -2,3 dB) üretildi, imzalı linkle token'sız indi; tekrar istek `existing`; geçersiz kazanç 400; token yok 401. Dosyalar `out/export_test/` (kulak testi).
+     Testler: tests/test_export_gate.py (84), tests/test_export_api.py (49). Açık: arayüz, Paylaş (Web Share) ve ön ayar adını etiket yapma oturum 2.
+
 ### Sonra (şimdilik gerek yok)
 **Anında başlatma (önizleme dosyaları).** KOD YOK, plan. **ERTELENDİ
 (2026-09-29):** telefon ölçümünde cihazda kayıtlı şarkılar 1-2 saniyede
