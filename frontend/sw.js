@@ -9,7 +9,7 @@
 // yeni worker beklemeden devralıyor (skipWaiting + clients.claim), yoksa
 // GitHub Pages'e atılan bir düzeltme kullanıcıya günlerce ulaşmayabiliyor.
 
-const VERSION = "v50";
+const VERSION = "v51";
 const CACHE = `stem-mikser-${VERSION}`;
 // Kabuk cache'lerinin adı (stem-mikser-v<sayı>). Eski sürümler YALNIZ bu kalıpla silinir: uygulamanın kendi cache'leri
 // (stemcache.js: stem-mikser-stems-v1 = çevrimdışı şarkılar; paylaşılan dosya: stem-mikser-share-v1) farklı adlı ve
@@ -52,6 +52,8 @@ const SHELL = [
   "./js/wakelock.js",
   "./js/stemcache.js",
   "./js/share.js",
+  "./js/collection.js",
+  "./js/songfilter.js",
   "./js/metronome.js",
   "./js/chords.js",
   "./js/settings.js",

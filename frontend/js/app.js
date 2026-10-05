@@ -58,6 +58,8 @@ import {
   SHARE_PARAM, MESSAGES as SHARE_MESSAGES, launchKind, readPending, clearPending, classify, formatSize,
   formatDuration, durationWarning, cardView,
 } from "./share.js";
+import { Collection, safeStorage } from "./collection.js";
+import { filterSongs, isFiltering } from "./songfilter.js";
 
 const POLL_MS = 3000;
 
@@ -196,6 +198,18 @@ const LONG_PRESS_MS = 500;
 let selectMode = false;
 const selectedIds = new Set();
 let librarySongs = [];
+// Kitaplık verisi (favori, etiket): telefonda, TEK anahtar (js/collection.js). Süzme durumu yalnız bellekte.
+const collection = new Collection(safeStorage().storage);
+const libraryFilter = { query: "", fav: false, tag: null };
+let visibleSongs = [];          // süzme sonrası görünen liste (seçim, "Tümünü seç" ve boş durum buna bakar)
+
+function libraryContext() {
+  return {
+    isFav: (id) => collection.isFav(id),
+    tagIdsOf: (id) => collection.tagIdsOf(id),
+    tagName: (tid) => collection.tagName(tid),
+  };
+}
 // Uzun basıştan sonra parmak kalkarken gelen click şarkıyı açmasın.
 let suppressClick = false;
 
@@ -223,6 +237,8 @@ async function refreshLibrary() {
       const songs = await api.listSongs();
       markOnlineState(true);
       writeLibraryCache(songs);       // çevrimdışı açılış için cihazda dursun
+      // Sunucudan TAZE ve boş olmayan liste: listede olmayan şarkıların favori/etiket kaydına "kayıp" damgası (30 gün sonra silinir).
+      if (songs.length) collection.sweep(new Set(songs.map((song) => song.id)));
       renderLibrary(songs);
       // Biten ayrıştırmaları / Hi-Fi yükseltmelerini yakala ve sesi önceden
       // indirmeye başla.
@@ -343,7 +359,7 @@ function syncSelectBar() {
   }
   const all = el("select-all");
   if (all) {
-    const every = librarySongs.length > 0 && count === librarySongs.length;
+    const every = visibleSongs.length > 0 && count === visibleSongs.length;
     all.textContent = every ? "Seçimi bırak" : "Tümünü seç";
   }
 }
@@ -461,6 +477,12 @@ function renderLibrary(songs) {
     selectMode = false;
     if (nav.peek() === "select") history.back();
   }
+  // Süzme: görünen liste. Görünmeyen şarkılar SEÇİMDEN düşer (Sil (N) sayısı = gördüklerin; gizli şarkı silinmesin).
+  visibleSongs = filterSongs(songs, libraryFilter, libraryContext());
+  const visibleIds = new Set(visibleSongs.map((song) => song.id));
+  for (const id of [...selectedIds]) {
+    if (!visibleIds.has(id)) selectedIds.delete(id);
+  }
   list.classList.toggle("select-mode", selectMode);
   syncSelectBar();
 
@@ -471,11 +493,18 @@ function renderLibrary(songs) {
   const cacheIndex = offlineNow ? stemCache.indexSnapshot() : null;
 
   list.innerHTML = "";
+  const empty = el("library-empty");
+  empty.hidden = true;
   if (!songs.length) {
     showMessage(el("library-message"), "Henüz şarkı yok. Yukarıdan bir tane ekle.", "warn");
     return;
   }
-  for (const song of songs) {
+  if (!visibleSongs.length) {
+    el("library-empty-text").textContent = "Eşleşen şarkı yok.";
+    empty.hidden = false;
+    return;
+  }
+  for (const song of visibleSongs) {
     const item = document.createElement("li");
     item.className = "song-row";
     item.dataset.id = song.id;
@@ -625,6 +654,7 @@ async function deleteSelected() {
     if (gone.length) {
       freed = await stemCache.removeSongs(gone);
       dropMeta(gone);            // cihazdaki durum/akor kopyası da gitsin
+      collection.removeSongs(gone);   // favori/etiket kayıtları da HEMEN gitsin
       if (mixStorage()) removeMix(mixStorage(), gone);
     }
 
@@ -4054,10 +4084,48 @@ on("refresh-list", "click", refreshLibrary);
 on("select-cancel", "click", exitSelectMode);
 on("select-delete", "click", deleteSelected);
 on("select-all", "click", () => {
-  if (selectedIds.size === librarySongs.length) selectedIds.clear();
-  else for (const song of librarySongs) selectedIds.add(song.id);
+  // Yalnız GÖRÜNEN şarkılar (süzme açıkken gizli şarkılar seçilip silinmesin).
+  if (visibleSongs.length && selectedIds.size === visibleSongs.length) selectedIds.clear();
+  else for (const song of visibleSongs) selectedIds.add(song.id);
   renderLibrary(librarySongs);
 });
+
+// ---- kitaplık araması: 80 ms bekleyerek, her tuşta liste yeniden kurulmasın
+let searchTimer = 0;
+function syncSearchClear() {
+  el("library-search-clear").hidden = !el("library-search").value;
+}
+function applyLibraryFilter() {
+  libraryFilter.query = el("library-search").value;
+  renderLibrary(librarySongs);
+}
+function clearLibraryFilter() {
+  clearTimeout(searchTimer);
+  libraryFilter.query = "";
+  libraryFilter.fav = false;
+  libraryFilter.tag = null;
+  el("library-search").value = "";
+  syncSearchClear();
+  renderLibrary(librarySongs);
+}
+on("library-search", "input", () => {
+  syncSearchClear();
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(applyLibraryFilter, 80);
+});
+on("library-search", "keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    clearTimeout(searchTimer);
+    applyLibraryFilter();
+    event.target.blur();            // telefon klavyesi kapansın, liste görünsün
+  }
+});
+on("library-search-clear", "click", () => {
+  clearLibraryFilter();
+  el("library-search").focus();
+});
+on("library-empty-clear", "click", clearLibraryFilter);
 
 // Escape = geri. Geri tuşu maddesi gelince aynı handleBack() popstate'e de
 // bağlanacak; sıralama orada da "önce seçimden çık" olmalı.
@@ -4639,3 +4707,8 @@ if (isConfigured(settings)) {
 fillShareQuality();
 renderShareCard();
 handleShareLaunch();
+if (collection.status === "corrupt") {
+  pendingLibraryNote = "Favori/etiket verisi okunamadı; ham kopya ayrıca saklandı. Ayarlar'daki yedekten geri yükleyebilirsin.";
+} else if (collection.status === "newer") {
+  pendingLibraryNote = "Favori/etiket verisi daha yeni bir sürümden. Uygulamayı yenile; o zamana dek değişiklik kapalı.";
+}

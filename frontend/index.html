@@ -49,6 +49,15 @@
       </label>
     </div>
 
+    <!-- Kitaplık araması (şarkı adı + etiketler; Türkçe İ/ı ve Japonca katlamalı) -->
+    <div class="library-search">
+      <input type="search" id="library-search" placeholder="Şarkı ara" aria-label="Şarkı ara" autocomplete="off"
+             autocapitalize="off" spellcheck="false" enterkeyhint="search">
+      <button type="button" class="icon-btn library-search-clear" id="library-search-clear" aria-label="Aramayı temizle" hidden>
+        <svg viewBox="0 0 24 24"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
+      </button>
+    </div>
+
     <!-- Seçim çubuğu: şarkıya uzun basınca açılır. -->
     <div class="select-bar" id="select-bar" hidden>
       <button class="icon-btn" id="select-cancel" title="Seçimden çık"
@@ -82,6 +91,10 @@
     </section>
 
     <div id="upload-status" class="upload-status" hidden></div>
+    <div class="library-empty" id="library-empty" hidden>
+      <span id="library-empty-text">Eşleşen şarkı yok.</span>
+      <button type="button" class="btn btn-small" id="library-empty-clear">Süzmeyi temizle</button>
+    </div>
     <div id="library-message" class="message" hidden></div>
     <ul class="song-list" id="song-list"></ul>
   </section>

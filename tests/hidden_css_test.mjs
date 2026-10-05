@@ -52,17 +52,25 @@ const subjects = [];
 for (const [, tag, attrs] of tags) {
   const id = /\sid="([^"]+)"/.exec(attrs);
   const cls = /\sclass="([^"]+)"/.exec(attrs);
-  if (id) subjects.push({ tag, token: `#${id[1]}`, label: `#${id[1]}` });
-  if (cls) for (const c of cls[1].split(/\s+/).filter(Boolean)) subjects.push({ tag, token: `.${c}`, label: `.${c} (${id ? "#" + id[1] : tag})` });
+  const element = id ? `#${id[1]}` : `<${tag} class="${cls ? cls[1] : ""}">`;
+  if (id) subjects.push({ tag, element, token: `#${id[1]}`, label: `#${id[1]}` });
+  if (cls) for (const c of cls[1].split(/\s+/).filter(Boolean)) subjects.push({ tag, element, token: `.${c}`, label: `.${c} (${id ? "#" + id[1] : tag})` });
 }
 check("index.html'de hidden öznitelikli öğe bulundu (ayrıştırıcı çalışıyor)", subjects.length > 20, String(subjects.length));
 
-const offenders = [];
+// Öğe başına: öğenin herhangi bir belirteci (id/sınıf) display'i görünür bırakıyorsa, öğenin herhangi bir belirteci için
+// bir [hidden] kuralı olmalı (ör. .icon-btn { display: grid } + .library-search-clear[hidden] { display: none }).
+const byElement = new Map();
 for (const subject of subjects) {
-  const shown = visibleDisplayRules(subject.token);
-  if (shown.length && !hasHiddenRule(subject.token) && !globalHidden) {
-    offenders.push(`${subject.label}: display ${shown.map((r) => displayOf(r.body)).join("/")} kuralı var ama [hidden] kuralı YOK`);
-  }
+  const key = subject.element;
+  if (!byElement.has(key)) byElement.set(key, []);
+  byElement.get(key).push(subject);
+}
+const offenders = [];
+for (const [element, tokens] of byElement) {
+  const shown = tokens.flatMap((t) => visibleDisplayRules(t.token).map((r) => `${t.token}: ${displayOf(r.body)}`));
+  const covered = tokens.some((t) => hasHiddenRule(t.token));
+  if (shown.length && !covered && !globalHidden) offenders.push(`${element}: display kuralı (${shown.join(", ")}) var ama [hidden] kuralı YOK`);
 }
 check("hidden öğelerin hiçbirinin display kuralı [hidden]'ı ezmiyor", offenders.length === 0, offenders.join(" | "));
 
