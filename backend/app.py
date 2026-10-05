@@ -460,6 +460,9 @@ def _delete_block_reason(status):
     if _lyrics_is_running(status):
         return ("Sozler hazirlanirken silinemez. "
                 "Bitmesini bekleyip tekrar dene.")
+    if _export_is_running(status):
+        return ("Disa aktarma surerken silinemez. "
+                "Bitmesini bekleyip tekrar dene.")
     return None
 
 
@@ -4856,6 +4859,575 @@ def _sign_download(key: str, song_id: str, name: str, fmt: str, exp: int) -> str
     return hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
+# --------------------------------------------------------------------------
+# Miks dışa aktarma (Aşama 12)
+#
+# Mikserde ayarlanan hâl TEK ses dosyası olarak SUNUCUDA hazırlanır: 24-bit master
+# FLAC'lardan (`master/<ad>.flac`, alt parçalar `master/sub/<ad>.flac`), tek ffmpeg
+# çağrısıyla, CPU (GPU yok). İstemci mikser kurallarını (`effectiveGain`) kendisi
+# hesaplayıp dosya başına HAZIR kazanç yollar; sunucu mikser kuralı bilmez, yalnız
+# doğrular. Hız ve ton `rubberband` ile (Debian ffmpeg 5.1.9 --enable-librubberband,
+# Rubber Band 3.1.2; canlı konteynerde ölçüldü). Çıktı `songs/<id>/exports/<hash>.<ext>`
+# (şarkı silinince birlikte gider), aynı ayar = aynı hash = yeniden üretilmez, 24 saatten
+# eski dosyalar silinir.
+# --------------------------------------------------------------------------
+
+EXPORT_FORMATS = ("m4a", "wav")
+EXPORT_TTL_SECONDS = 24 * 3600
+EXPORT_RUNNING_STALE_SECONDS = 1200
+EXPORT_MIN_RATE = 0.5              # uygulamadaki hız sınırlarıyla aynı (stretch.js)
+EXPORT_MAX_RATE = 1.5
+EXPORT_MAX_SEMITONES = 6
+EXPORT_MAX_GAIN = 2.0              # dosya başına doğrusal kazanç
+EXPORT_MAX_MASTER = 1.5            # ana ses sürgüsü %150'ye kadar
+EXPORT_MIN_REGION = 0.1            # sn
+EXPORT_FADE_SECONDS = 0.015        # A-B bölgesi uçlarında tık sesi olmasın
+# Güvenlik sınırlayıcı (karışım > 0 dBFS olabilir): WAV -0,1 dBFS; m4a -1 dBFS (AAC kodlama
+# aşımı: -0,1'de ölçülen çıktı tepesi 0,0 dB'ye çıkıyordu, çalarken kırpılırdı).
+EXPORT_LIMIT_BY_FORMAT = {"wav": 0.9886, "m4a": 0.8913}
+EXPORT_LIMITER_ATTACK_MS = 5
+# alimiter çıktıyı ileri-bakış kadar GECİKTİRİYOR (ölçüldü: attack 5 ms -> tam 219 örnek,
+# 44,1 kHz'de int(attack_ms * 44.1) - 1). Telafi edilmezse dosya stem'lere ve orijinale
+# göre kayar (karışım farkı +4 dB çıkmıştı).
+EXPORT_LIMITER_DELAY_SAMPLES = int(EXPORT_LIMITER_ATTACK_MS * 44100 / 1000) - 1
+EXPORT_LABEL_MAX = 60
+EXPORT_NAME_MAX = 120
+EXPORT_SAMPLE_RATE = 44100         # master FLAC'larla aynı
+EXPORT_HASH_RE = re.compile(r"^[0-9a-f]{32}$")
+EXPORT_PARENT = {part: group_name for group_name, cfg in SUB_GROUP_CFG.items()
+                 for part in cfg["parts"]}
+
+
+def _export_is_running(status) -> bool:
+    record = (status or {}).get("export") or {}
+    if record.get("state") != "running":
+        return False
+    return (time.time() - float(record.get("started") or 0)) < EXPORT_RUNNING_STALE_SECONDS
+
+
+def _export_number(value, low, high, name):
+    """Sayı doğrulama: bool/NaN/sonsuz reddedilir. Dönen: (değer, hata)."""
+    import math
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None, f"{name} sayi olmali"
+    value = float(value)
+    if not math.isfinite(value) or value < low or value > high:
+        return None, f"{name} {low}..{high} araliginda olmali"
+    return value, None
+
+
+def _export_check(body, status) -> tuple:
+    """İstek gövdesini doğrular ve normalize eder. Dönen: (spec, hata ya da None).
+
+    Kurallar: yalnız bilinen kanallar (ana stem'ler ya da DURUMU done olan grubun alt
+    parçaları), kazanç 0..2, ana ses 0..1.5, hız 0.5..1.5, ton tam sayı ±6, bölge şarkı
+    içinde ve >= 0.1 sn, en az bir kanal duyulmalı. Ana kanalla kendi alt parçaları BİR
+    ARADA olamaz (çift sayılırdı).
+    """
+    if not isinstance(body, dict):
+        return None, "Govde JSON nesnesi olmali"
+    fmt = body.get("format", "m4a")
+    if fmt not in EXPORT_FORMATS:
+        return None, f"format {'/'.join(EXPORT_FORMATS)} olmali"
+    raw_gains = body.get("gains")
+    if not isinstance(raw_gains, dict) or not raw_gains:
+        return None, "gains (kanal -> kazanc) gerekli"
+
+    stems = set(status.get("stems") or [])
+    sub_ready = set()
+    for cfg in SUB_GROUP_CFG.values():
+        if ((status.get(cfg["key"]) or {}).get("state")) == "done":
+            sub_ready.update(cfg["parts"])
+
+    gains = {}
+    for name, value in raw_gains.items():
+        if not isinstance(name, str) or not (name in stems or name in sub_ready):
+            return None, f"Bilinmeyen ya da kullanilamayan kanal: {str(name)[:30]}"
+        number, problem = _export_number(value, 0.0, EXPORT_MAX_GAIN, f"kazanc ({name})")
+        if problem:
+            return None, problem
+        if number > 0:
+            gains[name] = round(number, 4)
+    for name in gains:
+        parent = EXPORT_PARENT.get(name)
+        if parent and parent in gains:
+            return None, f"{parent} ile alt parcasi ({name}) birlikte karistirilamaz"
+    if not gains:
+        return None, "Hicbir kanal duyulmuyor"
+
+    master, problem = _export_number(body.get("master", 1.0), 0.0, EXPORT_MAX_MASTER, "master")
+    if problem:
+        return None, problem
+    if master <= 0:
+        return None, "Ana ses sifir"
+    rate, problem = _export_number(body.get("rate", 1.0), EXPORT_MIN_RATE, EXPORT_MAX_RATE, "rate")
+    if problem:
+        return None, problem
+    semis, problem = _export_number(body.get("semitones", 0), -EXPORT_MAX_SEMITONES,
+                                    EXPORT_MAX_SEMITONES, "semitones")
+    if problem:
+        return None, problem
+    if semis != int(semis):
+        return None, "semitones tam sayi olmali"
+
+    region = None
+    raw_region = body.get("region")
+    if raw_region is not None:
+        if not isinstance(raw_region, dict):
+            return None, "region {a, b} olmali"
+        duration = float(status.get("duration") or 0)
+        a, problem = _export_number(raw_region.get("a"), 0.0, max(duration, 0.0), "region.a")
+        if problem:
+            return None, problem
+        b, problem = _export_number(raw_region.get("b"), 0.0, duration + 0.05, "region.b")
+        if problem:
+            return None, problem
+        b = min(b, duration) if duration > 0 else b
+        if b - a < EXPORT_MIN_REGION:
+            return None, f"bolge en az {EXPORT_MIN_REGION} sn olmali"
+        region = {"a": round(a, 3), "b": round(b, 3)}
+
+    label = body.get("label", "")
+    if not isinstance(label, str):
+        return None, "label metin olmali"
+    label = "".join(ch if ch >= " " else " " for ch in label)
+    label = " ".join(label.split())[:EXPORT_LABEL_MAX]
+
+    spec = {
+        "format": fmt, "gains": dict(sorted(gains.items())), "master": round(master, 4),
+        "region": region, "rate": round(rate, 4), "semitones": int(semis), "label": label,
+        "stems_version": status.get("stems_version"),
+        "sub_versions": {cfg["key"]: (status.get(cfg["key"]) or {}).get("version")
+                         for cfg in SUB_GROUP_CFG.values()},
+    }
+    return spec, None
+
+
+def _export_hash(spec: dict) -> str:
+    """Ayar hash'i: aynı ayar (ve aynı kaynak sürümü) = aynı dosya."""
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+
+
+def _export_clean_part(text: str, limit: int) -> str:
+    cleaned = "".join(" " if ch in _ILLEGAL_FILENAME or ord(ch) < 32 else ch for ch in (text or ""))
+    return " ".join(cleaned.split()).strip(". ")[:limit]
+
+
+def _export_mmss(seconds: float) -> str:
+    whole = int(seconds)
+    return f"{whole // 60}m{whole % 60:02d}"
+
+
+def _export_tail(spec: dict) -> str:
+    parts = [spec["label"] or "Miks"]
+    if spec["rate"] != 1.0:
+        parts.append(f"{spec['rate']:g}x")
+    if spec["semitones"]:
+        parts.append(f"{spec['semitones']:+d}")
+    if spec["region"]:
+        parts.append(f"döngü {_export_mmss(spec['region']['a'])}-{_export_mmss(spec['region']['b'])}")
+    return " - ".join(parts)
+
+
+def _export_filename(title: str, spec: dict) -> str:
+    """"<şarkı> - <ön ayar/etiket>[ - 0.8x][ - +2][ - döngü 1m20-1m45].<uzantı>"."""
+    head = _export_clean_part(title, 80) or "sarki"
+    tail = _export_clean_part(_export_tail(spec), EXPORT_NAME_MAX - len(head) - 3) or "Miks"
+    return f"{head} - {tail}.{spec['format']}"
+
+
+def _export_command(spec: dict, paths: dict, out_path, title: str = "") -> list:
+    """Tek ffmpeg çağrısı. paths: kanal -> YEREL dosya yolu.
+
+    Zincir: dosya başına `volume` -> `amix` (normalize=0: kazançlar toplanır, bölünmez)
+    -> ana ses -> [A-B kırpma + 15 ms fade] -> [rubberband: hız/ton] -> alimiter (-0,1 dBFS).
+    Kırpma esnetmeden ÖNCE: bölge şarkı saniyesi, çıktı süresi bölge / hız.
+    """
+    names = list(spec["gains"])
+    cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y"]
+    for name in names:
+        cmd += ["-i", str(paths[name])]
+    chains = [f"[{i}:a]volume={spec['gains'][name]:.4f}[a{i}]" for i, name in enumerate(names)]
+    joined = "".join(f"[a{i}]" for i in range(len(names)))
+    if len(names) > 1:
+        chains.append(f"{joined}amix=inputs={len(names)}:normalize=0:duration=longest[mix]")
+    else:
+        chains.append(f"{joined}anull[mix]")
+
+    tail = [f"volume={spec['master']:.4f}"]
+    region = spec["region"]
+    if region:
+        length = region["b"] - region["a"]
+        tail += [
+            f"atrim=start={region['a']:.3f}:end={region['b']:.3f}",
+            "asetpts=PTS-STARTPTS",
+            f"afade=t=in:d={EXPORT_FADE_SECONDS}",
+            f"afade=t=out:st={max(length - EXPORT_FADE_SECONDS, 0):.3f}:d={EXPORT_FADE_SECONDS}",
+        ]
+    if spec["rate"] != 1.0 or spec["semitones"]:
+        pitch = 2 ** (spec["semitones"] / 12)
+        # transients=smooth: ölçüm (saf ton, 5 frekans x 8 hız/ton durumu) varsayılan "crisp" ve
+        # "mixed" kipte perdeyi 76 sente (%4) kadar kaydırıyor, "smooth" en kötü 0,4 sent.
+        # Bedel: davul vuruşları esnetmede biraz yumuşar (kulak testi).
+        stretch = (f"rubberband=tempo={spec['rate']:.4f}:pitch={pitch:.6f}:pitchq=quality:"
+                   "channels=together:transients=smooth")
+        if spec["semitones"]:
+            stretch += ":formant=preserved"     # ton kaydırmada vokal tınısı çok değişmesin
+        tail.append(stretch)
+    limit = EXPORT_LIMIT_BY_FORMAT[spec["format"]]
+    tail.append(f"alimiter=limit={limit}:attack={EXPORT_LIMITER_ATTACK_MS}:release=50:level=0")
+    tail += [f"atrim=start_sample={EXPORT_LIMITER_DELAY_SAMPLES}", "asetpts=PTS-STARTPTS"]
+    if spec["format"] == "wav":
+        tail.append("aresample=osf=s16:dither_method=triangular")
+    chains.append("[mix]" + ",".join(tail) + "[out]")
+
+    cmd += ["-filter_complex", ";".join(chains), "-map", "[out]", "-map_metadata", "-1"]
+    cmd += ["-metadata", f"title={title or 'Stem Mikser'}", "-metadata", "album=Stem Mikser",
+            "-metadata", f"comment={_export_tail(spec)}"]
+    if spec["format"] == "m4a":
+        cmd += ["-c:a", "aac", "-b:a", AAC_BITRATE, "-ar", str(EXPORT_SAMPLE_RATE),
+                "-movflags", "+faststart"]
+    else:
+        cmd += ["-c:a", "pcm_s16le", "-ar", str(EXPORT_SAMPLE_RATE)]
+    cmd.append(str(out_path))
+    return cmd
+
+
+_VOLUMEDETECT_MAX = re.compile(r"max_volume:\s*(-?[\d.]+|-?inf)\s*dB")
+_VOLUMEDETECT_MEAN = re.compile(r"mean_volume:\s*(-?[\d.]+|-?inf)\s*dB")
+
+
+def _export_measure(path) -> dict:
+    """Çıktının süresi, tepe ve ortalama seviyesi (dBFS). ffprobe + volumedetect."""
+    probe = _run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                  "-of", "default=nw=1:nk=1", str(path)])
+    duration = float(probe.stdout.decode("utf-8", "replace").strip() or 0.0)
+    detect = subprocess.run(
+        ["ffmpeg", "-nostdin", "-hide_banner", "-i", str(path), "-af", "volumedetect",
+         "-f", "null", "-"], capture_output=True)
+    text = detect.stderr.decode("utf-8", "replace")
+    peak = _VOLUMEDETECT_MAX.search(text)
+    mean = _VOLUMEDETECT_MEAN.search(text)
+
+    def to_float(match):
+        if not match:
+            return None
+        value = match.group(1)
+        return -200.0 if value.endswith("inf") else float(value)
+
+    return {"duration": round(duration, 3), "peak_db": to_float(peak), "mean_db": to_float(mean),
+            "bytes": os.path.getsize(path)}
+
+
+def _export_cleanup(song_dir: pathlib.Path, now: float = None, ttl: int = EXPORT_TTL_SECONDS) -> int:
+    """songs/<id>/exports altında `ttl`'den eski dosyaları siler. Dönen: silinen sayısı."""
+    now = time.time() if now is None else now
+    folder = song_dir / "exports"
+    if not folder.is_dir():
+        return 0
+    removed = 0
+    for entry in folder.iterdir():
+        try:
+            if entry.is_file() and now - entry.stat().st_mtime > ttl:
+                entry.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _export_sources(song_dir: pathlib.Path, spec: dict) -> dict:
+    """Kanal -> master FLAC yolu (alt parçalar master/sub'da). Eksikse FileNotFoundError."""
+    paths = {}
+    for name in spec["gains"]:
+        path = song_dir / "master" / ("sub" if name in EXPORT_PARENT else "") / f"{name}.flac"
+        if not path.is_file():
+            raise FileNotFoundError(f"master dosyasi yok: {name}")
+        paths[name] = path
+    return paths
+
+
+def _export_render(spec: dict, local_paths: dict, out_path, title: str = "") -> dict:
+    """ffmpeg'i çalıştırıp çıktıyı ölçer. local_paths yerel dosyalar olmalı."""
+    _run(_export_command(spec, local_paths, out_path, title))
+    return _export_measure(out_path)
+
+
+@app.function(
+    image=light_image,
+    volumes={DATA_DIR: volume},
+    timeout=900,
+    memory=2048,
+    max_containers=4,
+)
+def export_mix(song_id: str, digest: str, spec: dict) -> dict:
+    """Mikser ayarını tek ses dosyasına çevirir. CPU; GPU yok.
+
+    Kaynak FLAC'lar önce konteyner-yerel dizine kopyalanır (ffmpeg Volume dosyasını
+    dakikalarca açık tutmasın: eşzamanlı reload patlamasın). Çıktı önce yerelde, sonra
+    atomik olarak `exports/<hash>.<uzantı>`a yazılır; yanına `<hash>.json` (dosya adı, ölçümler).
+    """
+    started = time.time()
+    volume.reload()
+    song_dir = _song_dir(song_id)
+    try:
+        status = json.loads((song_dir / "status.json").read_text(encoding="utf-8"))
+        title = str(status.get("title") or song_id[:12])
+        sources = _export_sources(song_dir, spec)
+        with tempfile.TemporaryDirectory() as workdir:
+            work = pathlib.Path(workdir)
+            local = {}
+            for name, path in sources.items():
+                local[name] = work / f"{name}.flac"
+                with path.open("rb") as src, local[name].open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+            out_local = work / f"out.{spec['format']}"
+            measured = _export_render(spec, local, out_local, title)
+            folder = song_dir / "exports"
+            folder.mkdir(parents=True, exist_ok=True)
+            final = folder / f"{digest}.{spec['format']}"
+            part = final.with_name(final.name + ".part")
+            with out_local.open("rb") as src, part.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+            os.replace(part, final)
+        filename = _export_filename(title, spec)
+        meta = {"hash": digest, "filename": filename, "format": spec["format"], "label": spec["label"],
+                **measured, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        (folder / f"{digest}.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        removed = _export_cleanup(song_dir)
+        seconds = round(time.time() - started, 1)
+        _write_status(song_id, export={
+            "state": "done", "hash": digest, "format": spec["format"], "filename": filename,
+            "bytes": measured["bytes"], "duration": measured["duration"],
+            "peak_db": measured["peak_db"], "mean_db": measured["mean_db"], "seconds": seconds,
+            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+        print(f"[export] {digest} {spec['format']} {measured['duration']} sn, tepe {measured['peak_db']} dB, "
+              f"{seconds} sn, {removed} eski dosya silindi")
+        return _assert_plain({"song_id": song_id, "hash": digest, "state": "done", **measured,
+                              "seconds": seconds})
+    except Exception as error:
+        with contextlib.suppress(Exception):
+            volume.reload()
+            _write_status(song_id, export={
+                "state": "error", "hash": digest, "message": f"{type(error).__name__}: {error}"[:300],
+                "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+        raise
+
+
+@app.function(
+    image=light_image,
+    volumes={DATA_DIR: volume},
+    schedule=modal.Period(days=1),
+    timeout=900,
+)
+def export_sweep() -> dict:
+    """Günlük süpürme: hiçbir şarkıya istek gelmese de 24 saatten eski dışa aktarmalar silinir."""
+    volume.reload()
+    root = pathlib.Path(DATA_DIR) / "songs"
+    removed = 0
+    if root.is_dir():
+        for entry in root.iterdir():
+            removed += _export_cleanup(entry)
+    if removed:
+        volume.commit()
+    print(f"[export] sweep: {removed} dosya silindi")
+    return {"removed": removed}
+
+
+@app.function(image=sub_cpu_image, volumes={DATA_DIR: volume}, timeout=1200, memory=8192)
+def export_validate_run(song_id: str) -> dict:
+    """Dışa aktarma çıktısını GERÇEK sesle ölçer (ffmpeg gerçek, Volume'a YAZMAZ).
+
+    Kaynak FLAC'lar yerel dizine kopyalanır; çıktılar da yerelde. Ton testi sentetik 440 Hz
+    sinüsle. Kontroller: (A) tüm kazançlar 1 iken orijinal karışımdan fark, (B) vokal 0
+    iken çıkan enerji = vokal stem enerjisi, (C) A-B süresi, (D) A-B + hız, (E) tam hız
+    çarpanı, (F) ton ve hız (sinüsle), (G) tepe sınırı (WAV ve m4a), (H) m4a kodu çözülür.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    volume.reload()
+    song_dir = _song_dir(song_id)
+    status = json.loads((song_dir / "status.json").read_text(encoding="utf-8"))
+    stems = list(status.get("stems") or [])
+    duration = float(status.get("duration") or 0)
+    results = []
+
+    def record(name, ok, detail=""):
+        results.append({"name": name, "ok": bool(ok), "detail": str(detail)})
+
+    def rms(array):
+        return float(np.sqrt(np.mean(np.asarray(array, dtype=np.float64) ** 2)) + 1e-12)
+
+    def db(value):
+        return 20 * np.log10(max(value, 1e-12))
+
+    def make_spec(overrides=None, gains=None, fmt="wav"):
+        body = {"format": fmt, "gains": gains or {name: 1.0 for name in stems}}
+        body.update(overrides or {})
+        spec, problem = _export_check(body, status)
+        if problem:
+            raise ValueError(problem)
+        return spec
+
+    with tempfile.TemporaryDirectory() as workdir:
+        work = pathlib.Path(workdir)
+        local = {}
+        for name in stems:
+            local[name] = work / f"{name}.flac"
+            with (song_dir / "master" / f"{name}.flac").open("rb") as src, local[name].open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+
+        def render(spec, tag, paths=None):
+            out = work / f"{tag}.{spec['format']}"
+            started = time.time()
+            measured = _export_render(spec, paths or local, out, "test")
+            measured["render_s"] = round(time.time() - started, 1)
+            return out, measured
+
+        def read_wav(path):
+            data, rate = sf.read(str(path), dtype="float32", always_2d=True)
+            return data.T, rate
+
+        # A) hepsi 1: (A1) stem'lerin kendi toplamından fark ~0 ve KAYMA YOK; (A2) orijinal
+        # karışımdan fark ayrıştırmanın kendi artığı kadar (Zeus ölçümü: -29,9 dB)
+        spec_all = make_spec()
+        out_all, m_all = render(spec_all, "all")
+        mix_all, rate = read_wav(out_all)
+        total = sum(sf.read(str(local[name]), dtype="float64", always_2d=True)[0].T for name in stems)
+        n = min(mix_all.shape[1], total.shape[1])
+        diff_sum = db(rms(mix_all[:, :n] - total[:, :n])) - db(rms(total[:, :n]))
+        seg = slice(44100 * 10, 44100 * 30)
+        best = (0, -1.0)
+        for lag in range(-400, 401):
+            x = mix_all[0, seg]
+            y = total[0, 44100 * 10 + lag:44100 * 30 + lag]
+            c = float(np.dot(x, y) / (np.linalg.norm(x) * np.linalg.norm(y) + 1e-12))
+            if c > best[1]:
+                best = (lag, c)
+        record("A1) hepsi 1: stem toplamindan fark (dB) ve kayma", diff_sum <= -60.0 and best[0] == 0,
+               f"{diff_sum:.1f} dB, kayma {best[0]} ornek (tepe {m_all['peak_db']} dB, {m_all['render_s']} sn)")
+        original = _decode_pcm(_find_input(song_id), 44100, 2)
+        n = min(mix_all.shape[1], original.shape[1])
+        diff = db(rms(mix_all[:, :n] - original[:, :n])) - db(rms(original[:, :n]))
+        record("A2) hepsi 1: orijinal karisimdan fark (ayristirma artigi kadar)", diff <= -25.0,
+               f"{diff:.1f} dB (uzunluk {mix_all.shape[1]} vs {original.shape[1]})")
+
+        # B) vokal 0: kaybolan enerji vokal stem'ine esit
+        if "vocals" in stems:
+            spec_nov = make_spec(gains={name: 1.0 for name in stems if name != "vocals"})
+            out_nov, _ = render(spec_nov, "novocals")
+            mix_nov, _ = read_wav(out_nov)
+            removed = mix_all[:, :mix_nov.shape[1]] - mix_nov[:, :mix_all.shape[1]]
+            stem_vocals, _ = sf.read(str(local["vocals"]), dtype="float32", always_2d=True)
+            stem_vocals = stem_vocals.T
+            m = min(removed.shape[1], stem_vocals.shape[1])
+            gap = db(rms(removed[:, :m])) - db(rms(stem_vocals[:, :m]))
+            leak = db(rms(removed[:, :m] - stem_vocals[:, :m])) - db(rms(stem_vocals[:, :m]))
+            record("B) vokal 0: cikarilan enerji = vokal stem'i", abs(gap) <= 0.5 and leak <= -40.0,
+                   f"seviye farki {gap:+.2f} dB, kalinti {leak:.1f} dB")
+
+        # C) A-B bolgesi
+        a, b = 10.0, min(20.0, duration - 1.0)
+        spec = make_spec({"region": {"a": a, "b": b}})
+        out, m = render(spec, "region")
+        record("C) A-B suresi", abs(m["duration"] - (b - a)) <= 0.05, f"{m['duration']} sn (beklenen {b - a})")
+
+        # D) A-B + 0.8x
+        spec = make_spec({"region": {"a": a, "b": b}, "rate": 0.8})
+        out, m = render(spec, "region_slow")
+        record("D) A-B + 0.8x suresi", abs(m["duration"] - (b - a) / 0.8) <= 0.15,
+               f"{m['duration']} sn (beklenen {(b - a) / 0.8:.2f})")
+
+        # E) tam miks 0.8x
+        spec = make_spec({"rate": 0.8})
+        out, m = render(spec, "slow")
+        expect = duration / 0.8
+        record("E) tam miks 0.8x suresi", abs(m["duration"] - expect) <= 0.3,
+               f"{m['duration']} sn (beklenen {expect:.2f}, {m['render_s']} sn)")
+
+        # F) ton ve hiz: sentetik 440 Hz
+        rate_hz = 44100
+        t = np.arange(rate_hz * 10) / rate_hz
+        tone = (0.3 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
+        tone_path = work / "tone.flac"
+        sf.write(str(tone_path), np.stack([tone, tone], axis=1), rate_hz, subtype="PCM_24", format="FLAC")
+        tone_paths = {"vocals": tone_path}
+        tone_status = dict(status, stems=["vocals"])
+
+        def tone_spec(over):
+            body = {"format": "wav", "gains": {"vocals": 1.0}}
+            body.update(over)
+            spec, problem = _export_check(body, tone_status)
+            if problem:
+                raise ValueError(problem)
+            return spec
+
+        def peak_hz(path):
+            data, sr = read_wav(path)
+            mid = data[0, int(sr * 2):int(sr * 7)].astype(np.float64) * np.hanning(int(sr * 5))
+            spectrum = np.abs(np.fft.rfft(mid, n=1 << 21))
+            return float(np.argmax(spectrum) * sr / (1 << 21))
+
+        cases = (
+            ("F1) ton +3 yari ses", {"semitones": 3}, 440.0 * 2 ** (3 / 12), 10.0),
+            ("F2) ton -5 yari ses", {"semitones": -5}, 440.0 * 2 ** (-5 / 12), 10.0),
+            ("F3) yalniz hiz 0.8x (ton ayni)", {"rate": 0.8}, 440.0, 12.5),
+            ("F4) hiz 1.25x (ton ayni)", {"rate": 1.25}, 440.0, 8.0),
+            ("F5) hiz 0.8x + ton +2", {"rate": 0.8, "semitones": 2}, 440.0 * 2 ** (2 / 12), 12.5),
+        )
+        for name, over, expect_hz, expect_len in cases:
+            out, m = render(tone_spec(over), "tone", tone_paths)
+            hz = peak_hz(out)
+            ok = abs(hz - expect_hz) <= max(3.0, expect_hz * 0.006) and abs(m["duration"] - expect_len) <= 0.2
+            record(name, ok, f"{hz:.1f} Hz (beklenen {expect_hz:.1f}), {m['duration']} sn (beklenen {expect_len})")
+
+        # G) tepe siniri: gurultulu girdi, kazanc 2.0, ana ses 1.5
+        loud = {name: 2.0 for name in stems}
+        for fmt in ("wav", "m4a"):
+            spec = make_spec({"master": 1.5}, gains=loud, fmt=fmt)
+            out, m = render(spec, f"loud_{fmt}")
+            limit_db = 20 * np.log10(EXPORT_LIMIT_BY_FORMAT[fmt])
+            tolerance = 0.1 if fmt == "wav" else 0.3       # m4a: -1 dBFS sinir + kucuk AAC asimi payi
+            record(f"G) tepe siniri ({fmt})", m["peak_db"] is not None and m["peak_db"] <= limit_db + tolerance,
+                   f"tepe {m['peak_db']} dB (sinir {limit_db:.2f}, tolerans {tolerance})")
+
+        # H) m4a: gercek bir ayar, kodu cozulur, sure dogru
+        spec = make_spec({"rate": 0.8, "semitones": 0, "label": "Test"}, fmt="m4a")
+        out, m = render(spec, "m4a_real")
+        decoded = _decode_pcm(out, 44100, 2)
+        record("H) m4a kodu cozulur, sure dogru",
+               abs(decoded.shape[1] / 44100 - m["duration"]) <= 0.1 and m["bytes"] > 10000,
+               f"{m['duration']} sn, {m['bytes']} bayt, {m['render_s']} sn")
+
+    return _assert_plain({"title": str(status.get("title") or ""), "duration": duration,
+                          "results": results})
+
+
+@app.local_entrypoint()
+def export_validate(song: str = "Zeus"):
+    """Dışa aktarma ölçümleri (gerçek ses, CPU, Volume'a yazmaz): modal run backend/app.py::export_validate"""
+    song_id, title = _resolve_title_cli(song)
+    report = export_validate_run.remote(song_id)
+    failed = 0
+    print(f"\n{title} ({report['duration']} sn)")
+    for item in report["results"]:
+        print(f"[{'OK  ' if item['ok'] else 'HATA'}] {item['name']}  -> {item['detail']}")
+        failed += 0 if item["ok"] else 1
+    print(f"\n{len(report['results']) - failed} gecti, {failed} basarisiz")
+    if failed:
+        raise SystemExit(1)
+
+
+def _resolve_title_cli(needle: str):
+    found = sub_find.remote([needle])
+    if needle not in found:
+        raise SystemExit(f"sarki bulunamadi: {needle}")
+    return found[needle][0], found[needle][1]
+
+
 def _wav_from_flac(flac_path: pathlib.Path) -> bytes:
     """FLAC master'dan WAV üretir.
 
@@ -5279,6 +5851,131 @@ def api():
              "lyrics": json.loads(raw.decode("utf-8"))},
             headers={"Cache-Control": "private, max-age=0, must-revalidate"})
 
+    # ---------------- miks dışa aktarma (Aşama 12) ------------------------------
+
+    def export_path(song_id: str, digest: str, fmt: str) -> pathlib.Path:
+        return _song_dir(song_id) / "exports" / f"{digest}.{fmt}"
+
+    async def export_meta(song_id: str, digest: str):
+        """Hazır dışa aktarma varsa (dosya + yan json) sidecar sözlüğü, yoksa None."""
+        folder = _song_dir(song_id) / "exports"
+        sidecar = folder / f"{digest}.json"
+        for _ in range(2):
+            if await asyncio.to_thread(sidecar.exists):
+                try:
+                    raw = await asyncio.to_thread(_read_slice, sidecar)
+                    meta = json.loads(raw.decode("utf-8"))
+                except (OSError, ValueError):
+                    return None
+                fmt = meta.get("format")
+                if fmt in EXPORT_FORMATS and await asyncio.to_thread(export_path(song_id, digest, fmt).exists):
+                    return meta
+                return None
+            await gate.refresh(force=True)         # başka konteyner yeni commit etmiş olabilir
+        return None
+
+    @web.post("/songs/{song_id}/export")
+    async def start_export(song_id: str, request: Request, _=auth):
+        """Mikser ayarını tek ses dosyasına çevirir (sunucuda, CPU).
+
+        Gövde (JSON): {format: m4a|wav, gains: {kanal: 0..2}, master: 0..1.5,
+        region: {a, b} | null, rate: 0.5..1.5, semitones: -6..6, label}. `gains`
+        istemcinin hesapladığı dosya başına nihai kazançtır (alt parça açıksa ana kanal
+        yok). Aynı ayar için dosya varsa tekrar üretilmez. Durum: GET .../export/{hash}.
+        """
+        try:
+            body = await request.json()
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Govde JSON olmali")
+        await gate.refresh(force=True)
+        status = await require_status(song_id)
+        if status.get("state") != "done" or not status.get("stems"):
+            raise HTTPException(status_code=409, detail="Sarki henuz hazir degil")
+        spec, problem = _export_check(body, status)
+        if problem:
+            raise HTTPException(status_code=400, detail=problem)
+        digest = _export_hash(spec)
+
+        meta = await export_meta(song_id, digest)
+        if meta:
+            with contextlib.suppress(OSError):          # önbellek isabeti 24 saati yeniler
+                await asyncio.to_thread(os.utime, export_path(song_id, digest, spec["format"]))
+            return {"id": song_id, "hash": digest, "state": "done", "existing": True,
+                    "filename": meta["filename"], "bytes": meta.get("bytes"),
+                    "duration": meta.get("duration")}
+        record = status.get("export") or {}
+        if _export_is_running(status):
+            if record.get("hash") == digest:
+                return {"id": song_id, "hash": digest, "state": "running", "existing": True}
+            raise HTTPException(status_code=409, detail="Baska bir disa aktarma suruyor")
+
+        await asyncio.to_thread(_write_status, song_id, export={
+            "state": "running", "hash": digest, "format": spec["format"], "started": int(time.time())})
+        call = export_mix.spawn(song_id, digest, spec)
+        return {"id": song_id, "hash": digest, "state": "running", "format": spec["format"],
+                "call_id": str(call.object_id)}
+
+    @web.get("/songs/{song_id}/export/{digest}")
+    async def get_export(song_id: str, digest: str, _=auth):
+        if not EXPORT_HASH_RE.match(digest):
+            raise HTTPException(status_code=400, detail="Gecersiz hash")
+        await gate.refresh()
+        status = await require_status(song_id)
+        meta = await export_meta(song_id, digest)
+        if meta:
+            return {"id": song_id, "hash": digest, "state": "done", "filename": meta["filename"],
+                    "format": meta["format"], "bytes": meta.get("bytes"),
+                    "duration": meta.get("duration"), "peak_db": meta.get("peak_db")}
+        record = status.get("export") or {}
+        if record.get("hash") != digest:
+            raise HTTPException(status_code=404, detail="Disa aktarma yok ya da suresi doldu")
+        if record.get("state") == "running" and not _export_is_running(status):
+            return {"id": song_id, "hash": digest, "state": "error", "message": "Is takildi, yeniden dene"}
+        return {"id": song_id, "hash": digest, "state": record.get("state"),
+                "message": record.get("message")}
+
+    @web.post("/songs/{song_id}/export/{digest}/link")
+    async def export_link(song_id: str, digest: str, request: Request, _=auth):
+        """Hazır dosya için imzalı indirme linki (<a> başlık gönderemez)."""
+        if not EXPORT_HASH_RE.match(digest):
+            raise HTTPException(status_code=400, detail="Gecersiz hash")
+        await gate.refresh()
+        await require_status(song_id)
+        meta = await export_meta(song_id, digest)
+        if not meta:
+            raise HTTPException(status_code=404, detail="Disa aktarma yok ya da suresi doldu")
+        expires = int(time.time()) + DOWNLOAD_TTL
+        signature = _sign_download(signing_key, song_id, f"export{digest}", meta["format"], expires)
+        base = str(request.base_url).rstrip("/")
+        url = (f"{base}/songs/{song_id}/export-file/{digest}"
+               f"?format={meta['format']}&exp={expires}&sig={signature}")
+        return {"url": url, "expires_at": expires, "ttl": DOWNLOAD_TTL, "filename": meta["filename"],
+                "format": meta["format"], "bytes": meta.get("bytes")}
+
+    @web.get("/songs/{song_id}/export-file/{digest}")
+    async def export_file(song_id: str, digest: str, format: str = "m4a", exp: int = 0, sig: str = ""):
+        # Bu uç nokta BİLEREK token istemiyor; yetki imzada (download ile aynı).
+        if format not in EXPORT_FORMATS or not EXPORT_HASH_RE.match(digest):
+            raise HTTPException(status_code=400, detail="Gecersiz istek")
+        expected = _sign_download(signing_key, song_id, f"export{digest}", format, exp)
+        if not sig or not hmac.compare_digest(sig, expected):
+            raise HTTPException(status_code=403, detail="Imza gecersiz")
+        if exp < int(time.time()):
+            raise HTTPException(status_code=403, detail="Link suresi gecmis")
+        if not _is_valid_song_id(song_id):
+            raise HTTPException(status_code=400, detail="Gecersiz sarki kimligi")
+        meta = await export_meta(song_id, digest)
+        if not meta or meta.get("format") != format:
+            raise HTTPException(status_code=404, detail="Dosya bulunamadi")
+        path = export_path(song_id, digest, format)
+        async with gate.reading():
+            body = await asyncio.to_thread(_read_slice, path)
+        media = "audio/mp4" if format == "m4a" else "audio/wav"
+        return Response(
+            content=body, media_type=media,
+            headers={"Content-Disposition": _content_disposition(meta["filename"]),
+                     "Content-Length": str(len(body))})
+
     # ---------------- imzalı indirme ----------------------------------------
 
     @web.post("/songs/{song_id}/download-link")
@@ -5368,6 +6065,9 @@ def api():
         if _lyrics_is_running(status):
             raise HTTPException(status_code=409,
                                 detail="Sozler hazirlanirken yeniden islenemez")
+        if _export_is_running(status):
+            raise HTTPException(status_code=409,
+                                detail="Disa aktarma surerken yeniden islenemez")
         chosen = quality if quality in QUALITIES else DEFAULT_QUALITY
         call = separate.spawn(song_id, chosen, True)
         return {"id": song_id, "call_id": str(call.object_id),
