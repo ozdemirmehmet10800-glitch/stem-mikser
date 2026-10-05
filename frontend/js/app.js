@@ -241,6 +241,13 @@ function renderFilterChips() {
       renderLibrary(librarySongs);
     });
   }
+  for (const tag of collection.tagList()) {
+    if (!tag.count && libraryFilter.tag !== tag.id) continue;
+    chip(tag.name, libraryFilter.tag === tag.id, () => {
+      libraryFilter.tag = libraryFilter.tag === tag.id ? null : tag.id;
+      renderLibrary(librarySongs);
+    });
+  }
   box.replaceChildren(...chips);
   box.hidden = !chips.length;
 }
@@ -434,6 +441,7 @@ const layerClosers = {
   },
   panel: closePanelsDom,
   export: () => closeExportDom(),
+  tags: () => closeTagSheetDom(),
   fx: () => closeFxDom(),
   "lyrics-full": () => { if (lyricsScreen) lyricsScreen.close(); },
   select: closeSelectModeDom,
@@ -520,6 +528,10 @@ function renderLibrary(songs) {
     if (nav.peek() === "select") history.back();
   }
   // Süzme: görünen liste. Görünmeyen şarkılar SEÇİMDEN düşer (Sil (N) sayısı = gördüklerin; gizli şarkı silinmesin).
+  // Silinmiş ya da şarkısı kalmamış etiketin süzmesi kalmasın (boş liste + kaybolmuş çip olmasın).
+  if (libraryFilter.tag && !collection.tagList().some((tag) => tag.id === libraryFilter.tag && tag.count > 0)) {
+    libraryFilter.tag = null;
+  }
   visibleSongs = filterSongs(songs, libraryFilter, libraryContext());
   const visibleIds = new Set(visibleSongs.map((song) => song.id));
   for (const id of [...selectedIds]) {
@@ -589,6 +601,24 @@ function renderLibrary(songs) {
     const duration = song.duration ? ` · ${formatTime(song.duration)}` : "";
     sub.textContent = (stateLabels[song.state] || song.state) + duration;
     info.append(name, sub);
+    const tagIds = collection.tagIdsOf(song.id);
+    if (tagIds.length) {
+      const tagRow = document.createElement("div");
+      tagRow.className = "song-tags";
+      for (const tid of tagIds.slice(0, 2)) {
+        const chip = document.createElement("span");
+        chip.className = "song-tag";
+        chip.textContent = collection.tagName(tid);
+        tagRow.append(chip);
+      }
+      if (tagIds.length > 2) {
+        const more = document.createElement("span");
+        more.className = "song-tag";
+        more.textContent = `+${tagIds.length - 2}`;
+        tagRow.append(more);
+      }
+      info.append(tagRow);
+    }
 
     if (busy) {
       const progress = document.createElement("div");
@@ -4081,6 +4111,8 @@ on("lyrics-text", "input", updateLyricsCount);
 
 on("open-settings", "click", () => {
   refreshStemCacheState();
+  refreshCollectionState();
+  collectionMessage("");
   el("setting-url").value = settings.url;
   el("setting-token").value = settings.token;
   el("setting-stretcher").value = settings.stretcher;
@@ -4144,6 +4176,236 @@ on("refresh-list", "click", refreshLibrary);
 // --- seçim modu düğmeleri ---
 on("select-cancel", "click", exitSelectMode);
 on("select-delete", "click", deleteSelected);
+// ---------------------------------------------------------------- etiket sayfası
+//
+// Seçili şarkılara etiket ekle/çıkar (çip: hepsinde = dolu, bazılarında = kesikli, hiçbirinde = boş) ve "Etiketleri yönet"
+// (yeniden adlandır, sil). Veri js/collection.js'te; burası yalnız arayüz.
+
+let tagMode = "assign";         // "assign" | "manage"
+let tagRenaming = null;         // yeniden adlandırılan etiketin kimliği
+
+function tagMessage(text, tone = "warn") {
+  if (text) showMessage(el("tag-message"), text, tone);
+  else hideMessage(el("tag-message"));
+}
+
+function renderTagSheet() {
+  const ids = [...selectedIds];
+  const manage = tagMode === "manage";
+  el("tag-title").textContent = manage ? "Etiketleri yönet" : "Etiketler";
+  el("tag-sub").textContent = manage ? "Adı değiştir ya da sil. Silinen etiket tüm şarkılardan kalkar."
+    : ids.length ? `${ids.length} şarkı seçili: etikete dokun, hepsine ekler ya da çıkarır.`
+    : "Şarkı seçmeden etiket oluşturup yönetebilirsin; etiketlemek için kitaplıkta önce şarkıya uzun bas.";
+  el("tag-add").hidden = manage;
+  el("tag-mode").textContent = manage ? "Geri" : "Etiketleri yönet";
+  const box = el("tag-list");
+  box.classList.toggle("manage", manage);
+  const tags = collection.tagList();
+  const nodes = [];
+  if (!tags.length) {
+    const none = document.createElement("div");
+    none.className = "tag-list-empty";
+    none.textContent = "Henüz etiket yok.";
+    nodes.push(none);
+  }
+  for (const tag of tags) {
+    if (!manage) {
+      const state = collection.tagState(tag.id, ids);
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "tag-chip";
+      chip.disabled = !ids.length;
+      chip.setAttribute("aria-pressed", state === "all" ? "true" : state === "some" ? "mixed" : "false");
+      chip.append(document.createTextNode(tag.name));
+      const count = document.createElement("small");
+      count.textContent = String(tag.count);
+      chip.append(count);
+      chip.addEventListener("click", () => {
+        const result = collection.setTagOnSongs(ids, tag.id, state !== "all");
+        tagMessage(result.ok ? "" : collectionError(result));
+        renderTagSheet();
+        renderLibrary(librarySongs);
+      });
+      nodes.push(chip);
+      continue;
+    }
+    const row = document.createElement("div");
+    row.className = "tag-row";
+    if (tagRenaming === tag.id) {
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = tag.name;
+      input.maxLength = 24;
+      input.setAttribute("aria-label", "Etiket adı");
+      const save = document.createElement("button");
+      save.type = "button";
+      save.className = "btn btn-small btn-primary";
+      save.textContent = "Kaydet";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "btn btn-small";
+      cancel.textContent = "İptal";
+      const commit = () => {
+        const result = collection.renameTag(tag.id, input.value);
+        if (!result.ok) {
+          tagMessage(result.error === "empty" ? "Etiket adı boş olamaz." : collectionError(result));
+          return;
+        }
+        tagRenaming = null;
+        tagMessage("");
+        renderTagSheet();
+        renderLibrary(librarySongs);
+      };
+      save.addEventListener("click", commit);
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") { event.preventDefault(); commit(); }
+      });
+      cancel.addEventListener("click", () => { tagRenaming = null; tagMessage(""); renderTagSheet(); });
+      row.append(input, save, cancel);
+      nodes.push(row);
+      queueMicrotask(() => { input.focus(); input.select(); });
+      continue;
+    }
+    const name = document.createElement("span");
+    name.className = "tag-name";
+    name.textContent = tag.name;
+    const count = document.createElement("span");
+    count.className = "tag-count";
+    count.textContent = `${tag.count} şarkı`;
+    const rename = document.createElement("button");
+    rename.type = "button";
+    rename.className = "btn btn-small";
+    rename.textContent = "Adı değiştir";
+    rename.addEventListener("click", () => { tagRenaming = tag.id; tagMessage(""); renderTagSheet(); });
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "btn btn-small btn-danger";
+    del.textContent = "Sil";
+    del.addEventListener("click", () => {
+      const sure = window.confirm(`"${tag.name}" etiketi ${tag.count} şarkıdan kaldırılacak. Silinsin mi?`);
+      if (!sure) return;
+      const result = collection.deleteTag(tag.id);
+      tagMessage(result.ok ? "" : collectionError(result));
+      if (libraryFilter.tag === tag.id) libraryFilter.tag = null;
+      renderTagSheet();
+      renderLibrary(librarySongs);
+    });
+    row.append(name, count, rename, del);
+    nodes.push(row);
+  }
+  box.replaceChildren(...nodes);
+}
+
+function openTagSheet() {
+  tagMode = "assign";
+  tagRenaming = null;
+  tagMessage("");
+  el("tag-new").value = "";
+  renderTagSheet();
+  el("tag-sheet").hidden = false;
+  pushLayer("tags");
+  el("tag-close").focus();
+}
+
+function closeTagSheetDom() {
+  el("tag-sheet").hidden = true;
+  tagRenaming = null;
+  renderLibrary(librarySongs);
+}
+
+function addTagFromInput() {
+  const input = el("tag-new");
+  const created = collection.createTag(input.value);
+  if (!created.ok) {
+    tagMessage(created.error === "empty" ? "Etiket adı boş olamaz." : collectionError(created));
+    return;
+  }
+  const ids = [...selectedIds];
+  if (ids.length) {
+    const applied = collection.setTagOnSongs(ids, created.id, true);
+    if (!applied.ok) {
+      tagMessage(collectionError(applied));
+      renderTagSheet();
+      return;
+    }
+  }
+  input.value = "";
+  tagMessage(created.created ? "" : "Bu etiket zaten vardı.", "ok");
+  renderTagSheet();
+  renderLibrary(librarySongs);
+}
+
+on("select-tags", "click", openTagSheet);
+on("tag-close", "click", () => requestBack("tags"));
+on("tag-backdrop", "click", () => requestBack("tags"));
+on("tag-new-go", "click", addTagFromInput);
+on("tag-new", "keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); addTagFromInput(); }
+});
+on("tag-mode", "click", () => {
+  tagMode = tagMode === "manage" ? "assign" : "manage";
+  tagRenaming = null;
+  tagMessage("");
+  renderTagSheet();
+});
+
+// ---------------------------------------------------- yedek (Ayarlar): dışa / içe aktar
+function refreshCollectionState() {
+  const { favs, tags, songs } = collection.stats();
+  const persisted = stemCache.persisted;
+  const kalici = persisted === true ? "kalıcı" : persisted === false ? "geçici" : "bilinmiyor";
+  el("collection-state").textContent = `${favs} favori, ${tags} etiket, ${songs} şarkı kaydı. Depolama: ${kalici}.`;
+}
+
+function collectionMessage(text) {
+  el("collection-message").textContent = text;
+}
+
+on("collection-export", "click", () => {
+  try {
+    const blob = new Blob([collection.exportJson()], { type: "application/json" });
+    const link = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0, 10);
+    link.href = URL.createObjectURL(blob);
+    link.download = `stem-mikser-etiketler-${stamp}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    const { favs, tags } = collection.stats();
+    collectionMessage(`Yedek indirildi (${favs} favori, ${tags} etiket).`);
+  } catch (error) {
+    collectionMessage(`Yedek indirilemedi: ${error && error.message ? error.message : error}`);
+  }
+});
+
+on("collection-import", "click", () => el("collection-file").click());
+on("collection-file", "change", async (event) => {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = "";
+  if (!file) return;
+  if (file.size > 1024 * 1024) {
+    collectionMessage("Dosya çok büyük (en çok 1 MB); bu bir etiket yedeği olmayabilir.");
+    return;
+  }
+  let result;
+  try {
+    result = collection.importJson(await file.text());
+  } catch {
+    collectionMessage("Dosya okunamadı.");
+    return;
+  }
+  if (!result.ok) {
+    collectionMessage({
+      json: "Dosya geçerli bir JSON değil.", format: "Bu bir Stem Mikser etiket yedeği değil.", size: "Dosya çok büyük (en çok 1 MB).",
+    }[result.error] || collectionError(result));
+    return;
+  }
+  collectionMessage(`Yedek yüklendi: ${result.tagsAdded} etiket, ${result.favsAdded} favori eklendi, ${result.songsTouched} şarkı kaydı güncellendi.`);
+  refreshCollectionState();
+  renderLibrary(librarySongs);
+});
+
 on("select-all", "click", () => {
   // Yalnız GÖRÜNEN şarkılar (süzme açıkken gizli şarkılar seçilip silinmesin).
   if (visibleSongs.length && selectedIds.size === visibleSongs.length) selectedIds.clear();

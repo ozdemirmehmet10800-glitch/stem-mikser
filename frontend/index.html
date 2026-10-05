@@ -51,7 +51,7 @@
 
     <!-- Kitaplık araması (şarkı adı + etiketler; Türkçe İ/ı ve Japonca katlamalı) -->
     <div class="library-search">
-      <input type="search" id="library-search" placeholder="Şarkı ara" aria-label="Şarkı ara" autocomplete="off"
+      <input type="search" id="library-search" placeholder="Şarkı ya da etiket ara" aria-label="Şarkı ya da etiket ara" autocomplete="off"
              autocapitalize="off" spellcheck="false" enterkeyhint="search">
       <button type="button" class="icon-btn library-search-clear" id="library-search-clear" aria-label="Aramayı temizle" hidden>
         <svg viewBox="0 0 24 24"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
@@ -69,6 +69,7 @@
       </button>
       <span class="select-count" id="select-count">0 seçili</span>
       <button class="btn btn-small" id="select-all">Tümünü seç</button>
+      <button class="btn btn-small" id="select-tags">Etiketler</button>
       <button class="btn btn-small btn-danger" id="select-delete" disabled>
         Sil (0)
       </button>
@@ -386,6 +387,18 @@
       </div>
 
       <div class="field">
+        <span>Etiket ve favori yedeği</span>
+        <small id="collection-state">Hesaplanıyor…</small>
+        <small>Favoriler ve etiketler yalnız bu telefonda saklanır (site verisini silersen ya da uygulamayı kaldırırsan gider). Yedek bir JSON dosyasıdır; sözler ve çeviriler içermez. Yüklerken var olanla BİRLEŞTİRİR, üzerine yazmaz.</small>
+        <div class="settings-buttons">
+          <button type="button" class="btn btn-small" id="collection-export">Yedeği indir</button>
+          <button type="button" class="btn btn-small" id="collection-import">Yedeği yükle</button>
+        </div>
+        <input type="file" id="collection-file" accept="application/json,.json" hidden>
+        <small id="collection-message"></small>
+      </div>
+
+      <div class="field">
         <span>Hiza testi</span>
         <small>
           Gerçek zamanlı ölçüm: sentetik bir tık stem'i motorun gerçek
@@ -434,6 +447,28 @@
         <small class="fx-note">Yankı kanal başına "Yankı" ayarıyla gönderilir; burası ortak odanın sesi.</small>
         <button type="button" class="btn btn-small" id="fx-room-reset">Odayı sıfırla</button>
       </div>
+    </div>
+  </div>
+
+  <!-- etiketler: seçili şarkılara ekle/çıkar, etiketleri yönet (yeniden adlandır, sil) -->
+  <div class="export-sheet tag-sheet" id="tag-sheet" hidden>
+    <div class="export-backdrop" id="tag-backdrop"></div>
+    <div class="export-box" role="dialog" aria-modal="true" aria-labelledby="tag-title">
+      <div class="export-head">
+        <h2 id="tag-title">Etiketler</h2>
+        <button type="button" class="icon-btn" id="tag-close" aria-label="Kapat">
+          <svg viewBox="0 0 24 24"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
+        </button>
+      </div>
+      <div class="tag-sub" id="tag-sub"></div>
+      <div class="tag-add" id="tag-add">
+        <input type="text" id="tag-new" placeholder="Yeni etiket (ör. prova)" maxlength="24" autocomplete="off"
+               autocapitalize="off" spellcheck="false" enterkeyhint="done" aria-label="Yeni etiket adı">
+        <button type="button" class="btn btn-small btn-primary" id="tag-new-go">Ekle</button>
+      </div>
+      <div class="tag-list" id="tag-list"></div>
+      <div class="message" id="tag-message" hidden></div>
+      <button type="button" class="btn btn-small" id="tag-mode">Etiketleri yönet</button>
     </div>
   </div>
 

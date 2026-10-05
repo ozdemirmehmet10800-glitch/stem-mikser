@@ -226,6 +226,18 @@ Tarayıcı<->sunucu farkı: önce yerel sunucu (sentetik giriş üretir, tarayı
 
 Tarayıcı verisi yoksa `export_validate` yalnız sunucu satırlarını koşar (J satırları "ATLANDI"). K satırları (en kötü durum: 11 kanal + salon + 7,9 dk şarkı, süre ve ffmpeg bellek tepesi) her koşuda gelir.
 
+**Kitaplıkta arama, favoriler, etiketler (saf mantık, sahte depo; Modal/ağ gerekmez):**
+
+```powershell
+node tests\songfilter_test.mjs
+node tests\collection_test.mjs
+node tests\storage_safety_test.mjs
+```
+
+Veri telefonda tek anahtarda (`stem-mikser.collection`). `storage_safety_test` kaynağı tarar: `localStorage.clear` yok, "Önbelleği
+temizle" localStorage'a dokunmuyor, hiçbir önek silmesi bu anahtara uymuyor. Ayarlar'daki "Etiket ve favori yedeği" JSON olarak
+indirir / birleştirerek yükler.
+
 **Paylaş menüsünden şarkı ekleme (Web Share Target) ve service worker (saf mantık, sahte `self`/Cache Storage; Modal/ağ gerekmez):**
 
 ```powershell

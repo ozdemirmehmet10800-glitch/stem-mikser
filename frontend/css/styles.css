@@ -112,6 +112,31 @@ html, body {
   border: 1px solid var(--line); border-radius: 999px; cursor: pointer; white-space: nowrap;
 }
 .lib-chip[aria-pressed="true"] { background: var(--accent-dim); border-color: var(--accent); }
+/* Satırdaki etiket çipleri (en çok 2 + "+N") */
+.song-tags { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+.song-tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); color: var(--text-dim); border: 1px solid var(--line); }
+/* Etiket sayfası (export-sheet düzenini kullanır) */
+.tag-sub { font-size: 13px; color: var(--text-dim); }
+.tag-add { display: flex; gap: 8px; }
+.tag-add[hidden] { display: none; }
+.tag-add input, .tag-row input {
+  flex: 1; min-width: 0; padding: 10px 12px; font: inherit; font-size: 15px; color: var(--text); background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.tag-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.tag-chip {
+  padding: 8px 14px; font: inherit; font-size: 14px; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 999px; cursor: pointer;
+}
+.tag-chip[aria-pressed="true"] { background: var(--accent-dim); border-color: var(--accent); }
+.tag-chip[aria-pressed="mixed"] { border-style: dashed; border-color: var(--accent); }
+.tag-chip:disabled { opacity: 0.5; cursor: default; }
+.tag-chip small { color: var(--text-dim); margin-left: 4px; }
+.tag-list.manage { flex-direction: column; flex-wrap: nowrap; }
+.tag-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.tag-row .tag-name { flex: 1; min-width: 0; word-break: break-word; }
+.tag-row .tag-count { font-size: 12px; color: var(--text-dim); }
+.tag-list-empty { font-size: 13px; color: var(--text-dim); }
 /* Favori yıldızı: satır sonunda, 44 px dokunma alanı */
 .song-star {
   flex: 0 0 auto; width: 44px; height: 44px; display: grid; place-items: center; padding: 0; margin: -6px -6px -6px 0;
