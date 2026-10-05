@@ -44,6 +44,7 @@ import {
 } from "./beatpulse.js";
 import { getBackground, putBackground, clearBackground } from "./bgstore.js";
 import { MediaBridge } from "./media.js";
+import { badgeOf, upgradeOf, describeMethod, upgradeConfirmText } from "./quality.js";
 import { WakeLock } from "./wakelock.js";
 import { StemCache, cacheTag } from "./stemcache.js";
 import { Metronome, SUBDIVISIONS } from "./metronome.js";
@@ -608,11 +609,12 @@ function renderLibrary(songs) {
     const name = document.createElement("div");
     name.className = "song-name";
     name.textContent = song.title || song.id.slice(0, 12);
-    // Hi-Fi mi Standart mı, kitaplıkta görünsün.
-    if (song.quality) {
+    // Hangi yöntemle ayrıldığı kitaplıkta görünsün: Hi-Fi v2 / Hi-Fi (v1) / Standart (quality.js; yalnız biten şarkıda).
+    const badge = badgeOf(song);
+    if (badge) {
       const tag = document.createElement("span");
-      tag.className = `quality-tag ${song.quality === "hifi" ? "hifi" : "standard"}`;
-      tag.textContent = song.quality === "hifi" ? "Hi-Fi" : "Standart";
+      tag.className = `quality-tag ${badge.cls}`;
+      tag.textContent = badge.text;
       name.append(tag);
     }
 
@@ -1487,6 +1489,8 @@ async function openSong(song, opts = {}) {
   const warning = longSongWarning(song);
   if (warning) showMessage(el("player-message"), warning, "warn");
   el("player-meta").textContent = "";
+  if (el("player-method")) el("player-method").hidden = true;   // önceki şarkının yöntem satırı/düğmesi kalmasın
+  if (el("reprocess")) el("reprocess").hidden = true;
   el("play").disabled = true;
   if (el("tempo-toggle")) el("tempo-toggle").disabled = true;
   closeTunePanel();
@@ -1644,12 +1648,9 @@ async function openSong(song, opts = {}) {
       title: song.title || song.id.slice(0, 12),
       artist: chords ? `${chords.key || ""} · ${Math.round(chords.bpm || 0)} BPM` : "",
     });
-    // "Hi-Fi'a yükselt" yalnız Standart ayrıştırılmış şarkılarda anlamlı.
-    if (el("reprocess")) {
-      const isStandard = (detail.status && detail.status.quality) === "standard";
-      el("reprocess").hidden = !isStandard;
-      el("reprocess").disabled = false;
-    }
+    // Standart -> "Hi-Fi'a yükselt", Hi-Fi v1 -> "v2'ye yükselt"; v2'de düğme yok.
+    refreshMethodUi();
+    if (el("reprocess")) el("reprocess").disabled = false;
 
     media.bindHandlers({ onPlay: startPlayback, onPause: stopPlayback });
     lastPositionSync = -1;
@@ -1755,6 +1756,31 @@ function effectiveKey() {
   const semis = shownSemis();
   if (!semis) return originalKey;
   return transposeKey(originalKey, semis) || originalKey;
+}
+
+// Şarkı bilgisi: ayrıştırma yöntemi satırı + yükselt düğmesi (currentSong.status'tan; quality.js).
+function methodInfo() {
+  const status = currentSong && currentSong.status;
+  return status ? { quality: status.quality, pipeline: status.pipeline, state: status.state } : null;
+}
+
+function methodUpgrade() {
+  return upgradeOf(methodInfo());
+}
+
+function refreshMethodUi() {
+  const line = el("player-method");
+  if (line) {
+    const text = currentSong && currentSong.status ? describeMethod(currentSong.status) : "";
+    line.textContent = text;
+    line.hidden = !text;
+  }
+  const button = el("reprocess");
+  if (button) {
+    const upgrade = methodUpgrade();
+    button.hidden = !upgrade;
+    if (upgrade) button.textContent = upgrade.label;
+  }
 }
 
 function refreshMeta() {
@@ -5080,11 +5106,19 @@ on("play", "click", togglePlayback);
 
 on("reprocess", "click", async () => {
   if (!currentSong) return;
-  if (!requireOnline(el("player-message"), "Hi-Fi'a yükseltmek")) return;
+  const upgrade = methodUpgrade();
+  if (!upgrade) return;
+  if (!requireOnline(el("player-message"), "Yükseltmek")) return;
+  const status = currentSong.status || {};
+  const hasSubs = GROUP_ORDER.some((group) => {
+    const sub = subOf(status, group);
+    return Boolean(sub && sub.state === "done");
+  });
+  if (!window.confirm(upgradeConfirmText(upgrade, { hasSubs }))) return;
   const button = el("reprocess");
   button.disabled = true;
   showMessage(el("player-message"),
-    "Hi-Fi ile yeniden ayrıştırılıyor. Akor ve vuruş korunuyor; " +
+    `${upgrade.kind === "v2" ? "Hi-Fi v2" : "Hi-Fi"} ile yeniden ayrıştırılıyor. Akor ve vuruş korunuyor; ` +
     "bitince listeye dönüp şarkıyı yeniden aç.", "warn");
   try {
     await api.reprocess(currentSong.id, "hifi");

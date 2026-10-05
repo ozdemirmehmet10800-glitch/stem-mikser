@@ -327,6 +327,7 @@ html, body {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .player-meta { color: var(--text-faint); font-size: 13px; white-space: nowrap; }
+.player-method { padding: 0 16px 6px; color: var(--text-faint); font-size: 12px; line-height: 1.35; }
 
 /* ---------- akor şeridi ---------- */
 
@@ -928,6 +929,7 @@ input[type="range"]::-moz-range-thumb {
   letter-spacing: 0.02em; vertical-align: middle;
 }
 .quality-tag.hifi { background: rgba(34, 211, 238, 0.16); color: var(--accent); }
+.quality-tag.hifi.v1 { background: rgba(34, 211, 238, 0.07); color: var(--text-dim); }
 .quality-tag.standard { background: rgba(139, 149, 165, 0.16); color: var(--text-dim); }
 
 /* ---------- hiza testi ---------- */
