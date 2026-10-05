@@ -62,6 +62,25 @@
       </button>
     </div>
 
+    <!-- Paylaş menüsünden gelen dosya: sunucuya (ve GPU'ya) YALNIZ "Yükle ve ayır"a basınca gidilir. -->
+    <section class="share-card" id="share-card" hidden aria-labelledby="share-title">
+      <div class="share-head">
+        <span class="share-title" id="share-title">Paylaşılan dosya</span>
+      </div>
+      <div class="share-name" id="share-name"></div>
+      <div class="share-meta" id="share-meta"></div>
+      <div class="share-note" id="share-note" hidden></div>
+      <label class="quality-pick">
+        <span>Kalite</span>
+        <select id="share-quality"></select>
+      </label>
+      <div class="share-actions">
+        <button class="btn btn-primary" id="share-go" type="button">Yükle ve ayır</button>
+        <button class="btn" id="share-cancel" type="button">Vazgeç</button>
+      </div>
+      <div class="share-hint" id="share-hint">Ayırma (GPU) yalnız "Yükle ve ayır"a basınca başlar.</div>
+    </section>
+
     <div id="upload-status" class="upload-status" hidden></div>
     <div id="library-message" class="message" hidden></div>
     <ul class="song-list" id="song-list"></ul>

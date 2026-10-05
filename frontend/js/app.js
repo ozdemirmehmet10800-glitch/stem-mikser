@@ -54,6 +54,10 @@ import {
 import { transposeKey } from "./tonality.js";
 import { NavStack, CLOSE, BLOCKED } from "./navstack.js";
 import { diag, summarize, eventsText } from "./diag.js";
+import {
+  SHARE_PARAM, MESSAGES as SHARE_MESSAGES, launchKind, readPending, clearPending, classify, formatSize,
+  formatDuration, durationWarning,
+} from "./share.js";
 
 const POLL_MS = 3000;
 
@@ -662,7 +666,8 @@ function schedulePoll() {
 }
 
 async function handleUpload(file) {
-  if (!requireOnline(el("library-message"), "şarkı yüklemek")) return;
+  // Dönen: true = sunucu aldı (ya da zaten vardı), false = yüklenemedi (paylaşım kartı kaydı korusun diye).
+  if (!requireOnline(el("library-message"), "şarkı yüklemek")) return false;
   const status = el("upload-status");
   status.hidden = false;
   status.textContent = `${file.name} yükleniyor… %0`;
@@ -676,9 +681,154 @@ async function handleUpload(file) {
       : `${file.name} alındı, işleniyor.`;
     await refreshLibrary();
     schedulePoll();
+    return true;
   } catch (error) {
     status.hidden = true;
     showMessage(el("library-message"), describeError(error));
+    return false;
+  }
+}
+
+// ------------------------------------------------ paylaş menüsünden ekleme (Web Share Target)
+//
+// sw.js POST /share-target'ı yakalayıp ilk dosyayı geçici cache'e koyuyor ve ?paylasim=1 ile buraya yolluyor. Dosya
+// önce BU KARTTA görünür; sunucuya (ve GPU'ya) yalnız "Yükle ve ayır"a basınca gidilir. "Şarkı ekle" düğmesi
+// bugünkü gibi dosyayı seçince doğrudan yükler (kart yalnız paylaşılan dosyada).
+
+let sharePending = null;      // {file, name, size, note, seconds}
+let shareBusy = false;
+
+function renderShareCard() {
+  const card = el("share-card");
+  if (!card) return;
+  if (!sharePending) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  el("share-name").textContent = sharePending.name;
+  el("share-meta").textContent = [formatSize(sharePending.size), formatDuration(sharePending.seconds)]
+    .filter(Boolean).join(" · ");
+  const notes = [sharePending.note, durationWarning(sharePending.seconds)].filter(Boolean);
+  const noteNode = el("share-note");
+  noteNode.hidden = !notes.length;
+  noteNode.textContent = notes.join(" ");
+  const offline = isOffline();
+  const configured = isConfigured(settings);
+  el("share-go").disabled = shareBusy || offline || !configured;
+  el("share-cancel").disabled = shareBusy;
+  el("share-quality").disabled = shareBusy;
+  el("share-go").textContent = shareBusy ? "Yükleniyor…" : "Yükle ve ayır";
+  el("share-hint").textContent = !configured ? "Önce Ayarlar'dan API adresini ve token'ı gir."
+    : offline ? "İnternet yok; bağlanınca yükleyebilirsin."
+    : 'Ayırma (GPU) yalnız "Yükle ve ayır"a basınca başlar.';
+}
+
+// Süre: <audio> üst verisinden, en iyi çaba (okunamazsa kart süresiz kalır; sunucu 10 dk sınırını zaten uygular).
+function probeDuration(file) {
+  return new Promise((resolve) => {
+    let url = "";
+    const audio = new Audio();
+    const done = (value) => {
+      clearTimeout(timer);
+      audio.removeAttribute("src");
+      if (url) URL.revokeObjectURL(url);
+      resolve(Number.isFinite(value) && value > 0 ? value : null);
+    };
+    const timer = setTimeout(() => done(null), 4000);
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => done(audio.duration);
+    audio.onerror = () => done(null);
+    try {
+      url = URL.createObjectURL(file);
+      audio.src = url;
+    } catch {
+      done(null);
+    }
+  });
+}
+
+async function showShareCard(pending, note) {
+  sharePending = { file: pending.file, name: pending.name, size: pending.size, note, seconds: null };
+  const select = el("share-quality");
+  select.replaceChildren(...[...el("upload-quality").options].map((option) => {
+    const copy = document.createElement("option");
+    copy.value = option.value;
+    copy.textContent = option.textContent;
+    return copy;
+  }));
+  select.value = el("upload-quality").value;
+  renderShareCard();
+  const seconds = await probeDuration(pending.file);
+  if (sharePending && sharePending.file === pending.file) {
+    sharePending.seconds = seconds;
+    renderShareCard();
+  }
+}
+
+async function dropShare() {
+  sharePending = null;
+  shareBusy = false;
+  renderShareCard();
+  try {
+    await clearPending(window.caches);
+  } catch {
+    /* cache erişilemedi: kayıt 1 saat sonra zaten bayatlıyor */
+  }
+}
+
+async function confirmShare() {
+  if (!sharePending || shareBusy) return;
+  shareBusy = true;
+  renderShareCard();
+  // handleUpload kaliteyi #upload-quality'den ilk satırlarda (await'ten önce) okuyor: kartın seçimini oraya geçici yaz,
+  // sonra eski değeri geri koy (kitaplıktaki seçim sessizce değişmesin).
+  const select = el("upload-quality");
+  const previous = select.value;
+  select.value = el("share-quality").value;
+  const run = handleUpload(sharePending.file);
+  select.value = previous;
+  const ok = await run;
+  if (ok) {
+    await dropShare();
+  } else {
+    shareBusy = false;
+    renderShareCard();
+  }
+}
+
+// Açılışta: ?paylasim=... varsa adresi temizle; bekleyen kayıt (varsa) kart ya da mesaj olur. Bekleyen kayıt parametresiz
+// de bulunur (Android uygulamayı kart açıkken öldürebilir; kayıt 1 saat saklanır).
+async function handleShareLaunch() {
+  const kind = launchKind(location.search);
+  if (new URLSearchParams(location.search).has(SHARE_PARAM)) {
+    history.replaceState(history.state, "", location.pathname + location.hash);
+  }
+  const library = el("library-message");
+  const say = (text, tone = "warn") => {
+    showMessage(isConfigured(settings) ? library : el("settings-message"), text, tone);
+  };
+  try {
+    if (kind === "empty") say(SHARE_MESSAGES.empty);
+    else if (kind === "error") say(SHARE_MESSAGES.error);
+    const pending = await readPending(window.caches, location.href);
+    if (!pending) {
+      if (kind === "file") say(SHARE_MESSAGES.gone);
+      return;
+    }
+    const verdict = classify(pending);
+    if (verdict.action === "card") {
+      await showShareCard(pending, verdict.note);
+      if (!isConfigured(settings)) {
+        say("Paylaşılan dosya bekliyor. API adresini ve token'ı girip kaydet, sonra kitaplıkta yükleyebilirsin.", "warn");
+      }
+    } else {
+      if (kind === "file" || pending.state !== "stale") say(verdict.text);
+      await clearPending(window.caches);
+    }
+  } catch (error) {
+    console.warn("[share]", error);
+    if (kind === "file") say(SHARE_MESSAGES.error);
   }
 }
 
@@ -854,6 +1004,7 @@ function markOnlineState(reachable) {
 function syncOfflineUi() {
   const offline = isOffline();
   refreshExportAvailability();
+  renderShareCard();
   const label = el("upload-label");
   if (label) {
     label.classList.toggle("disabled", offline);
@@ -3858,6 +4009,7 @@ on("settings-form", "submit", (event) => {
     token: el("setting-token").value,
   });
   api = new Api(settings);
+  renderShareCard();
   showMessage(el("settings-message"), "Kaydedildi.", "ok");
   // Kullanıcı eylemi sonrası yeniden iste: ilk açılışta reddedilen izin Chrome'un
   // etkileşim ölçütüyle sonradan verilebiliyor. Sonuç tanı satırında.
@@ -3889,6 +4041,9 @@ on("upload-input", "change", (event) => {
   if (file) handleUpload(file);
   event.target.value = "";
 });
+
+on("share-go", "click", confirmShare);
+on("share-cancel", "click", dropShare);
 
 on("refresh-list", "click", refreshLibrary);
 
@@ -4477,3 +4632,5 @@ if (isConfigured(settings)) {
     "warn"
   );
 }
+// Paylaş menüsünden gelen dosya (varsa) onay kartı olur; ayarlar yoksa ayar ekranında bilgi verilir.
+handleShareLaunch();

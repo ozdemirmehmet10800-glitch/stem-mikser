@@ -659,6 +659,25 @@ input[type="range"]::-moz-range-thumb {
 
 .upload-status { font-size: 13px; color: var(--text-dim); margin-bottom: 10px; }
 
+/* Paylaşılan dosya onay kartı (Web Share Target) */
+.share-card {
+  background: var(--panel);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.share-title { font-size: 12px; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; }
+.share-name { font-size: 16px; font-weight: 600; word-break: break-word; }
+.share-meta, .share-hint { font-size: 13px; color: var(--text-dim); }
+.share-note { font-size: 13px; color: var(--warn); }
+.share-actions { display: flex; gap: 10px; }
+.share-actions .btn-primary { flex: 1; }
+.share-hint { font-size: 12px; color: var(--text-faint); }
+
 /* ---------- yükleniyor katmanı ---------- */
 
 .overlay {

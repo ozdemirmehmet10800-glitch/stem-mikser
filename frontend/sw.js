@@ -16,6 +16,16 @@ const CACHE = `stem-mikser-${VERSION}`;
 // buradan silinmez.
 const SHELL_CACHE_RE = /^stem-mikser-v\d+$/;
 
+// Paylaş menüsünden şarkı ekleme (Web Share Target). manifest.json: share_target {action: "./share-target", POST,
+// multipart}. GitHub Pages POST kabul etmez; bu worker isteği yakalar, İLK dosyayı geçici cache'e koyar ve 303 ile
+// uygulamaya yollar (js/share.js dosyayı alıp onay kartı gösterir). Sabitler js/share.js ile AYNI olmalı
+// (tests/sw_share_test.mjs ikisini karşılaştırır).
+const SHARE_PATH = "share-target";
+const SHARE_CACHE = "stem-mikser-share-v1";   // uygulamanın kendi cache'i: activate silmez (SHELL_CACHE_RE'ye uymaz)
+const SHARE_KEY = "share-pending/current";    // tek bekleyen kayıt
+const SHARE_PARAM = "paylasim";
+const SHARE_MAX_BYTES = 30 * 1024 * 1024;     // sunucu sınırıyla aynı (MAX_UPLOAD_BYTES); üstü saklanmaz
+
 // Göreli yollar: site /stem-mikser/ alt yolunda yayınlanıyor, kökte değil.
 const SHELL = [
   "./",
@@ -41,6 +51,7 @@ const SHELL = [
   "./js/media.js",
   "./js/wakelock.js",
   "./js/stemcache.js",
+  "./js/share.js",
   "./js/metronome.js",
   "./js/chords.js",
   "./js/settings.js",
@@ -113,7 +124,16 @@ self.addEventListener("message", (event) => {
 self.addEventListener("fetch", (event) => {
   const { request } = event;
 
-  // Sadece GET. POST/DELETE'e karışmıyoruz.
+  // Paylaşım hedefi: YALNIZ aynı origin'de, kapsam içindeki /share-target POST'u. Başka hiçbir POST/DELETE'e karışmıyoruz.
+  if (request.method === "POST") {
+    const target = new URL(request.url);
+    if (target.origin === self.location.origin && target.href === new URL(SHARE_PATH, self.location).href) {
+      event.respondWith(handleShare(request));
+    }
+    return;
+  }
+
+  // Sadece GET.
   if (request.method !== "GET") return;
 
   const url = new URL(request.url);
@@ -144,6 +164,23 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  // manifest.json: önce AĞ. Chrome WebAPK güncelleme kontrolünde (share_target gibi alanlar) yeni manifesti ilk
+  // kontrolde görsün diye; "önce cache" eski manifesti bir tur daha verirdi. Çevrimdışıyken cache'ten.
+  if (url.pathname.endsWith("/manifest.json")) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response && response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE).then((cache) => cache.put(request, copy));
+          }
+          return response;
+        })
+        .catch(() => caches.match(request))
+    );
+    return;
+  }
+
   // Diğer kendi dosyalarımız: önce cache, arkadan tazele.
   event.respondWith(
     caches.match(request).then((hit) => {
@@ -160,3 +197,46 @@ self.addEventListener("fetch", (event) => {
     })
   );
 });
+
+// ------------------------------------------------------------ paylaşım hedefi
+
+function shareRedirect(state) {
+  return Response.redirect(new URL(`./?${SHARE_PARAM}=${state}`, self.location).href, 303);
+}
+
+/**
+ * POST /share-target: multipart içindeki İLK dosyayı `stem-mikser-share-v1` cache'ine koyar, uygulamaya yönlendirir.
+ * Dosya yoksa ?paylasim=bos, işlenemezse ?paylasim=hata. Tek bekleyen kayıt (yenisi eskinin yerine geçer).
+ * 30 MB üstü saklanmaz: yalnız ad/boyut kaydedilir (bellek ve depolama boşa dolmasın), uygulama mesaj gösterir.
+ */
+async function handleShare(request) {
+  try {
+    const form = await request.formData();
+    const files = [];
+    for (const [, value] of form.entries()) {
+      if (typeof value !== "string") files.push(value);
+    }
+    if (!files.length) return shareRedirect("bos");
+    const [file] = files;
+    const cache = await caches.open(SHARE_CACHE);
+    for (const old of await cache.keys()) await cache.delete(old);
+    const large = file.size > SHARE_MAX_BYTES;
+    await cache.put(
+      new URL(SHARE_KEY, self.location).href,
+      new Response(large ? null : file, {
+        headers: {
+          "content-type": file.type || "application/octet-stream",
+          "x-share-state": large ? "large" : "ok",
+          "x-share-name": encodeURIComponent(file.name || ""),
+          "x-share-size": String(file.size),
+          "x-share-skipped": String(files.length - 1),
+          "x-share-time": String(Date.now()),
+        },
+      })
+    );
+    return shareRedirect("1");
+  } catch (error) {
+    console.warn("[sw] paylaşım alınamadı:", error);
+    return shareRedirect("hata");
+  }
+}

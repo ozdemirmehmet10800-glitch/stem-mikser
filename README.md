@@ -226,6 +226,18 @@ Tarayıcı<->sunucu farkı: önce yerel sunucu (sentetik giriş üretir, tarayı
 
 Tarayıcı verisi yoksa `export_validate` yalnız sunucu satırlarını koşar (J satırları "ATLANDI"). K satırları (en kötü durum: 11 kanal + salon + 7,9 dk şarkı, süre ve ffmpeg bellek tepesi) her koşuda gelir.
 
+**Paylaş menüsünden şarkı ekleme (Web Share Target) ve service worker (saf mantık, sahte `self`/Cache Storage; Modal/ağ gerekmez):**
+
+```powershell
+node tests\share_test.mjs
+node tests\sw_share_test.mjs
+node tests\sw_activate_test.mjs
+```
+
+`tests\sw_routing_test.html` (depo kökünde `python -m http.server 8002`) SW'nin API/ses/GET dışı isteklere karışmadığını gerçek
+`Request` nesneleriyle sınar. Gerçek paylaşım akışı yalnız telefonda denenir (kurulu PWA gerekir; GitHub Pages POST kabul etmez,
+SW yakalar).
+
 **Söz çevirisi (Aşama 14):** arayüz mantığı (node) ve sunucu (Python, Modal'a/ağa bağlanmaz, Gemini sahte HTTP ile):
 
 ```powershell
