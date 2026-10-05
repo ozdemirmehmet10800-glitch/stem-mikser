@@ -754,45 +754,45 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
    vuruşa nabız / ikisi / kendi dosyam (200 MB üstü uyarı); tek ayar `settings.lyricsBg`, ⚙ ekrandaki panelden ve Ayarlar'dan seçilir. Yalnız transform+opacity; ekran kapalıyken ya da uygulama
    arka plandayken her şey durur (Wake Lock dahil). Testler: beatpulse_test, lyricsscreen_test (sahte DOM, aç/kapa sızıntısı), engine_leak_test'e ekran bölümü. Hiza testi bu turda yeniden koşulmadı.
 
+12. [ ] **Aşama 14 - söz çevirisi: PLAN HAZIR (2026-10-05, araştırma turu, KOD YOK).** Yabancı şarkılarda her söz satırının altında soluk (1) doğal Türkçe çeviri,
+   (2) Japonca şarkılarda okunuş (romaji); ikisi ayrı açılıp kapanır; panelde ve tam ekranda, sözlerle birlikte akar.
+   - **Model: Gemini ücretsiz katman (öneri).** Doğrulandı (ai.google.dev, 2026-10-05): Gemini 3.x Flash modelleri ücretsiz katmanda "free of charge";
+     Türkiye desteklenen bölgede; kart gerekmez (PLAN kuralı: kredi kartı gerektiren servis yok). Ücretsiz katman limitleri belgede SAYI olarak yok, AI Studio'dan
+     (aistudio.google.com/rate-limit) bakılır; bizim yük (şarkı başı 1 istek, ~1-2 bin token) her makul limitin çok altında. **Bedel:** ücretsiz katmanda girdi/çıktı
+     Google'ın ürün iyileştirmesinde kullanılır ve insan inceleyiciler okuyabilir (koşullar: "hassas/kişisel veri verme"); telifli sözler Google'a gider. Ücretli katman
+     bunu kapatır ama kart ister. Kabul edilebilirse Gemini; edilmezse çeviri yapılmaz (aşağıdaki Claude de kart ister).
+   - **Claude API alternatifi:** Haiku 4.5 $1/$5, Sonnet 5.5 $2/$10 (MTok girdi/çıktı; Batch %50). Şarkı başı ~$0.006 (Haiku) - $0.013 (Sonnet 5.5): kalite en az eşit
+     (idiom uyarlamada büyük olasılıkla daha iyi), ama ön ödemeli kredi + kart gerekir. Kodda sağlayıcı arkasında soyutlanır; anahtar `modal secret`'ta değişirse geçilir.
+   - **Okunuş: cutlet (MIT) + fugashi + unidic-lite (BSD seçeneği)**, sunucuda, anahtarsız, deterministik. pykakasi GPLv3: depo public ve sunucu dağıtım sayılmaz ama
+     lisans-temiz yol cutlet. Zayıf yer: şiirsel/özel okumalar (ateji, isimler) ve bağlama göre okunan kanji. Aynı Gemini çağrısında satır başına hiragana okuma
+     da istenebilir (ek maliyet yok); doğrulanırsa (yalnız kana, cutlet okumasına yakın) ondan romaji üretilir, yoksa cutlet'e düşülür. KARAR ÖLÇÜMLE: Ado sözlerinde iki yol
+     yan yana, kullanıcı kulakla/gözle seçer.
+   - **Anahtar:** yalnız Modal secret `stem-mikser-gemini` (GEMINI_API_KEY, isteğe bağlı GEMINI_MODEL). Yalnız çeviri işi (CPU, `translate_lyrics`) bu secret'ı bağlar; API
+     (web) fonksiyonu ve telefon görmez. Anahtar başlıkta (`x-goog-api-key`), URL'de değil; log'a yazılmaz. Model adı secret/ortam değişkeninden (adlar değişiyor).
+   - **Saklama ve sürüm:** `songs/<id>/translation.json` (yalnız Volume, depoya girmez). SATIR METNİ HASH'ine bağlı (sözlerin `version`'ına DEĞİL: o, "Zamanı düzelt" ve
+     yeniden hizalamada da artıyor). Her satır `{h: normalize(metin) hash, tr, ro}`; okurken sözlerin satırları hash ile eşlenir: zamanlar/sıra değişse de çeviri korunur,
+     metni değişen/eklenen satır "çevrilmedi" olur ve "Güncelle" yalnız onları (tüm şarkı bağlamıyla) çevirir. Sözler silinince çeviri de silinir; şarkı silinince gider.
+   - **Uçlar:** `POST /songs/{id}/translate` {targets: ["tr","ro"], replace}, `GET /songs/{id}/translation` (+ `status.translation`: state/model/lines/missing, `/songs`'ta
+     `translation_state`). Çeviri sürerken sözler düzenleme/yeniden hizalama 409 ve tersi. Türkçe sözde (`language == "tr"`) uç 400 ve düğme gizli; `en` yalnız çeviri; `ja` çeviri + okunuş.
+   - **Satır eşleşmesi:** tüm şarkı numaralı satırlarla BAĞLAM olarak verilir; çıktı JSON dizisi şemayla (`minItems = maxItems = N`) istenir, sunucu yine doğrular
+     (tam N öğe, indeksler sıralı, boş olmayan, makul uzunluk, numara/açıklama yok); olmazsa hata geri bildirimiyle 2 yeniden deneme, sonra 20'şer satırlık parçalar
+     (bağlam tam şarkı); olmazsa net hata. 429/5xx üstel bekleme. Güvenlik süzgeci/RECITATION engeli: yakalanır, kullanıcıya "model bu şarkıyı çevirmeyi reddetti" denir.
+   - **Arayüz:** her `.lyric-line`/`.lf-line` içinde orijinalin altında küçük soluk `okunuş` sonra `çeviri` satırı (ana satırın opaklığını miras alır, yani "görünen satır"
+     solması ve kaydırma okunurluğu aynen çalışır; satır yüksekliği değişse de tam ekran konumu `offsetTop`'tan hesaplandığı için sorun yok). Söz panelinde "Çeviri" ve
+     "Okunuş" açma/kapama çipleri (veri varken), yoksa "Çevir" çipi (yalnız yabancı dilde, çevrimdışıyken pasif). Açık/kapalı tercihi cihazda, TÜM şarkılar için tek;
+     tam ekranda ⚙ paneline de konur. Çeviri cihaz önbelleğinde (`stem-mikser.translation.<id>`, 40 şarkı LRU, sözler gibi), çevrimdışı açılır; şarkı silinince gider.
+   - **Sıra:** (1) backend çeviri + secret + gate/api testleri + Ado/NEM'de canlı doğrulama, (2) okunuş (cutlet) + ölçüm, (3) arayüz (panel, tam ekran, önbellek, mock) + telefon.
+     ~3 oturum. **Test:** sahte HTTP ile saf işlevler (istem, doğrulama, eşleme, yeniden deneme, parçalama) `tests/test_translate_gate.py`; uçlar `test_translate_api.py`;
+     mock sunucuda sentetik çeviri; GERÇEK sözler yalnız gitignore'lı `backend/lyrics_ref/` + `lyrics_out/` ile elle `modal run backend/app.py::translate_probe`
+     (satır sayısı eşleşme oranı, yeniden deneme sayısı, süre; çeviri kalitesini kullanıcı okur). Testlere ve commit'e gerçek söz GİRMEZ.
+
 ### Sonra (şimdilik gerek yok)
-**Anında başlatma (önizleme dosyaları).** KOD YOK, plan. **ERTELENDİ
-(2026-09-29):** telefon ölçümünde cihazda kayıtlı şarkılar 1-2 saniyede
-(9 dakikalık şarkı 6 saniyede) açılıyor ve ilk açılıştaki darboğaz İNDİRME
-(~0.6-1.2 MB/sn), çözme değil. Önden indirme (madde 7) ilk açılış beklemesini
-de büyük ölçüde kaldırdığı için bu işin kazancı kalmadı. Plan duruyor,
-gerekirse buradan devam edilir.
+**Cep listesi (2026-10-05, kullanıcı; sırasız, hiçbiri başlamadı):** dalga şeritleri; otomatik bölüm tespiti; şarkı söyleme antrenörü;
+akorlu söz sayfası; notaya/MIDI'ye çevirme; akort aleti; çalma listesi (prova modu); kanalları sağa-sola yerleştirme (pan); kanal başına
+ekolayzer ve yankı; ayar yedeği; kitaplıkta arama/favoriler/etiketler; paylaş menüsünden şarkı ekleme (Web Share Target); yer imleri.
 
-   **Sunucu:** her stem için ilk 30 saniyeyi ayrı bir dosya olarak da üret
-   (`stems/preview/<ad>.m4a`). Kesme `ffmpeg -c copy` ile, YENİDEN KODLAMA
-   YOK - AAC çerçeveleri birebir aynı kopyalandığı için çözülen örnekler de
-   aynı olmalı (yalnız son çerçeve kırpma sınırında farklı olabilir). Maliyet
-   ihmal edilebilir: kod çözme/kodlama yok, sadece kopyalama. `reencode`
-   komutu bunları da üretmeli, `stems_version` ortak.
-
-   **Uygulama:** önce önizlemeler çözülüp ÇALMAYA BAŞLANIYOR (6 × 30 sn =
-   çözme süresinin ~1/4'ü), tam dosyalar arkada iniyor ve çözülüyor. Hazır
-   olunca kaynaklar **zamanlanmış bir anda** değiştiriliyor: seek'te
-   kullanılan konum hesabının aynısıyla, örnek hassasiyetinde. Önizleme
-   biterken tam dosya hâlâ hazır değilse kısa bir bekleme (sessizlik) olsun -
-   yanlış konumdan devam etmektense duraksamak iyi.
-
-   **Neden bu iş:** ölçüm (madde 5) açılışın %90'ından fazlasının
-   `decodeAudioData`'da geçtiğini gösterdi; önizleme o sürenin dörtte birini
-   ödeyip çalmaya başlıyor, kalanını arkaya atıyor.
-
-   **Kabul testleri:**
-   - Önizleme ile tam dosyanın ilk 29 saniyesi ÖRNEK ÖRNEK aynı mı? (İkisini
-     de çözüp fark al; eşik: tam sıfır ya da yalnız son çerçevede fark.)
-   - Hiza testine **"değişim anı"** satırı: kaynak değiştirme sırasında
-     kayma var mı - 1.0x (bypass), 0.8x ve canlı hız değişimi sırasında.
-     Eşik yine ±10 ms; saçılma raporlanır.
-   - Önizleme bitmeden tam dosya hazır olmazsa davranış: duraksama var ama
-     konum DOĞRU.
-
-   **Bilinen risk:** esnetici açıkken düğümün içinde ~120 ms duyulmamış ses
-   var; kaynak değişimi o boru hattının hesabını bozmamalı (Aşama 8'deki
-   "yeniden çıpalama" kuralı burada da geçerli).
-
+**Anında başlatma (önizleme dosyaları): LİSTEDEN ÇIKTI (2026-10-05, kullanıcı kararı).** Gerekçe zaten buradaydı (cihazdaki şarkılar 1-2 sn'de
+açılıyor, ilk açılış darboğazı İNDİRME ve önden indirme onu büyük ölçüde kaldırdı). Ayrıntılı plan git geçmişinde (commit e58c6ea ve öncesi).
 
 ### Kalite zinciri (2026-09-29 sonrası)
 | adım | format | kHz | kanal | derinlik/bit hızı |
