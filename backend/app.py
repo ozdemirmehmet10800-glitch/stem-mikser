@@ -3559,7 +3559,9 @@ def _lyr_doc(source: str, language: str, lines, duration: float, version: int) -
             {"t": round(float(line["start"]), 2), "e": round(float(line["end"]), 2),
              "text": str(line["text"]),
              "w": [[round(float(w["s"]), 2), round(float(w["e"]), 2), str(w["w"]).strip()]
-                   for w in (line.get("words") or [])]}
+                   for w in (line.get("words") or [])],
+             **({"c": 0} if line.get("c") == 0 else {}),      # düşük güven: eşleşmeyen satır
+             **({"m": 1} if line.get("m") else {})}           # elle konan zaman (çapa)
             for line in lines
         ],
     }
@@ -3620,6 +3622,491 @@ def _lyr_segments(result) -> list:
     return lines
 
 
+# --- Yapıştır ve hizala v2: otomatik çıkarmayla eşleştir, çapalar arasında yerel hizala ---
+#
+# Eski yöntem metnin TAMAMINI tek `align()` çağrısına veriyordu. Metinde bir nakarat tekrarı
+# eksikse hizalayıcı sonraki satırları o tekrarın sesine yapıştırıyordu (Bağımlı: 9 satır
+# 66-83 sn erken). Yeni yol: (1) sesten otomatik kelimeler (varsa kayıtlı), (2) yapıştırılan
+# kelimelerle bulanık SIRALI eşleştirme (Needleman-Wunsch), (3) yeterince eşleşen satırlar
+# ÇAPA: yalnız kendi küçük pencerelerinde hizalanır, (4) eşleşmeyen satır dizileri iki çapa
+# arasındaki pencerede, vokal enerjisine göre hizalanır ve "düşük güven" (c: 0) işaretlenir,
+# (5) elle girilen zamanlar (manual) çapadır. Eşleşme çok düşükse eski global yola düşülür.
+
+LYRICS_MATCH_SIM = 0.6
+LYRICS_MATCH_GAP = -0.5
+LYRICS_MATCH_MAX_CELLS = 9_000_000
+LYRICS_ANCHOR_MIN_RATIO = 0.35         # tüm metnin bundan azı eşleşirse global yola dön
+LYRICS_MISMATCH_MATCH_RATIO = 0.5      # eşleşme oranı bundan azsa "metin sesle uyuşmuyor" uyarısı
+LYRICS_GAP_MIN_TOKENS = 4              # ses var, metin yok: en az kaç kelime
+LYRICS_GAP_MIN_SECONDS = 2.0
+LYRICS_PAD_BASE = 0.4                  # çapa penceresi payı (sn)
+LYRICS_PAD_PER_WORD = 0.5              # eşleşmeyen baştaki/sondaki her kelime için ek pay
+LYRICS_PAD_PER_CHAR = 0.18             # Japonca: karakter başına
+LYRICS_PAD_MAX = 3.0
+LYRICS_MANUAL_LEAD = 0.25              # elle konan zamandan bu kadar önce başlayan pencere
+LYRICS_MIN_WINDOW = 0.25
+LYRICS_CLUSTER_GAP = 5.0               # bir satırın eşleşen kelimeleri arası en çok bu kadar (aykırı eşleşme elemesi)
+LYRICS_TIMES_MIN_GAP = 0.05            # satır başları arası en az (elle düzeltme)
+
+
+def _lyr_norm_token(text: str) -> str:
+    import unicodedata
+
+    text = unicodedata.normalize("NFKC", text).replace("I", "ı").replace("İ", "i").lower()
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def _lyr_line_tokens(line: str, language: str) -> list:
+    """Eşleştirme belirteçleri: tr/en kelime, Japonca karakter."""
+    if language == "ja":
+        return [t for t in (_lyr_norm_token(ch) for ch in line) if t]
+    return [t for t in (_lyr_norm_token(word) for word in line.split()) if t]
+
+
+def _lyr_auto_tokens(words, language: str) -> list:
+    """Otomatik kelimeler [(s, e, w)] -> [(belirteç, s, e)] (Japoncada karakterlere bölünür)."""
+    out = []
+    for start, end, word in words:
+        if language == "ja":
+            chars = [c for c in (_lyr_norm_token(ch) for ch in str(word)) if c]
+            span = (float(end) - float(start)) / max(len(chars), 1)
+            for k, char in enumerate(chars):
+                out.append((char, float(start) + k * span, float(start) + (k + 1) * span))
+        else:
+            token = _lyr_norm_token(str(word))
+            if token:
+                out.append((token, float(start), float(end)))
+    return out
+
+
+def _lyr_similarity(a: str, b: str) -> float:
+    import difflib
+
+    if a == b:
+        return 1.0
+    if len(a) <= 2 or len(b) <= 2:
+        return 0.0                       # kısa belirteçler yalnız birebir eşleşir
+    if abs(len(a) - len(b)) > max(2, 0.4 * max(len(a), len(b))):
+        return 0.0
+    if a[0] != b[0] and a[-1] != b[-1]:
+        return 0.0                       # ucuz eleme: ne baslangic ne bitis ortak (nadir kayip, buyuk hiz)
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def _lyr_match(pasted: list, auto: list) -> dict:
+    """Sıralı bulanık eşleştirme: {yapıştırılan indeks: otomatik indeks}. Sıra korunur.
+
+    Needleman-Wunsch (eşleşme 2*benzerlik-0.8 >= 0.4, eşleşmeme -1, boşluk -0.5). Hücre sayısı
+    LYRICS_MATCH_MAX_CELLS'ten büyükse ValueError (çağıran global yola düşer).
+    """
+    n, m = len(pasted), len(auto)
+    if n == 0 or m == 0:
+        return {}
+    if n * m > LYRICS_MATCH_MAX_CELLS:
+        raise ValueError(f"eslestirme cok buyuk: {n}x{m}")
+    gap = LYRICS_MATCH_GAP
+    cache = {}
+
+    def score(i, j):
+        key = (pasted[i], auto[j])
+        value = cache.get(key)
+        if value is None:
+            sim = _lyr_similarity(*key)
+            value = (sim * 2 - 0.8) if sim >= LYRICS_MATCH_SIM else -1.0
+            cache[key] = value
+        return value
+
+    trace = [bytearray(m + 1) for _ in range(n + 1)]
+    previous = [j * gap for j in range(m + 1)]
+    for j in range(1, m + 1):
+        trace[0][j] = 2
+    for i in range(1, n + 1):
+        current = [i * gap] + [0.0] * m
+        row = trace[i]
+        row[0] = 1
+        for j in range(1, m + 1):
+            diagonal = previous[j - 1] + score(i - 1, j - 1)
+            up = previous[j] + gap
+            left = current[j - 1] + gap
+            best = diagonal
+            move = 0
+            if up > best:
+                best, move = up, 1
+            if left > best:
+                best, move = left, 2
+            current[j] = best
+            row[j] = move
+        previous = current
+    pairs = {}
+    i, j = n, m
+    while i > 0 or j > 0:
+        move = trace[i][j] if (i > 0 and j > 0) else (1 if i > 0 else 2)
+        if move == 0:
+            if score(i - 1, j - 1) > 0:
+                pairs[i - 1] = j - 1
+            i -= 1
+            j -= 1
+        elif move == 1:
+            i -= 1
+        else:
+            j -= 1
+    return pairs
+
+
+def _lyr_gaps(pairs: dict, auto: list, language: str) -> list:
+    """Sesten çıkan ama metinde karşılığı olmayan bölümler: [[t0, t1, belirteç sayısı]]."""
+    matched = set(pairs.values())
+    minimum = LYRICS_GAP_MIN_TOKENS * (2 if language == "ja" else 1)
+    runs = []
+    j = 0
+    while j < len(auto):
+        if j in matched:
+            j += 1
+            continue
+        k = j
+        while k < len(auto) and k not in matched:
+            k += 1
+        t0, t1 = auto[j][1], auto[k - 1][2]
+        if (k - j) >= minimum and (t1 - t0) >= LYRICS_GAP_MIN_SECONDS:
+            runs.append([round(t0, 1), round(t1, 1), k - j])
+        j = k
+    return runs
+
+
+def _lyr_main_cluster(matched: list, auto: list) -> list:
+    """Satırın eşleşen kelimelerinden zaman olarak tutarlı en büyük küme. Ortak bir kelimenin başka
+    yerdeki tesadüfi eşleşmesi (aykırı) pencereyi onlarca saniye açıp hizalamayı yanlış yere atıyordu
+    (Bağımlı'da bir satır 188 sn'ye düştü). Ardışık eşleşmeler arası > LYRICS_CLUSTER_GAP ise küme biter."""
+    if len(matched) < 2:
+        return matched
+    clusters, current = [], [matched[0]]
+    for before, after in zip(matched, matched[1:]):
+        if auto[after[1]][1] - auto[before[1]][2] > LYRICS_CLUSTER_GAP:
+            clusters.append(current)
+            current = []
+        current.append(after)
+    clusters.append(current)
+    return max(clusters, key=len)
+
+
+def _lyr_plan(line_tokens: list, pairs: dict, auto: list, manual: dict, language: str) -> list:
+    """Satır başına {kind: anchor|manual|free, ...}. line_tokens: satır başına belirteç listesi.
+
+    Çapa: satırın belirteçlerinin en az yarısı (en az 2; 1-2 belirteçli satırda 1) otomatik
+    kelimelerle eşleşmiş. Pencere: ilk/son eşleşen kelimenin otomatik zamanı +- pay (baştaki /
+    sondaki eşleşmeyen her kelime için ek pay).
+    """
+    import math
+
+    per_unit = LYRICS_PAD_PER_CHAR if language == "ja" else LYRICS_PAD_PER_WORD
+    plan = []
+    offset = 0
+    for index, tokens in enumerate(line_tokens):
+        count = len(tokens)
+        matched = [(pos, pairs[offset + pos]) for pos in range(count) if (offset + pos) in pairs]
+        matched = _lyr_main_cluster(matched, auto)
+        entry = {"kind": "free", "tokens": count, "matched": len(matched)}
+        if index in manual:
+            entry.update(kind="manual", start=float(manual[index]))
+        elif matched:
+            need = 1 if count <= 2 else max(2, math.ceil(count / 2))
+            if len(matched) >= need:
+                p0, a0 = matched[0]
+                p1, a1 = matched[-1]
+                pad_start = min(LYRICS_PAD_MAX, LYRICS_PAD_BASE + per_unit * p0)
+                pad_end = min(LYRICS_PAD_MAX, LYRICS_PAD_BASE + per_unit * (count - 1 - p1))
+                entry.update(kind="anchor", start=max(0.0, auto[a0][1] - pad_start),
+                             end=auto[a1][2] + pad_end)
+        plan.append(entry)
+        offset += count
+    return plan
+
+
+def _lyr_blocks(plan: list, duration: float) -> list:
+    """Planı hizalama bloklarına böler. Blok: {kind, lines, lo, hi}.
+
+    anchor: tek satır, pencere kendi çapası. manual: elle zamandan sonraki eşleşmeyen satırlara
+    kadar ve sonraki zorunlu başlangıca (çapa/elle) dek. free: ardışık eşleşmeyen satırlar, önceki
+    bloğun sonu ile sonraki zorunlu başlangıç arası.
+    """
+    blocks = []
+    count = len(plan)
+    cursor = 0.0
+    i = 0
+
+    def next_start(j):
+        return plan[j]["start"] if j < count else float(duration)
+
+    while i < count:
+        entry = plan[i]
+        if entry["kind"] == "anchor":
+            blocks.append({"kind": "anchor", "lines": [i], "lo": entry["start"], "hi": entry["end"]})
+            cursor = entry["end"]
+            i += 1
+        elif entry["kind"] == "manual":
+            j = i + 1
+            while j < count and plan[j]["kind"] == "free":
+                j += 1
+            hi = next_start(j)
+            lo = max(0.0, entry["start"] - LYRICS_MANUAL_LEAD)
+            blocks.append({"kind": "manual", "lines": list(range(i, j)), "lo": lo,
+                           "hi": max(hi, lo + LYRICS_MIN_WINDOW)})
+            cursor = hi
+            i = j
+        else:
+            j = i
+            while j < count and plan[j]["kind"] == "free":
+                j += 1
+            blocks.append({"kind": "free", "lines": list(range(i, j)), "lo": cursor,
+                           "hi": next_start(j)})
+            cursor = next_start(j)
+            i = j
+    return blocks
+
+
+def _lyr_even_lines(texts: list, lo: float, hi: float) -> list:
+    """Hizalanamayan bloklarda satırları pencereye eşit dağıt (düşük güven)."""
+    count = max(len(texts), 1)
+    step = max(hi - lo, 0.1 * count) / count
+    out = []
+    for k, text in enumerate(texts):
+        start = lo + k * step
+        end = start + max(step * 0.9, 0.1)
+        words = text.split() or [text]
+        span = (end - start) / len(words)
+        out.append({"start": start, "end": end, "text": text, "c": 0,
+                    "words": [{"s": start + n * span, "e": start + (n + 1) * span, "w": w, "p": 0.0}
+                              for n, w in enumerate(words)]})
+    return out
+
+
+def _lyr_align_window(model, audio, keep, lo: float, hi: float, texts: list, language: str, gate: bool):
+    """Pencerede hizalama; başarısızsa None. gate: sessiz çerçeveler sıfırlanır (eşleşmeyen satırlar)."""
+    import numpy as np
+
+    first = int(lo / LYRICS_HOP)
+    last = min(int(hi / LYRICS_HOP) + 1, len(keep))
+    segment = audio[int(lo * LYRICS_RATE):int(hi * LYRICS_RATE)]
+    if len(segment) < int(0.2 * LYRICS_RATE):
+        return None
+    if gate:
+        size = int(LYRICS_HOP * LYRICS_RATE)
+        segment = segment.copy()
+        for k in range(first, last):
+            if not keep[k]:
+                a = (k - first) * size
+                segment[a:a + size] = 0.0
+    try:
+        result = model.align(segment.astype(np.float32), "\n".join(texts), language=language,
+                             original_split=True)
+    except Exception as error:
+        print(f"[soz] pencere hizalama hatasi ({lo:.1f}-{hi:.1f}): {type(error).__name__}: {str(error)[:120]}")
+        return None
+    segments = list(result.segments)
+    if len(segments) != len(texts):
+        return None
+    lines = []
+    for text, seg in zip(texts, segments):
+        words = [{"s": float(w.start) + lo, "e": float(w.end) + lo, "w": w.word,
+                  "p": float(getattr(w, "probability", 0.0) or 0.0)} for w in (seg.words or [])]
+        if not words:
+            return None
+        lines.append({"start": words[0]["s"], "end": words[-1]["e"], "text": text, "words": words})
+    return lines
+
+
+def _lyr_run_anchored(model, audio, active, duration: float, language: str, texts: list,
+                      auto_words: list, manual: dict) -> tuple:
+    """Eşleştir, planla, blok blok hizala. Dönen: (satırlar, bilgi). Eşleşme çok düşükse ValueError."""
+    line_tokens = [_lyr_line_tokens(text, language) for text in texts]
+    flat = [token for tokens in line_tokens for token in tokens]
+    auto = _lyr_auto_tokens(auto_words, language)
+    if not flat or not auto:
+        raise ValueError("eslestirilecek belirtec yok")
+    pairs = _lyr_match(flat, [token for token, _, _ in auto])
+    ratio = len(pairs) / len(flat)
+    if ratio < LYRICS_ANCHOR_MIN_RATIO and not manual:
+        raise ValueError(f"eslesme orani dusuk: {ratio:.2f}")
+    plan = _lyr_plan(line_tokens, pairs, auto, manual, language)
+    blocks = _lyr_blocks(plan, duration)
+    keep = _lyr_fill_gaps(active, int(0.3 / LYRICS_HOP))
+    out = [None] * len(texts)
+    cursor = 0.0
+    for block in blocks:
+        lo = max(block["lo"], cursor)
+        hi = min(max(block["hi"], lo + LYRICS_MIN_WINDOW), float(duration))
+        lo = min(lo, max(hi - LYRICS_MIN_WINDOW, 0.0))
+        idxs = block["lines"]
+        block_texts = [texts[i] for i in idxs]
+        free = block["kind"] == "free"
+        if free:
+            # eşleşmeyen satırlar: yalnız pencerenin SESLİ kısmına sığdır
+            a, b = int(lo / LYRICS_HOP), min(int(hi / LYRICS_HOP) + 1, len(keep))
+            voiced = [k for k in range(a, b) if keep[k]]
+            if voiced:
+                lo, hi = max(lo, voiced[0] * LYRICS_HOP), min(hi, (voiced[-1] + 1) * LYRICS_HOP)
+        aligned = None
+        if hi - lo >= LYRICS_MIN_WINDOW and (not free or hi - lo >= 0.3 * len(block_texts)):
+            aligned = _lyr_align_window(model, audio, keep, lo, hi, block_texts, language, gate=free)
+        if aligned is None:
+            aligned = _lyr_even_lines(block_texts, lo, hi)
+            confident = False
+        else:
+            confident = not free
+        for k, line in zip(idxs, aligned):
+            line = dict(line)
+            if not confident or free:
+                line["c"] = 0
+            if block["kind"] == "manual" and k == idxs[0]:
+                line["m"] = 1
+                line.pop("c", None)
+            out[k] = line
+        cursor = max(cursor, aligned[-1]["end"])
+    # sıra ve uç düzeltmesi
+    previous_start = -1.0
+    for line in out:
+        if line["start"] <= previous_start:
+            shift = previous_start + 0.01 - line["start"]
+            line["start"] += shift
+            line["end"] += shift
+        line["end"] = max(line["end"], line["start"] + 0.1)
+        previous_start = line["start"]
+    low = [i for i, line in enumerate(out) if line.get("c") == 0]
+    info = {
+        "method": "anchored", "pasted_tokens": len(flat), "auto_tokens": len(auto),
+        "matched_tokens": len(pairs), "match_ratio": round(ratio, 3),
+        "anchor_lines": sum(1 for p in plan if p["kind"] == "anchor"),
+        "manual_lines": sum(1 for p in plan if p["kind"] == "manual"),
+        "low_confidence_lines": low, "gaps": _lyr_gaps(pairs, auto, language)[:12],
+    }
+    return out, info
+
+
+def _lyr_run_global(model, audio, language: str, texts: list) -> list:
+    """Eski yol: metnin tamamı tek hizalama (eşleşme kullanılamıyorsa yedek)."""
+    result = model.align(audio, "\n".join(texts), language=language, original_split=True)
+    return _lyr_segments(result)
+
+
+def _lyr_apply_times(doc: dict, sets: list, duration: float) -> tuple:
+    """Elle düzeltilen satır başlarını belgeye uygular (CPU, API'de). Dönen: (yeni belge, hata).
+
+    Her {i, t}: satırın başlangıcı t olur, bitiş ve kelime zamanları aynı farkla kayar, `m: 1`
+    işaretlenir ve `c` kalkar. Önceki satırın bitişi yeni başlangıca taşarsa kısaltılır. Sonuçta
+    satır başları en az LYRICS_TIMES_MIN_GAP arayla artmalı, yoksa hata.
+    """
+    import copy
+
+    if not isinstance(sets, list) or not sets or len(sets) > LYRICS_MAX_LINES:
+        return None, "set listesi gerekli"
+    lines = copy.deepcopy(doc.get("lines") or [])
+    seen = set()
+    for item in sets:
+        if not isinstance(item, dict):
+            return None, "set ogesi {i, t} olmali"
+        index, value = item.get("i"), item.get("t")
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(lines):
+            return None, "gecersiz satir"
+        number, problem = _export_number(value, 0.0, max(float(duration), 0.0), "t")
+        if problem:
+            return None, problem
+        if index in seen:
+            return None, "ayni satir iki kez"
+        seen.add(index)
+    for item in sorted(sets, key=lambda it: it["i"]):
+        index, new_start = item["i"], round(float(item["t"]), 2)
+        line = lines[index]
+        delta = new_start - float(line["t"])
+        line["t"] = new_start
+        line["e"] = round(max(float(line["e"]) + delta, new_start + 0.1), 2)
+        line["w"] = [[round(a + delta, 2), round(b + delta, 2), w] for a, b, w in (line.get("w") or [])]
+        line["m"] = 1
+        line.pop("c", None)
+        if index > 0:
+            before = lines[index - 1]
+            if float(before["e"]) > new_start - 0.02:
+                limit = round(max(float(before["t"]) + 0.05, new_start - 0.02), 2)
+                before["e"] = limit
+                before["w"] = [[min(a, limit), min(b, limit), w] for a, b, w in (before.get("w") or [])]
+    for k in range(1, len(lines)):
+        if float(lines[k]["t"]) < float(lines[k - 1]["t"]) + LYRICS_TIMES_MIN_GAP:
+            return None, f"siralama bozuluyor (satir {k + 1})"
+    for line in lines:
+        line["e"] = round(min(float(line["e"]), max(float(duration), float(line["t"]) + 0.1)), 2)
+    new = dict(doc)
+    new["lines"] = lines
+    return new, None
+
+
+def _lyr_check_manual(raw, line_count: int, duration: float) -> tuple:
+    """`manual` doğrulaması: [{i, t}]. i boş olmayan satırların sırası (0'dan), t [0, süre], t i ile ARTAN.
+    Dönen: (normalize liste, hata ya da None)."""
+    if raw is None:
+        return [], None
+    if not isinstance(raw, list) or len(raw) > LYRICS_MAX_LINES:
+        return [], "manual liste olmali"
+    items = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return [], "manual ogesi {i, t} olmali"
+        index, value = item.get("i"), item.get("t")
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < line_count:
+            return [], "manual: gecersiz satir"
+        number, problem = _export_number(value, 0.0, max(duration, 0.0), "manual.t")
+        if problem:
+            return [], problem
+        items.append({"i": index, "t": round(number, 2)})
+    items.sort(key=lambda it: it["i"])
+    for before, after in zip(items, items[1:]):
+        if before["i"] == after["i"]:
+            return [], "manual: ayni satir iki kez"
+        if after["t"] <= before["t"]:
+            return [], "manual: zamanlar satir sirasiyla artmali"
+    return items, None
+
+
+def _lyr_auto_words_from_doc(doc) -> list:
+    return [(float(a), float(b), str(w)) for line in (doc or {}).get("lines", [])
+            for a, b, w in (line.get("w") or [])]
+
+
+def _lyr_load_auto_words(song_dir: pathlib.Path, status: dict, language: str):
+    """Kayıtlı otomatik kelimeler (aynı ayrıştırma ve dil için); yoksa None."""
+    try:
+        data = json.loads((song_dir / "lyrics_auto.json").read_text(encoding="utf-8"))
+        if (data.get("stems_version") == status.get("stems_version")
+                and data.get("language") == language and data.get("words")):
+            return [(float(a), float(b), str(w)) for a, b, w in data["words"]]
+    except (OSError, ValueError, TypeError):
+        pass
+    lyr = status.get("lyrics") or {}
+    if (lyr.get("state") == "done" and lyr.get("source") == "auto" and lyr.get("language") == language
+            and lyr.get("parent_stems_version") == status.get("stems_version")):
+        try:
+            words = _lyr_auto_words_from_doc(json.loads((song_dir / "lyrics.json").read_text(encoding="utf-8")))
+            return words or None
+        except (OSError, ValueError, TypeError):
+            return None
+    return None
+
+
+def _lyr_save_auto_words(song_dir: pathlib.Path, status: dict, language: str, words: list) -> None:
+    path = song_dir / "lyrics_auto.json"
+    tmp = path.with_name("lyrics_auto.json.tmp")
+    payload = {"stems_version": status.get("stems_version"), "language": language,
+               "words": [[round(a, 2), round(b, 2), w] for a, b, w in words]}
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _lyr_transcribe_words(model, audio, active, language: str) -> list:
+    """Otomatik çıkarma (auto moduyla AYNI ayar) + enerji maskesi; kelime listesi [(s, e, w)]."""
+    result = model.transcribe(audio, language=language, vad=False, word_timestamps=True,
+                              condition_on_previous_text=False, regroup=True)
+    lines = _lyr_mask_filter(_lyr_segments(result), active)
+    return [(w["s"], w["e"], w["w"]) for line in lines for w in (line.get("words") or [])]
+
+
 def _lyr_restore(song_id: str, previous, message: str, kind: str):
     """İş başarısız / sonuçsuz: ÖNCEKİ tamam kayıt varsa geri koy (dosyası hâlâ yerinde)."""
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -3639,7 +4126,7 @@ def _lyr_restore(song_id: str, previous, message: str, kind: str):
     max_containers=1,       # min_containers YOK: boştayken maliyet sıfır
 )
 def extract_lyrics(song_id: str, mode: str = "auto", language: str = "auto",
-                   text: str = "") -> dict:
+                   text: str = "", manual: list = None) -> dict:
     """SW vokal stem'inden sözleri çıkarır (auto) ya da verilen metni hizalar (pasted).
 
     "Vokal yok" kapısı BURADA DEĞİL, API'de (CPU): GPU konteyneri açılmadan elenir.
@@ -3651,7 +4138,7 @@ def extract_lyrics(song_id: str, mode: str = "auto", language: str = "auto",
         previous = (json.loads((_song_dir(song_id) / "status.json").read_text(encoding="utf-8"))
                     .get("lyrics") or {}).get("previous")
     try:
-        return _extract_lyrics_impl(song_id, mode, language, text, previous)
+        return _extract_lyrics_impl(song_id, mode, language, text, previous, manual or [])
     except Exception as error:
         with contextlib.suppress(Exception):
             volume.reload()
@@ -3659,7 +4146,35 @@ def extract_lyrics(song_id: str, mode: str = "auto", language: str = "auto",
         raise
 
 
-def _extract_lyrics_impl(song_id: str, mode: str, language: str, text: str, previous) -> dict:
+def _lyr_pasted_lines(model, audio, active, duration, lang, texts, song_dir, status, manual_map,
+                      save=True, method="anchored") -> tuple:
+    """Yapıştırılan metni sese hizalar. Dönen: (satırlar, bilgi). Önce eşleştir + çapa pencereleri;
+    eşleşme kullanılamıyorsa (ya da method="global") eski tek hizalama."""
+    note = None
+    if method == "anchored":
+        try:
+            words = _lyr_load_auto_words(song_dir, status, lang)
+            reused = words is not None
+            if words is None:
+                words = _lyr_transcribe_words(model, audio, active, lang)
+                if save and words:
+                    with contextlib.suppress(Exception):
+                        _lyr_save_auto_words(song_dir, status, lang, words)
+            lines, info = _lyr_run_anchored(model, audio, active, duration, lang, texts, words, manual_map)
+            info["auto_reused"] = reused
+            return lines, info
+        except Exception as error:
+            note = f"{type(error).__name__}: {error}"[:160]
+            print(f"[soz] capali yol kullanilamadi, global hizalamaya dusuluyor: {note}")
+    lines = _lyr_run_global(model, audio, lang, texts)
+    if len(lines) == len(texts):
+        for line, text in zip(lines, texts):
+            line["text"] = text
+    return lines, {"method": "global", "fallback": note, "low_match": bool(note and "eslesme orani" in note)}
+
+
+def _extract_lyrics_impl(song_id: str, mode: str, language: str, text: str, previous,
+                         manual=None) -> dict:
     import stable_whisper
 
     started = time.time()
@@ -3694,15 +4209,21 @@ def _extract_lyrics_impl(song_id: str, mode: str, language: str, text: str, prev
             raise RuntimeError("dil algilanamadi (tr/en/ja olasiligi sifir)")
 
     work_started = time.time()
+    match_info = None
+    song_dir = _song_dir(song_id)
     if mode == "auto":
         result = model.transcribe(audio, language=lang, vad=False, word_timestamps=True,
                                   condition_on_previous_text=False, regroup=True)
         raw = _lyr_segments(result)
         lines = _lyr_clean_lines(_lyr_mask_filter(raw, active))
         dropped = len(raw) - len(lines)
+        with contextlib.suppress(Exception):        # yapıştır-hizala bunu yeniden kullanır
+            _lyr_save_auto_words(song_dir, status, lang, [
+                (w["s"], w["e"], w["w"]) for line in lines for w in (line.get("words") or [])])
     else:
-        result = model.align(audio, "\n".join(pasted_lines), language=lang, original_split=True)
-        lines = _lyr_segments(result)          # kullanıcı metni: satır süzülmez
+        manual_map = {int(item["i"]): float(item["t"]) for item in (manual or [])}
+        lines, match_info = _lyr_pasted_lines(model, audio, active, duration, lang, pasted_lines,
+                                              song_dir, status, manual_map)     # satır süzülmez
         dropped = 0
     work_seconds = round(time.time() - work_started, 1)
 
@@ -3712,7 +4233,13 @@ def _extract_lyrics_impl(song_id: str, mode: str, language: str, text: str, prev
                               "language": lang})
 
     quality = _lyr_quality(lines, silences)
-    warning = "text_mismatch" if (mode == "pasted" and _lyr_mismatch(quality)) else None
+    mismatch = mode == "pasted" and _lyr_mismatch(quality)
+    if mode == "pasted" and match_info:
+        if match_info.get("method") == "anchored":
+            mismatch = mismatch or match_info["match_ratio"] < LYRICS_MISMATCH_MATCH_RATIO
+        else:
+            mismatch = mismatch or bool(match_info.get("low_match"))
+    warning = "text_mismatch" if mismatch else None
     version = int(time.time())
     doc = _lyr_doc(mode, lang, lines, duration, version)
     path = _song_dir(song_id) / "lyrics.json"
@@ -3724,7 +4251,7 @@ def _extract_lyrics_impl(song_id: str, mode: str, language: str, text: str, prev
         "state": "done", "source": mode, "language": lang, "language_requested": language,
         "language_detect": detect, "version": version,
         "lines": len(doc["lines"]), "words": sum(len(x["w"]) for x in doc["lines"]),
-        "dropped_lines": dropped, "warning": warning, "quality": quality,
+        "dropped_lines": dropped, "warning": warning, "quality": quality, "match": match_info,
         "parent_stems_version": status.get("stems_version"),
         "parent_pipeline": status.get("pipeline"),
         "model": {"name": f"faster-whisper {LYRICS_MODEL} + stable-ts", "vad": False,
@@ -3740,6 +4267,67 @@ def _extract_lyrics_impl(song_id: str, mode: str, language: str, text: str, prev
           f"{wall} sn, uyari={warning}")
     return _assert_plain({"song_id": song_id, "state": "done", "mode": mode, "language": lang,
                           "lines": record["lines"], "warning": warning, "wall_s": wall})
+
+
+@app.function(image=lyrics_image, gpu="T4", volumes={DATA_DIR: volume}, timeout=1800, max_containers=1)
+def lyrics_probe(song_id: str, texts: list, method: str = "anchored", manual: dict = None,
+                 language: str = "auto") -> dict:
+    """Üretimdeki yapıştır-hizala yolunu YAZMADAN çalıştırır (regresyon ölçümü). Volume'a hiçbir şey yazmaz.
+
+    Dönen: satır başına [başlangıç, bitiş, güven], bilgi (eşleşme oranı, çapa/düşük güven satırları,
+    metinde olmayan bölümler) ve süre. method: "anchored" (yeni) | "global" (eski).
+    """
+    import stable_whisper
+
+    volume.reload()
+    song_dir = _song_dir(song_id)
+    status = json.loads((song_dir / "status.json").read_text(encoding="utf-8"))
+    audio = _decode_mono(song_dir / "master" / "vocals.flac", LYRICS_RATE)
+    duration = len(audio) / LYRICS_RATE
+    active, _threshold, _p95 = _lyr_activity(_lyr_levels(audio))
+    model = stable_whisper.load_faster_whisper(LYRICS_MODEL, device="cuda", compute_type="float16")
+    lang = language
+    if language == "auto":
+        lang, _ = _lyr_detect_language(model, audio)
+    started = time.time()
+    lines, info = _lyr_pasted_lines(model, audio, active, duration, lang, list(texts), song_dir, status,
+                                    {int(k): float(v) for k, v in (manual or {}).items()},
+                                    save=False, method=method)
+    return _assert_plain({
+        "language": lang, "duration": round(duration, 1), "seconds": round(time.time() - started, 1),
+        "lines": [[round(float(l["start"]), 2), round(float(l["end"]), 2), 0 if l.get("c") == 0 else 1]
+                  for l in lines],
+        "info": info,
+    })
+
+
+@app.local_entrypoint()
+def lyrics_regress(song: str = "Zeus", ref: str = "zeus.txt", method: str = "anchored", drop: str = "",
+                   language: str = "auto", out: str = ""):
+    """Regresyon ölçümü (yazmaz): backend/lyrics_ref/<ref> (ya da lyrics_out/<ref> JSON'u) metnini
+    hizalar. drop="a-b": o satır aralığını (1'den, uçlar dahil) metinden çıkarır (nakarat tekrarı
+    eksik senaryosu). Çıktı lyrics_out/probe_<out>.json (gitignore'lı)."""
+    here = pathlib.Path(__file__).resolve().parent
+    path = here / "lyrics_ref" / ref
+    if ref.endswith(".json"):
+        path = here / "lyrics_out" / ref
+        texts = [line["text"] for line in json.loads(path.read_text(encoding="utf-8"))["lyrics"]["lines"]]
+    else:
+        texts = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    kept = list(range(len(texts)))
+    if drop:
+        a, b = (int(x) for x in drop.split("-"))
+        kept = [i for i in kept if not (a - 1 <= i <= b - 1)]
+    song_id, _title = _resolve_title_cli(song)
+    result = lyrics_probe.remote(song_id, [texts[i] for i in kept], method, None, language)
+    result["kept"] = kept
+    target = here / "lyrics_out" / f"probe_{out or song.split()[0]}_{method}{'_drop' if drop else ''}.json"
+    target.parent.mkdir(exist_ok=True)
+    target.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    info = result["info"]
+    print(f"{song} [{method}{' drop ' + drop if drop else ''}] {len(kept)} satir, {result['seconds']} sn | "
+          f"yontem {info.get('method')} eslesme {info.get('match_ratio')} capa {info.get('anchor_lines')} "
+          f"dusuk guven {len(info.get('low_confidence_lines') or [])} bosluk {info.get('gaps')} -> {target.name}")
 
 
 @app.function(
@@ -5769,7 +6357,9 @@ def api():
         """Sözleri çıkarır ("auto") ya da yapıştırılan metni sese hizalar ("pasted").
 
         Gövde (JSON): {"mode": "auto|pasted", "language": "auto|tr|en|ja",
-        "text": "...", "replace": false}. Sıra: doğrulama, CPU'da "vokal yok"
+        "text": "...", "replace": false, "manual": [{"i": satır, "t": sn}]}. `manual`
+        yalnız pasted: elle konan satır başları ÇAPA olarak korunur (i: boş olmayan
+        satırların sıra numarası, 0'dan; t artan). Sıra: doğrulama, CPU'da "vokal yok"
         kontrolü (GPU AÇILMAZ), sonra GPU işi. Mevcut sonuç varsa auto tekrar
         koşmaz (`replace: true` ister; YAPIŞTIRILMIŞ sözün üstüne yazmak da
         buna bağlı). pasted her zaman koşar. Metin yalnız Volume'da durur.
@@ -5788,16 +6378,22 @@ def api():
         if language != "auto" and language not in LYRICS_LANGS:
             raise HTTPException(status_code=400, detail="Gecersiz dil")
         text = ""
+        lines = []
         if mode == "pasted":
             lines, problem = _lyr_check_text(body.get("text"))
             if problem:
                 raise HTTPException(status_code=400, detail=problem)
             text = "\n".join(lines)
+        elif body.get("manual") is not None:
+            raise HTTPException(status_code=400, detail="manual yalniz pasted modunda")
 
         await gate.refresh(force=True)
         status = await require_status(song_id)
         if status.get("state") != "done" or not status.get("stems"):
             raise HTTPException(status_code=409, detail="Sarki henuz hazir degil")
+        manual, problem = _lyr_check_manual(body.get("manual"), len(lines), float(status.get("duration") or 0))
+        if problem:
+            raise HTTPException(status_code=400, detail=problem)
         if _lyrics_is_running(status):
             return {"id": song_id, "state": "running", "existing": True}
         previous = status.get("lyrics") or {}
@@ -5827,9 +6423,53 @@ def api():
         await asyncio.to_thread(_write_status, song_id, lyrics={
             "state": "running", "started": int(time.time()), "mode": mode,
             "language_requested": language, "rms_dbfs": level, "previous": keep})
-        call = extract_lyrics.spawn(song_id, mode, language, text)
+        call = extract_lyrics.spawn(song_id, mode, language, text, manual)
         return {"id": song_id, "state": "running", "mode": mode, "language": language,
                 "call_id": str(call.object_id), "rms_dbfs": level}
+
+    @web.post("/songs/{song_id}/lyrics/times")
+    async def set_lyric_times(song_id: str, request: Request, _=auth):
+        """Satır başlangıçlarını ELLE düzeltir (CPU, anında; GPU yok). Gövde:
+        {"version": mevcut sürüm (isteğe bağlı), "set": [{"i": satır, "t": sn}]}. Satır `m: 1`
+        (elle) işaretlenir; sonraki yeniden hizalamada çapa olarak korunur (`manual`).
+        Başka cihazdan değişmişse (sürüm uyuşmuyorsa) 409."""
+        try:
+            body = await request.json()
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Govde JSON olmali")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Govde JSON nesnesi olmali")
+        await gate.refresh(force=True)
+        status = await require_status(song_id)
+        if _lyrics_is_running(status):
+            raise HTTPException(status_code=409, detail="Sozler hazirlanirken duzeltilemez")
+        lyr = status.get("lyrics") or {}
+        path = _song_dir(song_id) / "lyrics.json"
+        if lyr.get("state") != "done" or not await asyncio.to_thread(path.exists):
+            raise HTTPException(status_code=409, detail="Duzeltilecek soz yok")
+        version = body.get("version")
+        if version is not None and version != lyr.get("version"):
+            raise HTTPException(status_code=409, detail="Sozler baska bir yerden degismis; yenile")
+        raw = await asyncio.to_thread(_read_slice, path)
+        doc = json.loads(raw.decode("utf-8"))
+        new_doc, problem = _lyr_apply_times(doc, body.get("set"), float(status.get("duration") or doc.get("duration") or 0))
+        if problem:
+            raise HTTPException(status_code=400, detail=problem)
+        new_version = max(int(time.time()), int(lyr.get("version") or 0) + 1)
+        new_doc["version"] = new_version
+
+        def write():
+            tmp = path.with_name("lyrics.json.tmp")
+            tmp.write_text(json.dumps(new_doc, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            os.replace(tmp, path)                  # önce dosya (atomik), SONRA status
+            _write_status(song_id, lyrics=dict(
+                lyr, version=new_version, edited=True,
+                manual_lines=sum(1 for line in new_doc["lines"] if line.get("m"))))
+
+        await asyncio.to_thread(write)
+        changed = [{"i": item["i"], "t": new_doc["lines"][item["i"]]["t"], "e": new_doc["lines"][item["i"]]["e"]}
+                   for item in body["set"]]
+        return {"id": song_id, "version": new_version, "changed": changed}
 
     @web.get("/songs/{song_id}/lyrics")
     async def get_lyrics(song_id: str, _=auth):

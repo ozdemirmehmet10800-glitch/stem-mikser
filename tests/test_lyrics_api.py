@@ -180,7 +180,7 @@ def main():
     body = response.json()
     check("auto: 200 + running", response.status_code == 200 and body["state"] == "running", str(body))
     check("auto: extract_lyrics 1 kez, (kimlik, auto, auto, bos metin)",
-          spawner.calls == [(LOUD, "auto", "auto", "")], str(spawner.calls))
+          spawner.calls == [(LOUD, "auto", "auto", "", [])], str(spawner.calls))
     saved = read_status(tmp, LOUD)
     check("auto: status.lyrics running + started + onceki yok",
           saved["lyrics"]["state"] == "running" and saved["lyrics"]["started"] > 0
@@ -190,7 +190,7 @@ def main():
     check("running (baska kayit): spawn yok", post(RUNNING, {}).json()["state"] == "running"
           and len(spawner.calls) == 1)
     check("takilmis running: yeniden denenir", post(STALE_RUN, {"language": "ja"}).json()["state"] == "running"
-          and spawner.calls[-1] == (STALE_RUN, "auto", "ja", ""), str(spawner.calls[-1]))
+          and spawner.calls[-1] == (STALE_RUN, "auto", "ja", "", []), str(spawner.calls[-1]))
 
     # --- mevcut sonuc korumasi
     n = len(spawner.calls)
@@ -201,7 +201,7 @@ def main():
     check("auto: YAPISTIRILMIS sozun ustune yazmaz", prot["state"] == "done" and prot["source"] == "pasted"
           and len(spawner.calls) == n and read_status(tmp, PASTED)["lyrics"]["source"] == "pasted")
     rep = post(DONE, {"replace": True, "language": "en"}).json()
-    check("auto + replace: yeniden kosar", rep["state"] == "running" and spawner.calls[-1] == (DONE, "auto", "en", ""))
+    check("auto + replace: yeniden kosar", rep["state"] == "running" and spawner.calls[-1] == (DONE, "auto", "en", "", []))
     prev = read_status(tmp, DONE)["lyrics"]["previous"]
     check("replace: onceki tamam kayit `previous`ta saklanir (hata olursa geri konur)",
           prev and prev["state"] == "done" and prev["version"] == 55 and "previous" not in prev, str(prev))
@@ -213,7 +213,7 @@ def main():
     check("pasted: tamam sonucun ustune de kosar (kullanici istedi)",
           response.status_code == 200 and response.json()["state"] == "running")
     check("pasted: metin temizlenip satirlarla spawn edilir",
-          spawner.calls[-1] == (PASTED, "pasted", "tr", "birinci satir\nikinci satir"), str(spawner.calls[-1]))
+          spawner.calls[-1] == (PASTED, "pasted", "tr", "birinci satir\nikinci satir", []), str(spawner.calls[-1]))
     check("pasted: dil auto da gecerli",
           post(OLD, {"mode": "pasted", "text": "x y"}).json()["state"] == "running"
           and spawner.calls[-1][2] == "auto")
@@ -260,6 +260,64 @@ def main():
     check("/songs: soz yoksa alanlar None/false",
           songs[BUSY]["lyrics_state"] is None and songs[BUSY]["lyrics_stale"] is False)
     check("/songs: alt parca alanlari bozulmadi", "sub_state" in songs[BUSY] and "sub_drums_state" in songs[BUSY])
+
+    # --- elle zaman (manual) ve satir zamani duzeltme (Asama 11 v2)
+    T_DONE, T_RUN = "8" * 64, "9" * 64
+    timed = {"schema": 1, "version": 100, "source": "pasted", "language": "tr", "duration": 100.0, "lines": [
+        {"t": 10.0, "e": 14.0, "text": "bir", "w": [[10.0, 12.0, "a"], [12.0, 14.0, "b"]]},
+        {"t": 15.0, "e": 18.0, "text": "iki", "w": [[15.0, 18.0, "c"]], "c": 0},
+        {"t": 20.0, "e": 25.0, "text": "uc", "w": [[20.0, 25.0, "d"]]}]}
+    make_song(tmp, T_DONE, lyrics=dict(done_rec, source="pasted", version=100), doc=timed)
+    make_song(tmp, T_RUN, lyrics={"state": "running", "started": now}, doc=timed)
+    G_MAN = "a1" * 32
+    make_song(tmp, G_MAN, lyrics=dict(done_rec, version=3), doc=doc)
+    for song_id in (T_DONE, T_RUN, G_MAN, LOUD):               # elle zaman testleri 100 sn'lik sarkida
+        status_path = pathlib.Path(tmp) / "songs" / song_id / "status.json"
+        data = json.loads(status_path.read_text("utf-8"))
+        data["duration"] = 100.0
+        status_path.write_text(json.dumps(data), encoding="utf-8")
+    check("manual auto modunda -> 400", post(G_MAN, {"mode": "auto", "manual": [{"i": 0, "t": 1}]}).status_code == 400)
+    text3 = "bir\niki\nuc\ndort"
+    for name, manual in (("satir sinir disi", [{"i": 4, "t": 1}]), ("zaman sure disi", [{"i": 0, "t": 999}]),
+                         ("zamanlar azalan", [{"i": 0, "t": 20}, {"i": 1, "t": 10}]),
+                         ("liste degil", {"i": 0, "t": 1}), ("ayni satir iki kez", [{"i": 1, "t": 5}, {"i": 1, "t": 6}])):
+        check(f"manual gecersiz -> 400: {name}",
+              post(G_MAN, {"mode": "pasted", "text": text3, "manual": manual}).status_code == 400)
+    response = post(G_MAN, {"mode": "pasted", "language": "tr", "text": text3,
+                            "manual": [{"i": 2, "t": 30.5}, {"i": 0, "t": 10}]})
+    check("manual gecerli: 200 + running", response.status_code == 200 and response.json()["state"] == "running", response.text[:100])
+    check("manual: sirali ve normalize edilmis spawn'a gider",
+          spawner.calls[-1] == (G_MAN, "pasted", "tr", text3, [{"i": 0, "t": 10.0}, {"i": 2, "t": 30.5}]), str(spawner.calls[-1]))
+
+    def times(song_id, payload, headers=H):
+        return client.post(f"/songs/{song_id}/lyrics/times", json=payload, headers=headers)
+
+    check("times auth yok -> 401", client.post(f"/songs/{T_DONE}/lyrics/times", json={}).status_code == 401)
+    check("times govde JSON degil -> 400", client.post(f"/songs/{T_DONE}/lyrics/times", content=b"x", headers=H).status_code == 400)
+    check("times soz yok -> 409", times(LOUD, {"set": [{"i": 0, "t": 1}]}).status_code == 409)
+    check("times sozler hazirlanirken -> 409", times(T_RUN, {"set": [{"i": 0, "t": 1}]}).status_code == 409)
+    check("times surum uyusmuyor -> 409", times(T_DONE, {"version": 1, "set": [{"i": 1, "t": 16}]}).status_code == 409)
+    check("times gecersiz satir -> 400", times(T_DONE, {"set": [{"i": 7, "t": 16}]}).status_code == 400)
+    check("times sira bozan zaman -> 400", times(T_DONE, {"set": [{"i": 1, "t": 21}]}).status_code == 400)
+    check("times set yok -> 400", times(T_DONE, {}).status_code == 400)
+    response = times(T_DONE, {"version": 100, "set": [{"i": 1, "t": 16.5}]})
+    body = response.json()
+    check("times gecerli: 200, yeni surum, degisen satir", response.status_code == 200 and body["version"] > 100
+          and body["changed"] == [{"i": 1, "t": 16.5, "e": 19.5}], str(body))
+    saved_doc = json.loads((pathlib.Path(tmp) / "songs" / T_DONE / "lyrics.json").read_text("utf-8"))
+    check("times: dosya guncellendi (m=1, c kalkti, onceki satir kisaldi, surum)",
+          saved_doc["lines"][1]["t"] == 16.5 and saved_doc["lines"][1]["m"] == 1 and "c" not in saved_doc["lines"][1]
+          and saved_doc["lines"][0]["e"] <= 16.48 and saved_doc["version"] == body["version"])
+    saved_status = read_status(tmp, T_DONE)
+    check("times: status.lyrics surum, edited ve elle satir sayisi; ana alanlar ayni",
+          saved_status["lyrics"]["version"] == body["version"] and saved_status["lyrics"]["edited"] is True
+          and saved_status["lyrics"]["manual_lines"] == 1 and saved_status["lyrics"]["source"] == "pasted"
+          and saved_status["stems_version"] == 7)
+    got = client.get(f"/songs/{T_DONE}/lyrics", headers=H).json()
+    check("GET: duzeltilen belge ve m isareti", got["lyrics"]["lines"][1]["m"] == 1 and got["version"] == body["version"])
+    stale_version = times(T_DONE, {"version": 100, "set": [{"i": 2, "t": 22}]})
+    check("times: eski surumle ikinci duzeltme 409", stale_version.status_code == 409)
+    check("times: yeni surumle devam", times(T_DONE, {"version": body["version"], "set": [{"i": 2, "t": 22}]}).status_code == 200)
 
     shutil.rmtree(tmp, ignore_errors=True)
     print("\n" + "=" * 60)
