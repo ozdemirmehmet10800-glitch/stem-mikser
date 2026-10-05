@@ -52,9 +52,11 @@ check("wake lock istendi", calls.wakeReq === 1);
 // 30 sn: highlightTime 30.25 -> satır i: 5+4i <= 30.25 -> i=6 (29)
 const cur = env.ui.track.children.findIndex((c) => c.has("cur"));
 check("o anki satır cur", cur === 6, `cur ${cur}`);
-check("yanındakiler d1, bir ötesi d2", env.ui.track.children[5].has("d1") && env.ui.track.children[7].has("d1")
-  && env.ui.track.children[4].has("d2") && env.ui.track.children[8].has("d2") && !env.ui.track.children[3].has("d2"));
-check("pencere dışı satırda sınıf yok", [0, 1, 2, 3, 9, 10, 19].every((i) => ![...env.ui.track.children[i]._classes].some((c) => ["cur", "d1", "d2", "next"].includes(c))));
+check("üstte ve altta 4'er satır: uzaklık --k = 1..4", [5, 7].every((i) => env.ui.track.children[i].has("dist") && env.ui.track.children[i].style["--k"] === "1")
+  && [2, 10].every((i) => env.ui.track.children[i].has("dist") && env.ui.track.children[i].style["--k"] === "4")
+  && env.ui.track.children[3].style["--k"] === "3" && env.ui.track.children[8].style["--k"] === "2");
+check("kademe tek sabitten: --lf-span = WINDOW - 1", env.ui.root.style["--lf-span"] === String(WINDOW - 1));
+check("pencere dışı satırda sınıf yok", [0, 1, 11, 12, 19].every((i) => ![...env.ui.track.children[i]._classes].some((c) => ["cur", "dist", "next"].includes(c))));
 check("düşük güvenli satır işaretli (low)", env.ui.track.children[7].has("low") && !env.ui.track.children[6].has("low"));
 check("satır sahnenin ortasına kaydırıldı (scrollTo: merkez - sahne merkezi)", env.ui.stage.scrollTop === 25, String(env.ui.stage.scrollTop));
 check("açılışta anında (auto), sonra yumuşak", env.ui.stage.scrolls[0].behavior === "auto");
@@ -63,8 +65,8 @@ check("ilk/son satır ortalanabilsin diye iz dolgusu", env.ui.track.style.paddin
 
 // satır değişimi
 screen.tick(34, false);
-check("satır değişince cur taşınır", env.ui.track.children[7].has("cur") && !env.ui.track.children[6].has("cur") && env.ui.track.children[6].has("d1"));
-check("eski pencerenin dışına düşen satırın sınıfı temizlenir", ["cur", "d1", "d2", "next"].every((c) => !env.ui.track.children[4].has(c)));
+check("satır değişince cur taşınır", env.ui.track.children[7].has("cur") && !env.ui.track.children[6].has("cur") && env.ui.track.children[6].has("dist"));
+check("eski pencerenin dışına düşen satırın sınıfı temizlenir", ["cur", "dist", "next"].every((c) => !env.ui.track.children[1].has(c)));
 check("bir satır kayar, yumuşak", env.ui.stage.scrollTop === 75 && env.ui.stage.scrolls.at(-1).behavior === "smooth", String(env.ui.stage.scrollTop));
 
 // aynı satırda DOM'a dokunulmaz
@@ -236,7 +238,7 @@ check("bekleyen requestAnimationFrame 0", live.frames.size === 0, String(live.fr
 check("her özel ortamın URL'i iptal edildi", revokedAll === madeMedia, `${revokedAll}/${madeMedia}`);
 check("satır ve ortam düğümleri kalmadı", env.ui.track.children.length === 0 && env.ui.media.children.length === 0);
 check("wake lock istek/bırakma dengeli (son durum: bırakılmış)", calls.wakeRel >= 1 && calls.wakeReq >= calls.wakeRel);
-check("pencere genişliği sabit (WINDOW)", WINDOW === 2);
+check("pencere genişliği sabit (WINDOW)", WINDOW === 4);
 
 if (failed) {
   console.error(`\n${failed} test başarısız`);

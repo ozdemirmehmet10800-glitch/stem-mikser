@@ -11,7 +11,7 @@ export class FakeEl {
     this.parent = null;
     this.attrs = new Map();
     this.dataset = {};
-    this.style = {};
+    this.style = { setProperty(key, value) { this[key] = value; } };
     this.hidden = false;
     this.className = "";
     this._classes = new Set();

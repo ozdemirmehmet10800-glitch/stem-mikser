@@ -22,8 +22,10 @@
 import { findLine, highlightTime, scrollTarget } from "./lyrics.js";
 import { BeatTracker, wantsFlow, wantsPulse } from "./beatpulse.js";
 
-export const WINDOW = 2;                       // ortadaki satırın iki yanında görünen satır sayısı
-const POSITION_CLASSES = ["cur", "next", "d1", "d2"];
+// Ortadaki satırın üstünde ve altında görünen satır sayısı. TEK AYAR: CSS opaklık/ölçek
+// kademesi bu sayıya göre hesaplanır (--lf-window). Ekran kısaysa sığmayanlar zaten kesilir.
+export const WINDOW = 4;
+const POSITION_CLASSES = ["cur", "next", "dist"];
 const PULSE_MS = 420;
 
 export class LyricsScreen {
@@ -64,6 +66,7 @@ export class LyricsScreen {
     this.padded = 0;
     this.lastTime = 0;
 
+    ui.root.style.setProperty("--lf-span", String(Math.max(WINDOW - 1, 1)));
     // Kalıcı dinleyiciler (ui düğümleri ömür boyu aynı): BİR kez.
     ui.track.addEventListener("click", this.#onTrackClick);
     ui.playBtn.addEventListener("click", this.#onPlay);
@@ -287,7 +290,12 @@ export class LyricsScreen {
         if (!item) continue;
         item.classList.remove(...POSITION_CLASSES);
         const distance = Math.abs(k - center);
-        item.classList.add(distance === 0 ? (index >= 0 ? "cur" : "next") : distance === 1 ? "d1" : "d2");
+        if (distance === 0) {
+          item.classList.add(index >= 0 ? "cur" : "next");
+        } else {
+          item.classList.add("dist");
+          item.style.setProperty("--k", String(distance));     // 1..WINDOW: uzaklaştıkça solar
+        }
       }
     }
     this.index = index;

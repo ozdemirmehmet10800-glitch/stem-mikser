@@ -1052,14 +1052,18 @@ input[type="range"]::-moz-range-thumb {
   transition: opacity 0.5s ease, transform 0.5s ease;
 }
 .lf-line:lang(ja) { word-break: auto-phrase; }
-.lf-line.d2 { opacity: 0.14; transform: scale(0.72); pointer-events: auto; }
-.lf-line.d1 { opacity: 0.36; transform: scale(0.8); pointer-events: auto; }
+/* kademeli solma: k=1 en belirgin (0.66), k=WINDOW en soluk ama okunur (0.24) */
+.lf-line.dist {
+  --f: calc((var(--k, 1) - 1) / var(--lf-span, 1));
+  opacity: calc(0.66 - var(--f) * 0.42);
+  transform: scale(calc(0.88 - var(--f) * 0.14));
+  pointer-events: auto;
+}
 .lf-line.next { opacity: 0.6; transform: scale(0.95); pointer-events: auto; }
 .lf-line.cur { opacity: 1; transform: scale(1); pointer-events: auto; }
 /* düşük güven: metin sesle eşleşmedi, yeri kestirme (daha soluk + kesik çizgi) */
 .lf-line.low { text-decoration: underline dotted rgba(255, 255, 255, 0.5); text-underline-offset: 6px; }
-.lf-line.low.d2 { opacity: 0.08; }
-.lf-line.low.d1 { opacity: 0.22; }
+.lf-line.low.dist { opacity: calc((0.66 - var(--f) * 0.42) * 0.6); }
 .lf-line.low.next { opacity: 0.4; }
 .lf-line.low.cur { opacity: 0.7; }
 
