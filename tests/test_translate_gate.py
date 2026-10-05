@@ -316,6 +316,62 @@ check("en parse: pr Turk alfabesine indirgenir", cleaned[0]["pr"] == "Forevır v
 sys_en2 = app._tr_prompt("en", LINES, [0], True)[0]
 check("en istemi: yalniz Turk alfabesi kurali", "ONLY letters of the Turkish alphabet" in sys_en2 and "no w, x, q" in sys_en2)
 
+# --- kaynakla ayni kalan (supheli) telaffuz kelimeleri: yeniden sor + tutarlilik oncesi duzelt
+for word, pron, expected in [
+    ("nothing", "nothing", True), ("Nothing", "nothing", True), ("something", "samting", False), ("and", "and", False), ("for", "for", False),
+    ("the", "the", True), ("they", "they", True), ("with", "with", True), ("time", "time", True), ("love", "love", True), ("way", "way", True),
+    ("been", "been", True), ("moon", "moon", True), ("never", "never", False), ("matters", "matters", False), ("I", "I", False),
+    ("it", "it", False), ("no", "no", False), ("nothing", "nating", False), ("go", "go", False), ("don't", "don't", False),
+]:
+    check(f"supheli: {word}->{pron} = {expected}", app._tr_suspect(word, pron) is expected)
+lines_s = ["Nothing and something", "Nothing at all", "Never the same"]
+res_s = [{"i": 0, "tr": "a", "pr": "Nothing end samting"}, {"i": 1, "tr": "b", "pr": "Nothing et ol"}, {"i": 2, "tr": "c", "pr": "Nevır the seym"}]
+sus = app._tr_find_suspects(lines_s, res_s)
+check("supheli bulma: 'nothing' (iki satirda) ve 'the', 'samting' degil", sorted((a, b, w) for a, b, w in sus) == [(0, 0, "nothing"), (1, 0, "nothing"), (2, 1, "the")], str(sus))
+asked = []
+
+
+def fake_fix(system, user, schema):
+    asked.append((system, user, schema))
+    wanted = [line for line in user.split("\n") if line[:1].isdigit() and ": word " in line]
+    answers = {"nothing": "nating", "the": "dı"}
+    return json.dumps([{"id": n, "pr": answers[line.split('word "')[1].split('"')[0]]} for n, line in enumerate(wanted)])
+
+
+fixed_n = app._tr_fix_pron(lines_s, res_s, fake_fix)
+check("duzeltme: her AYRI kelime bir kez sorulur (nothing, the), tum gecislere uygulanir",
+      len(asked) == 1 and asked[0][1].count(': word "') == 2 and fixed_n == 3
+      and [r["pr"] for r in res_s] == ["Nating end samting", "Nating et ol", "Nevır dı seym"], str([r["pr"] for r in res_s]))
+check("duzeltme istemi: tek kelime, Turk alfabesi, kaynagi tekrarlama yasagi, ornek satir", "ONE word" in asked[0][0] and "NOT simply repeat" in asked[0][0]
+      and 'in the line "Nothing and something"' in asked[0][1])
+check("duzeltme semasi: n oge, id+pr", asked[0][2]["minItems"] == 2 and asked[0][2]["items"]["required"] == ["id", "pr"])
+check("supheli yoksa istek yok", app._tr_fix_pron(["Hello there"], [{"i": 0, "tr": "x", "pr": "Helo der"}], fake_fix) == 0 and len(asked) == 1)
+seq = [json.dumps([{"id": 0, "pr": "iki kelime"}]), json.dumps([{"id": 0, "pr": "nating"}])]
+res_r = [{"i": 0, "tr": "a", "pr": "Nothing"}]
+check("duzeltme: gecersiz cevap (iki kelime) -> geri bildirimle yeniden", app._tr_fix_pron(["Nothing"], res_r, lambda s, u, sc: seq.pop(0)) == 1 and res_r[0]["pr"] == "Nating")
+res_b = [{"i": 0, "tr": "a", "pr": "Nothing"}]
+
+
+def busy_call(system, user, schema):
+    raise app.TranslateBusy(app.TRANSLATE_BUSY_MESSAGE)
+
+
+check("duzeltme: servis mesgulse atlanir, ana sonuc BOZULMAZ", app._tr_fix_pron(["Nothing"], res_b, busy_call) == 0 and res_b[0]["pr"] == "Nothing")
+res_i = [{"i": 0, "tr": "a", "pr": "Nothing"}]
+check("duzeltme: hic gecerli cevap gelmezse sonuc ayni kalir", app._tr_fix_pron(["Nothing"], res_i, lambda s, u, sc: "[]") == 0 and res_i[0]["pr"] == "Nothing")
+res_s2 = [{"i": 0, "tr": "a", "pr": "Nothing"}]
+check("duzeltme: model yine kaynagi tekrarlarsa degisiklik sayilmaz", app._tr_fix_pron(["Nothing"], res_s2, lambda s, u, sc: json.dumps([{"id": 0, "pr": "nothing"}])) == 0)
+res_n = [{"i": 0, "tr": "a", "pr": "Nothing"}]
+check("duzeltme: satir basi buyuk harf korunur", (app._tr_fix_pron(["Nothing"], res_n, lambda s, u, sc: json.dumps([{"id": 0, "pr": "nating"}])), res_n[0]["pr"]) == (1, "Nating"))
+# tutarlilik: yanlis yazim cogunlukta olsa da dogru yazim kazanir (yayilma hatasi)
+lines_u = ["Nothing here", "Nothing there", "Nothing more"]
+items_u = {app._tr_hash(lines_u[0]): {"tr": "a", "pr": "Nothing hir"}, app._tr_hash(lines_u[1]): {"tr": "b", "pr": "Nothing der"},
+           app._tr_hash(lines_u[2]): {"tr": "c", "pr": "Nating mor"}}
+app._tr_unify_pron(lines_u, items_u)
+check("tutarlilik: 2 yanlis, 1 dogru -> DOGRU yazim her yere yayilir (yanlis degil)", [x["pr"] for x in items_u.values()] == ["Nating hir", "Nating der", "Nating mor"], str([x["pr"] for x in items_u.values()]))
+items_v = {app._tr_hash("Go go"): {"tr": "a", "pr": "Go go"}}
+check("tutarlilik: guvenli kelimede (go) degisiklik yok", app._tr_unify_pron(["Go go"], items_v) == 0)
+
 # --- eksik okunus
 src = ["We were walking down", "We were walking down", "Home again", "No pron yet"]
 its = {app._tr_hash(src[0]): {"tr": "A", "pr": "Vi vır"}, app._tr_hash(src[2]): {"tr": "B"}, app._tr_hash(src[3]): {"tr": "C"}}

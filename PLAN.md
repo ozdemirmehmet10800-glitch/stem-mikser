@@ -816,6 +816,13 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      için çeviri + telaffuzu birlikte getirir. Arayüz: mevcut "Okunuş" satırı/çipi (ro artık en'de de), çevirisi olup bazı satırlarda `ro` yoksa "Okunuşu ekle" çipi. CANLI (NEM, 39 satır): önce yalnız okunuş
      modu (çeviri aynen kaldı, 25 sn), sonra `--replace` ile tek çağrıda çeviri+telaffuz (33 sn): 39/39 satır kelime sayısı tuttu, birden çok yazımlı kelime YOK. Testler: test_translate_gate (110),
      test_translate_api (41), translation_test; mock sunucu `--translate-en-pron`.
+   - **TELEFON HATASI + DÜZELTME (2026-10-05):** NEM'de "nothing" okunuşta İngilizce yazımıyla kalmıştı ("nating" olmalı, "something"->"samting" doğruydu); harfler Türk alfabesinde olduğu için süzgeç
+     yakalamadı ve tutarlılık kontrolü yanlışı yaydı. Düzeltme (backend, `modal deploy`): `_tr_suspect` = telaffuz kelimesi kaynakla birebir aynı VE kaynakta th/w/ee/oo/ea/ou/ow/igh/gh/ph/ck/wh/kn/wr/tion/ai/ay/oa/oy/ie/ey
+     ya da sessiz e var (3+ harf; for/and/in/it/no/go gibi okunduğu gibi yazılanlar `TRANSLATE_SAFE_SAME` ve kısa kelimeler hariç); `_tr_fix_pron` bu kelimeleri her AYRI kelime için BİR istekle (örnek satırıyla,
+     tek kelime + Türk alfabesi + "kaynağı tekrarlama" kuralı) Gemini'ye yeniden sorar, cevabı o kelimenin her geçişine uygular — tutarlılık kontrolünden ÖNCE (hem tam çeviride hem "Okunuşu ekle"de). Yeniden
+     sorma meşgul/geçersiz olursa atlanır, ana çeviri kaybolmaz. `_tr_unify_pron` artık kaynakla aynı kalan şüpheli yazımı kanonik seçmez (doğru yazım azınlıkta olsa da kazanır). NEM yeniden üretildi (39 satır, 27 sn):
+     "nothing"->"nating", "something"->"samting", the->"dı", they->"dey", way->"vey"; şüpheli kelime kalmadı. Gerçek Gemini ile yeniden-sorma yolu `modal run backend/app.py::translate_fix_check` (sentetik satırlar)
+     ile doğrulandı. Bilinen: "and" (end) ve "from" (fram) gibi kaynakla aynı kalan ama ÖZEL olarak izinli/örüntüsüz kelimeler düzeltilmiyor; model tutarsızlığı azaltıldı ama kelimenin tam yazımı (ör. natig/nating) modele bağlı.
    - **Sıra:** (1) backend çeviri + secret + gate/api testleri + Ado/NEM'de canlı doğrulama, (2) okunuş (cutlet) + ölçüm, (3) arayüz (panel, tam ekran, önbellek, mock) + telefon.
      ~3 oturum. **Test:** sahte HTTP ile saf işlevler (istem, doğrulama, eşleme, yeniden deneme, parçalama) `tests/test_translate_gate.py`; uçlar `test_translate_api.py`;
      mock sunucuda sentetik çeviri; GERÇEK sözler yalnız gitignore'lı `backend/lyrics_ref/` + `lyrics_out/` ile elle `modal run backend/app.py::translate_probe`

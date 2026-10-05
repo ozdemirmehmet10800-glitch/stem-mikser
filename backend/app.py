@@ -5560,6 +5560,118 @@ def _tr_clean_pron(text: str) -> str:
     return " ".join("".join(out).split())
 
 
+# Telaffuzu kaynakla BİREBİR aynı kalan "şüpheli" kelimeler: harfleri Türk alfabesinde olduğu için alfabe süzgeci
+# yakalamaz ("nothing" -> "nothing", oysa "nating"). Okunduğu gibi yazılan kısa/yaygın kelimeler (and, for...) hariç.
+TRANSLATE_SAFE_SAME = frozenset({"for", "in", "it", "is", "on", "at", "an", "us", "if", "of", "up", "or", "no", "go", "so", "to",
+                                 "not", "met", "let", "get", "set", "yes", "man", "can", "red", "run", "sun", "fun"})
+TRANSLATE_SUSPECT_RE = re.compile(r"th|w|ee|oo|ea|ou|ow|igh|gh|ph|ck|wh|kn|wr|tion|sion|ai|ay|oa|oy|ie|ey", re.I)
+TRANSLATE_SILENT_E_RE = re.compile(r"[^aeiouy']e$", re.I)
+TRANSLATE_FIX_BATCH = 60
+
+
+def _tr_suspect(src_word: str, pron_word: str) -> bool:
+    """Telaffuz kelimesi kaynak kelimeyle (büyük/küçük harf farkı hariç) aynı VE İngilizce yazımı Türkçe okunuşuna
+    uymayacak örüntü taşıyor mu (th, w, ee, oo, ea, ou, ow, igh, gh, ph, ck, wh, kn, wr, tion, ai, ay, oa..., sessiz e)?"""
+    s = str(src_word or "").lower().strip("'\u2019")
+    if not s or s != str(pron_word or "").lower() or len(s) <= 2 or s in TRANSLATE_SAFE_SAME:
+        return False
+    return bool(TRANSLATE_SUSPECT_RE.search(s) or TRANSLATE_SILENT_E_RE.search(s))
+
+
+def _tr_find_suspects(lines: list, results: list) -> list:
+    """results'taki `pr`lerde şüpheli kelimeleri bulur. Dönen: [(sonuç dizini, kelime dizini, kaynak kelime)].
+    Kelime sayısı tutmasa da çalışır: telaffuz kelimesi satırdaki bir kaynak kelimeyle aynıysa değerlendirilir."""
+    found = []
+    for r_index, result in enumerate(results):
+        if not result.get("pr"):
+            continue
+        src_words = {w.lower(): w for w in TRANSLATE_SRC_WORD_RE.findall(lines[result["i"]])}
+        words = TRANSLATE_PRON_STRIP_RE.sub(" ", result["pr"]).split()
+        for k, word in enumerate(words):
+            source = src_words.get(word.lower())
+            if source and _tr_suspect(source, word):
+                found.append((r_index, k, source.lower()))
+    return found
+
+
+def _tr_fix_prompt(items: list, feedback: str = "") -> tuple:
+    system = (
+        "You give the pronunciation of single English words for Turkish speakers, as they are SUNG in the given line. "
+        "Write each pronunciation with ONLY letters of the Turkish alphabet (a b c ç d e f g ğ h ı i j k l m n o ö p r s ş t "
+        "u ü v y z; no w, x, q, no accents): v for w, th -> t/d/s, ee -> i, oo -> u, silent e dropped, etc. "
+        "The answer must be ONE word (no spaces) and must NOT simply repeat the English spelling.\n"
+    )
+    listing = "\n".join(f'{n}: word "{it["word"]}" in the line "{it["context"]}"' for n, it in enumerate(items))
+    user = (f"Items:\n{listing}\n\nReturn a JSON array with exactly {len(items)} objects in this order: "
+            '{"id": <item number>, "pr": "<pronunciation of that word>"}.')
+    if feedback:
+        user += f"\n\nYour previous answer was rejected: {feedback}\nFix it and answer again."
+    return system, user
+
+
+def _tr_fix_schema(count: int) -> dict:
+    return {"type": "ARRAY", "minItems": count, "maxItems": count, "items": {
+        "type": "OBJECT", "properties": {"id": {"type": "INTEGER"}, "pr": {"type": "STRING"}}, "required": ["id", "pr"]}}
+
+
+def _tr_fix_parse(text: str, items: list) -> list:
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        raise TranslateInvalid("JSON degil")
+    if not isinstance(data, list) or len(data) != len(items):
+        raise TranslateInvalid(f"{len(items)} oge beklendi")
+    out = []
+    for n, (item, entry) in enumerate(zip(items, data)):
+        if not isinstance(entry, dict) or entry.get("id") != n:
+            raise TranslateInvalid(f"{n}. ogede id bozuk")
+        pr = _tr_clean_pron(entry.get("pr") if isinstance(entry.get("pr"), str) else "")
+        if not pr or " " in pr or len(pr) > 3 * len(item["word"]) + 6:
+            raise TranslateInvalid(f"{n}. ogenin telaffuzu gecersiz (tek kelime olmali)")
+        out.append(pr)
+    return out
+
+
+def _tr_fix_pron(lines: list, results: list, call) -> int:
+    """Telaffuzu kaynakla aynı kalan şüpheli kelimeleri Gemini'ye YENİDEN sorar ve düzeltir (tutarlılık kontrolünden ÖNCE).
+    Her ayrı kelime bir kez sorulur (örnek satırıyla), cevap o kelimenin her geçişine uygulanır. Yeniden sorma
+    başarısız olursa (meşgul, geçersiz...) sonuç değişmeden kalır: ana çeviri kaybolmaz. Dönen: düzeltilen kelime sayısı."""
+    suspects = _tr_find_suspects(lines, results)
+    if not suspects:
+        return 0
+    distinct = {}
+    for r_index, k, word in suspects:
+        distinct.setdefault(word, lines[results[r_index]["i"]])
+    words = list(distinct)
+    fixes = {}
+    for start in range(0, len(words), TRANSLATE_FIX_BATCH):
+        batch = [{"word": w, "context": distinct[w]} for w in words[start:start + TRANSLATE_FIX_BATCH]]
+        feedback = ""
+        for _ in range(TRANSLATE_RETRIES + 1):
+            system, user = _tr_fix_prompt(batch, feedback)
+            try:
+                answers = _tr_fix_parse(call(system, user, _tr_fix_schema(len(batch))), batch)
+            except TranslateInvalid as problem:
+                feedback = problem.message
+                continue
+            except TranslateError as problem:                     # meşgul/reddedildi: düzeltmeyi atla
+                print(f"[ceviri] telaffuz duzeltme atlandi: {problem.message}")
+                return 0
+            fixes.update({item["word"]: answer for item, answer in zip(batch, answers)})
+            break
+    changed = 0
+    for r_index, k, word in suspects:
+        answer = fixes.get(word)
+        if not answer or answer.lower() == word:
+            continue
+        result = results[r_index]
+        parts = TRANSLATE_PRON_STRIP_RE.sub(" ", result["pr"]).split()
+        parts[k] = answer[:1].upper() + answer[1:] if parts[k][:1].isupper() else answer
+        result["pr"] = " ".join(parts)
+        changed += 1
+    return changed
+
+
 def _tr_missing_reading(lines: list, items: dict) -> list:
     """Çevirisi var ama telaffuzu olmayan satırların (İngilizce) İLK geçtiği dizinler: "Okunuşu ekle" bunları işler."""
     seen, out = set(), []
@@ -5597,7 +5709,7 @@ def _tr_unify_pron(lines: list, items: dict) -> int:
             bucket = counts.setdefault(s_word, {})
             bucket[spelling] = bucket.get(spelling, 0) + 1
             order.setdefault((s_word, spelling), len(order))
-    canonical = {w: max(b, key=lambda sp: (b[sp], -order[(w, sp)])) for w, b in counts.items()}
+    canonical = {w: max(b, key=lambda sp: (not _tr_suspect(w, sp), b[sp], -order[(w, sp)])) for w, b in counts.items()}
     changed = 0
     for item, src, words in aligned:
         fixed = []
@@ -6132,9 +6244,12 @@ def translate_lyrics(song_id: str, replace: bool = False, mode: str = "full") ->
         if todo:
             key = os.environ["GEMINI_API_KEY"]
             models = _tr_models()
-            results = _tr_run(lang, lines, todo, lang in ("ja", "en"),
-                              lambda system, user, schema: _tr_call(key, models, system, user, schema, used=used),
-                              reading_only)
+            ask = lambda system, user, schema: _tr_call(key, models, system, user, schema, used=used)
+            results = _tr_run(lang, lines, todo, lang in ("ja", "en"), ask, reading_only)
+            if lang == "en":
+                fixed = _tr_fix_pron(lines, results, ask)          # kaynakla aynı kalan kelimeler, tutarlılıktan ÖNCE
+                if fixed:
+                    print(f"[ceviri] supheli telaffuz: {fixed} kelime yeniden soruldu ve duzeltildi")
             items = _tr_apply(items, lines, results, lang, katsu)
         version = int(time.time())
         out = {"schema": 1, "lang": lang, "target": "tr", "version": version,
@@ -6182,6 +6297,25 @@ def translate_models_run() -> list:
         data = json.loads(response.read().decode("utf-8"))
     return sorted(str(m.get("name", "")).replace("models/", "") for m in data.get("models", [])
                   if "generateContent" in (m.get("supportedGenerationMethods") or []) and "gemini" in str(m.get("name", "")))
+
+
+@app.function(image=light_image, secrets=[modal.Secret.from_name(TRANSLATE_SECRET_NAME, required_keys=["GEMINI_API_KEY"])],
+              timeout=300)
+def translate_fix_run() -> dict:
+    """Şüpheli telaffuz yeniden-sorma yolunu GERÇEK Gemini ile dener (SENTETİK satırlar, Volume'a yazmaz)."""
+    lines = ["Nothing is the same", "They were walking in the moon light", "Time will never wait"]
+    results = [{"i": 0, "tr": "a", "pr": "Nothing is the seym"}, {"i": 1, "tr": "b", "pr": "They vır vokin in the moon layt"},
+               {"i": 2, "tr": "c", "pr": "Time vil nevır veyt"}]
+    before = [r["pr"] for r in results]
+    key, models = os.environ["GEMINI_API_KEY"], _tr_models()
+    changed = _tr_fix_pron(lines, results, lambda system, user, schema: _tr_call(key, models, system, user, schema))
+    return _assert_plain({"changed": changed, "before": before, "after": [r["pr"] for r in results]})
+
+
+@app.local_entrypoint()
+def translate_fix_check():
+    """modal run backend/app.py::translate_fix_check"""
+    print(translate_fix_run.remote())
 
 
 @app.local_entrypoint()
