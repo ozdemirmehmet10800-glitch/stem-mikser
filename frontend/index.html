@@ -84,6 +84,39 @@
       <div class="chordstrip-empty" id="chordstrip-empty">Akor bilgisi yok</div>
     </div>
 
+    <!-- şarkı sözleri (Aşama 11) -->
+    <section class="lyrics" id="lyrics" aria-label="Şarkı sözleri" hidden>
+      <div class="lyrics-head">
+        <button type="button" class="lyrics-title" id="lyrics-toggle" aria-expanded="true">
+          <span class="lyrics-arrow" aria-hidden="true">▾</span> Sözler
+        </button>
+        <span class="lyrics-status" id="lyrics-status"></span>
+        <div class="lyrics-actions" id="lyrics-actions">
+          <select id="lyrics-lang" class="lyrics-lang" aria-label="Söz dili"></select>
+          <button type="button" class="chip" id="lyrics-extract">Sözleri çıkar</button>
+          <button type="button" class="chip" id="lyrics-paste">Sözleri yapıştır</button>
+          <button type="button" class="chip" id="lyrics-edit">Düzenle</button>
+          <button type="button" class="chip" id="lyrics-realign">Yeniden hizala</button>
+        </div>
+      </div>
+      <div class="lyrics-notices" id="lyrics-notices"></div>
+      <div class="lyrics-editor" id="lyrics-editor" hidden>
+        <textarea id="lyrics-text" rows="8" spellcheck="false" autocomplete="off"
+                  aria-label="Şarkı sözleri metni"
+                  placeholder="Sözleri buraya yapıştır; her satır ayrı satırda kalsın."></textarea>
+        <div class="lyrics-editor-row">
+          <span class="lyrics-count" id="lyrics-count"></span>
+          <select id="lyrics-edit-lang" class="lyrics-lang" aria-label="Söz dili"></select>
+          <button type="button" class="chip" id="lyrics-cancel">Vazgeç</button>
+          <button type="button" class="chip chip-primary" id="lyrics-save">Hizala</button>
+        </div>
+      </div>
+      <div class="lyrics-body" id="lyrics-body" hidden>
+        <ul class="lyrics-list" id="lyrics-list" aria-live="off"></ul>
+        <button type="button" class="chip lyrics-follow" id="lyrics-follow" hidden>Şimdiye dön</button>
+      </div>
+    </section>
+
     <!-- kanallar -->
     <div class="mix-bar">
       <div class="mix-presets" id="mix-presets" role="group" aria-label="Mikser ön ayarları"></div>

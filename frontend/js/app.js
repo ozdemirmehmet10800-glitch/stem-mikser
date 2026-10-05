@@ -21,6 +21,11 @@ import { ChordStrip, formatTime } from "./chords.js";
 import {
   SUB_GROUPS, GROUP_ORDER, subNames, subOf, subView, subVersion, isRunning, groupThresholdSec,
 } from "./sub.js";
+import {
+  LANG_CHOICES, lyricsOf, sectionView, findLine, scrollTarget, lineLoop, linesToText,
+  checkText as checkLyricsText, normalizeDoc as normalizeLyricsDoc, isRunning as lyricsIsRunning,
+  readCache as readLyricsCache, writeCache as writeLyricsCache, dropCache as dropLyricsCache,
+} from "./lyrics.js";
 import { MediaBridge } from "./media.js";
 import { WakeLock } from "./wakelock.js";
 import { StemCache, cacheTag } from "./stemcache.js";
@@ -328,6 +333,7 @@ const nav = new NavStack();
 // DOKUNMUYOR; yoksa popstate -> kapat -> history.back() -> popstate döngüsü
 // olurdu.
 const layerClosers = {
+  "lyrics-editor": () => closeLyricsEditorDom(),
   menu: () => {
     if (mixer) mixer.closeMenu();
   },
@@ -697,6 +703,8 @@ function writeMeta(id, detail) {
 }
 
 function dropMeta(ids) {
+  const lyricsKeep = lyricsStorage();
+  if (lyricsKeep) dropLyricsCache(lyricsKeep, ids);       // cihazdaki sözler de gitsin
   for (const id of ids || []) {
     try {
       localStorage.removeItem(metaKey(id));
@@ -1023,6 +1031,11 @@ async function refreshSongDetail(song, usedVersion) {
     const detail = await api.getSong(song.id);
     writeMeta(song.id, detail);
     const fresh = Number((detail.status && detail.status.stems_version) || 0);
+    if (fresh && fresh === usedVersion && currentSong && currentSong.id === song.id) {
+      adoptDetail(detail);          // sözlerin / alt parçaların güncel durumu
+      refreshSubUi();
+      initLyrics();
+    }
     if (!fresh || fresh === usedVersion) return;
     if (!currentSong || currentSong.id !== song.id || views.player.hidden) return;
     console.info(`[acilis] stems_version degisti ${usedVersion} -> ${fresh}, yeniden yukleniyor`);
@@ -1100,6 +1113,7 @@ async function openSong(song) {
     startLoop();
     refreshSubUi();
     ensureSubPolling();
+    initLyrics();
     resumePrefetch();   // hızlı yolda indirme yapılmadı, hemen devam
     timer.done("hizli acilis (bellekte)", {
       source: "bellek", concurrency: 0,
@@ -1138,6 +1152,7 @@ async function openSong(song) {
   subStarting.clear();
   subBusy = false;
   mixer.groupSpecs.clear();
+  resetLyrics();
 
   setOverlay(true, "Şarkı bilgileri alınıyor…");
   try {
@@ -1157,6 +1172,7 @@ async function openSong(song) {
     } else {
       detail = await api.getSong(song.id);
       writeMeta(song.id, detail);
+      syncLyricsCache(detail);
       timer.mark("bilgi");
     }
     currentSong = { ...song, ...detail };
@@ -1231,6 +1247,7 @@ async function openSong(song) {
     restoreMix(song.id);
     refreshSubUi();            // alt parça denetimi (düğme / ok / mesaj)
     ensureSubPolling();
+    initLyrics();              // sözler: cihazdan ya da sunucudan, yoklama
     strip.build(detail.chords, duration);
 
     const chords = detail.chords;
@@ -1304,6 +1321,7 @@ async function openSong(song) {
     engine.releaseStems();
     loadedState = null;
     currentSong = null;
+    resetLyrics();
     const offlineMissing = error instanceof ApiError
       && (error.kind === "offline" || error.kind === "network");
     // Sunucuya ulaşılamadığı buradan da öğreniliyor: kitaplık hemen
@@ -1587,6 +1605,7 @@ function startLoop() {
     // kulaklıkta 200 ms'yi buluyor ve imleç sesin önüne geçiyor.
     const time = engine.visualTime;
     strip.update(time);
+    lyricsTick(time);
     if (!seeking) {
       el("seek").value = String(Math.round(time * 10));
       el("time-current").textContent = formatTime(time);
@@ -1834,8 +1853,19 @@ function refreshSubUi() {
   updatePresetButtons([...engine.channels.keys()]);
 }
 
+// Sunucu (taze) durum "söz dosyası yok" diyorsa cihazdaki kopya bayattır: silinir.
+function syncLyricsCache(detail) {
+  const status = detail && detail.status;
+  if (!status || !status.id) return;
+  const lyr = lyricsOf(status);
+  const hasFile = Boolean(lyr && (lyr.state === "done" || (lyr.previous && lyr.previous.state === "done")));
+  const storage = lyricsStorage();
+  if (!hasFile && storage && !(lyr && lyr.state === "running")) dropLyricsCache(storage, [status.id]);
+}
+
 function adoptDetail(detail) {
   if (!currentSong || !detail || !detail.status || detail.status.id !== currentSong.id) return;
+  syncLyricsCache(detail);
   currentSong = { ...currentSong, ...detail };
   writeMeta(currentSong.id, detail);     // çevrimdışı açılışta da alt parça bilgisi dursun
 }
@@ -2242,6 +2272,455 @@ on("loop-snap", "click", () => {
   refreshLoopUi();
 });
 
+// ---------------------------------------------------------------- şarkı sözleri (Aşama 11)
+//
+// Bölüm akor şeridinin altında. Sözler yoksa "Sözleri çıkar" (dil seçici) ve "Sözleri
+// yapıştır"; varsa satır listesi (o anki satır vurgulu), "Düzenle" (kaydedince
+// pasted olarak yeniden hizalanır, ezmeden önce onay). Zaman engine.visualTime
+// (ŞARKI saati): hız değişimi ve A-B döngüyle uyumlu. Satıra dokunmak seek eder
+// (döngü kuralları engine.seek'te), uzun basmak satırı A-B döngüye alır. Yalnız
+// satır düzeyi vurgu. Mantık lyrics.js'te (saf, node testli).
+
+const LYRICS_POLL_MS = 4000;
+const LYRICS_COLLAPSE_KEY = "stem-mikser.lyrics.collapsed";
+const LYRICS_PRESS_MS = 520;
+const PRESS_SLOP_PX = 10;
+const SCROLL_GUARD_MS = 1200;
+
+let lyricsDoc = null;             // normalizeDoc çıktısı (cihazdaki ya da sunucudan gelen)
+let lyricsStarting = false;       // istek gidiyor
+let lyricsPollTimer = 0;
+let lyricsIndex = -2;             // son boyanan satır (-2: hiç boyanmadı)
+let lyricsFollow = true;          // otomatik kaydırma
+let lyricsScrollGuard = 0;        // programatik kaydırmanın ürettiği scroll olaylarını yut
+let lyricsEditing = false;
+let lyricsLoadGen = 0;            // eski yüklemelerin cevabı yeni şarkıyı ezmesin
+const reducedMotion = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+
+function lyricsStorage() {
+  try { return localStorage; } catch { return null; }
+}
+
+function lyricsStatus() {
+  return currentSong && currentSong.status ? lyricsOf(currentSong.status) : undefined;
+}
+
+function lyricsCollapsed() {
+  const storage = lyricsStorage();
+  try { return Boolean(storage && storage.getItem(LYRICS_COLLAPSE_KEY) === "1"); } catch { return false; }
+}
+
+function buildLyricsLangOptions() {
+  for (const id of ["lyrics-lang", "lyrics-edit-lang"]) {
+    const select = el(id);
+    if (!select || select.options.length) continue;
+    for (const [value, label] of LANG_CHOICES) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.append(option);
+    }
+  }
+}
+
+function lyricsSourceText(doc) {
+  const source = doc.source === "pasted" ? "yapıştırılan metin" : "otomatik";
+  const lang = LANG_CHOICES.find(([value]) => value === doc.language);
+  return `${doc.lines.length} satır · ${source}${lang ? ` · ${lang[1]}` : ""}`;
+}
+
+function refreshLyricsUi() {
+  const root = el("lyrics");
+  if (!root) return;
+  if (!currentSong) {
+    root.hidden = true;
+    return;
+  }
+  root.hidden = false;
+  const view = sectionView({
+    status: currentSong.status,
+    hasDoc: Boolean(lyricsDoc),
+    duration: engine.duration || Number(currentSong.duration) || 0,
+    offline: isOffline(),
+    starting: lyricsStarting,
+  });
+  let status = view.text;
+  if (view.kind === "none") status = `Sözler yok · ${view.estimate}`;
+  else if (view.kind === "ready" && lyricsDoc) status = lyricsSourceText(lyricsDoc);
+  else if (view.kind === "ready") status = "Sözler hazır";
+  if (view.hint) status = `${status} · ${view.hint}`;
+  el("lyrics-status").textContent = status;
+
+  const editing = lyricsEditing;
+  const show = (id, on) => { el(id).hidden = !on || editing; };
+  const off = view.disabled || lyricsStarting;
+  show("lyrics-extract", view.canExtract);
+  show("lyrics-lang", view.canExtract);
+  show("lyrics-paste", view.canPaste);
+  show("lyrics-edit", view.canEdit);
+  show("lyrics-realign", view.canRealign);
+  for (const id of ["lyrics-extract", "lyrics-lang", "lyrics-paste", "lyrics-edit", "lyrics-realign"]) {
+    el(id).disabled = off;
+  }
+  const notices = el("lyrics-notices");
+  notices.textContent = "";
+  for (const item of view.notices) {
+    const span = document.createElement("span");
+    span.className = `notice ${item.tone === "info" ? "info" : ""}`.trim();
+    span.textContent = item.text;
+    notices.append(span);
+  }
+
+  const collapsed = lyricsCollapsed();
+  el("lyrics-toggle").setAttribute("aria-expanded", String(!collapsed));
+  el("lyrics-editor").hidden = !editing;
+  el("lyrics-body").hidden = collapsed || editing || !lyricsDoc;
+  el("lyrics-follow").hidden = lyricsFollow || el("lyrics-body").hidden;
+}
+
+function renderLyricsList() {
+  const list = el("lyrics-list");
+  list.textContent = "";
+  lyricsIndex = -2;
+  lyricsFollow = true;
+  if (!lyricsDoc) {
+    list.removeAttribute("lang");
+    return;
+  }
+  if (lyricsDoc.language) list.lang = lyricsDoc.language;
+  else list.removeAttribute("lang");
+  const fragment = document.createDocumentFragment();
+  lyricsDoc.lines.forEach((line, index) => {
+    const item = document.createElement("li");
+    item.className = "lyric-line";
+    item.dataset.i = String(index);
+    item.textContent = line.text;
+    fragment.append(item);
+  });
+  list.append(fragment);
+  list.scrollTop = 0;
+}
+
+function lyricsReducedMotion() {
+  return Boolean(reducedMotion && reducedMotion.matches);
+}
+
+function scrollLyricsTo(index) {
+  const list = el("lyrics-list");
+  const item = list.children[index];
+  if (!item || list.clientHeight === 0) return;
+  const top = Math.max(0, item.offsetTop - (list.clientHeight - item.offsetHeight) / 2);
+  if (Math.abs(list.scrollTop - top) < 2) return;
+  lyricsScrollGuard = performance.now() + SCROLL_GUARD_MS;
+  list.scrollTo({ top, behavior: lyricsReducedMotion() ? "auto" : "smooth" });
+}
+
+function paintLyrics(index) {
+  const items = el("lyrics-list").children;
+  const previous = lyricsIndex;
+  if (previous >= 0) {
+    for (let k = previous - 1; k <= previous + 1; k += 1) {
+      if (items[k]) items[k].classList.remove("active", "near");
+    }
+  }
+  if (index >= 0) {
+    for (let k = index - 1; k <= index + 1; k += 1) {
+      if (items[k] && k !== index) items[k].classList.add("near");
+    }
+    if (items[index]) items[index].classList.add("active");
+  }
+  lyricsIndex = index;
+  if (index >= 0 && lyricsFollow) scrollLyricsTo(index);
+}
+
+// Her karede çağrılıyor: satır değişmedikçe DOM'a dokunmaz.
+function lyricsTick(time) {
+  if (!lyricsDoc || el("lyrics-body").hidden) return;
+  const index = findLine(lyricsDoc.lines, time);
+  if (index !== lyricsIndex) paintLyrics(index);
+}
+
+function lyricsUserScrolled() {
+  if (!lyricsFollow) return;
+  lyricsFollow = false;
+  el("lyrics-follow").hidden = false;
+}
+
+function lyricsResumeFollow() {
+  lyricsFollow = true;
+  el("lyrics-follow").hidden = true;
+  if (!lyricsDoc) return;
+  const target = scrollTarget(lyricsDoc.lines, engine.visualTime);
+  if (target >= 0) scrollLyricsTo(target);
+}
+
+async function onLyricLineTap(index) {
+  if (!lyricsDoc || !(engine.duration > 0)) return;
+  const line = lyricsDoc.lines[index];
+  if (!line) return;
+  lyricsFollow = true;
+  el("lyrics-follow").hidden = true;
+  await engine.seek(Math.min(line.t, engine.duration));
+  metronome.resync();
+  // Duraklatılmışken de vurgu/kaydırma hemen oturur.
+  paintLyrics(index);
+}
+
+async function onLyricLineLongPress(index) {
+  if (!lyricsDoc || !(engine.duration > 0)) return;
+  const found = lineLoop(lyricsDoc.lines, index, engine.duration, minLoopLength(loopGrid));
+  if (!found) {
+    loopNotice("Bu satır döngü için çok kısa.");
+    return;
+  }
+  try { if (navigator.vibrate) navigator.vibrate(15); } catch { /* yok say */ }
+  loopA = found.a;
+  loopB = found.b;
+  loopOn = true;
+  await applyLoop();
+  saveLoopPoints();
+  loopNotice(`${index + 1}. satır döngüde.`);
+}
+
+function bindLyricsList() {
+  const list = el("lyrics-list");
+  if (!list) return;
+  let press = null;
+  const cancel = () => {
+    if (!press) return;
+    clearTimeout(press.timer);
+    press.item.classList.remove("pressing");
+    press = null;
+  };
+  list.addEventListener("pointerdown", (event) => {
+    const item = event.target.closest(".lyric-line");
+    if (!item || (event.pointerType === "mouse" && event.button !== 0)) return;
+    cancel();
+    const index = Number(item.dataset.i);
+    press = { index, item, x: event.clientX, y: event.clientY, fired: false, timer: 0 };
+    item.classList.add("pressing");
+    press.timer = setTimeout(() => {
+      if (!press) return;
+      press.fired = true;
+      press.item.classList.remove("pressing");
+      onLyricLineLongPress(press.index);
+    }, LYRICS_PRESS_MS);
+  });
+  list.addEventListener("pointermove", (event) => {
+    if (!press || press.fired) return;
+    if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > PRESS_SLOP_PX) cancel();
+  });
+  list.addEventListener("pointerup", () => {
+    if (!press) return;
+    const { fired, index } = press;
+    cancel();
+    if (!fired) onLyricLineTap(index);
+  });
+  list.addEventListener("pointercancel", cancel);      // kaydırma başlayınca tarayıcı iptal eder
+  list.addEventListener("contextmenu", (event) => event.preventDefault());   // uzun basma menüsü
+  // Kullanıcı kaydırınca otomatik kaydırma durur; programatik kaydırmanın scroll olayları sayılmaz.
+  list.addEventListener("wheel", lyricsUserScrolled, { passive: true });
+  list.addEventListener("touchmove", lyricsUserScrolled, { passive: true });
+  list.addEventListener("scroll", () => {
+    if (performance.now() > lyricsScrollGuard) lyricsUserScrolled();
+  }, { passive: true });
+  list.addEventListener("scrollend", () => { lyricsScrollGuard = 0; });
+}
+
+// ---- yükleme / önbellek / yoklama
+
+function resetLyrics() {
+  clearInterval(lyricsPollTimer);
+  lyricsPollTimer = 0;
+  lyricsLoadGen += 1;
+  lyricsDoc = null;
+  lyricsStarting = false;
+  lyricsEditing = false;
+  renderLyricsList();
+  refreshLyricsUi();
+}
+
+// Cihazdaki kopya sürümle eşleşiyorsa ağa çıkılmaz; çevrimdışıyken (ya da ağ
+// hatasında) eldeki kopya kullanılır.
+async function loadLyricsDoc() {
+  if (!currentSong) return;
+  const id = currentSong.id;
+  const generation = ++lyricsLoadGen;
+  const lyr = lyricsStatus();
+  const storage = lyricsStorage();
+  const entry = storage ? readLyricsCache(storage, id) : null;
+  // Sunucuda söz dosyası olabilecek durumlar: done, ya da yeniden hizalanırken önceki kayıt.
+  const serverHasFile = Boolean(lyr && (lyr.state === "done" || (lyr.previous && lyr.previous.state === "done")));
+  const wantVersion = lyr
+    ? (lyr.state === "done" ? Number(lyr.version) : Number(lyr.previous && lyr.previous.version)) || 0
+    : 0;
+  let doc = null;
+  let version = 0;
+  if (serverHasFile && entry && entry.version === wantVersion && wantVersion > 0) {
+    doc = entry.doc;
+    version = entry.version;
+  } else if (serverHasFile && !isOffline()) {
+    try {
+      const response = await api.getLyrics(id);
+      doc = normalizeLyricsDoc(response.lyrics);
+      version = Number(response.version) || (doc && doc.version) || 0;
+      if (doc && storage) writeLyricsCache(storage, id, response.lyrics, version);
+    } catch (error) {
+      if (error instanceof ApiError && error.kind === "notfound") {
+        if (storage) dropLyricsCache(storage, [id]);
+      } else if (entry) {
+        doc = entry.doc;                         // ağ hatası: eldeki kopya
+        version = entry.version;
+      }
+    }
+  } else if (entry) {
+    doc = entry.doc;                             // çevrimdışı / durum bilinmiyor
+    version = entry.version;
+  }
+  if (generation !== lyricsLoadGen || !currentSong || currentSong.id !== id) return;
+  if (doc && lyricsDoc && lyricsDoc.version === doc.version && lyricsDoc.lines.length === doc.lines.length) {
+    refreshLyricsUi();                           // aynı sürüm: listeye dokunma, kaydırma sıçramasın
+    return;
+  }
+  lyricsDoc = doc;
+  renderLyricsList();
+  refreshLyricsUi();
+  if (lyricsDoc) lyricsTick(engine.visualTime);
+}
+
+function lyricsRunning() {
+  return lyricsIsRunning(lyricsStatus());
+}
+
+function ensureLyricsPolling() {
+  if (lyricsPollTimer || !currentSong || !lyricsRunning()) return;
+  const songId = currentSong.id;
+  lyricsPollTimer = setInterval(async () => {
+    if (!currentSong || currentSong.id !== songId) {
+      clearInterval(lyricsPollTimer);
+      lyricsPollTimer = 0;
+      return;
+    }
+    try {
+      adoptDetail(await api.getSong(songId));
+    } catch {
+      return;                       // geçici ağ hatası: bir sonraki turda tekrar
+    }
+    if (!lyricsRunning()) {
+      clearInterval(lyricsPollTimer);
+      lyricsPollTimer = 0;
+      await loadLyricsDoc();
+    }
+    refreshLyricsUi();
+  }, LYRICS_POLL_MS);
+}
+
+function initLyrics() {
+  lyricsStarting = false;
+  refreshLyricsUi();
+  loadLyricsDoc();
+  ensureLyricsPolling();
+}
+
+async function startLyricsJob(params) {
+  if (!currentSong || lyricsStarting) return false;
+  if (!requireOnline(el("player-message"), "Sözleri hazırlamak")) return false;
+  const songId = currentSong.id;
+  lyricsStarting = true;
+  refreshLyricsUi();
+  let ok = false;
+  try {
+    await api.startLyrics(songId, params);
+    adoptDetail(await api.getSong(songId));        // status.lyrics'in tamamı
+    ok = true;
+  } catch (error) {
+    showMessage(el("player-message"), describeError(error));
+  } finally {
+    lyricsStarting = false;
+    refreshLyricsUi();
+    ensureLyricsPolling();
+    if (ok && !lyricsRunning()) loadLyricsDoc();   // vokal yok / mevcut sonuç gibi anında biten durumlar
+  }
+  return ok;
+}
+
+// ---- düzenleme kutusu
+
+function updateLyricsCount() {
+  const { lines, error } = checkLyricsText(el("lyrics-text").value);
+  const node = el("lyrics-count");
+  node.textContent = error ? (lines.length || el("lyrics-text").value.trim() ? error : "") : `${lines.length} satır`;
+  el("lyrics-save").disabled = Boolean(error) || lyricsStarting;
+}
+
+function openLyricsEditor(text) {
+  buildLyricsLangOptions();
+  el("lyrics-text").value = text;
+  el("lyrics-edit-lang").value = (lyricsDoc && lyricsDoc.language) || "auto";
+  el("lyrics-save").textContent = lyricsDoc ? "Kaydet ve hizala" : "Hizala";
+  lyricsEditing = true;
+  pushLayer("lyrics-editor");
+  refreshLyricsUi();
+  updateLyricsCount();
+  el("lyrics-text").focus();
+}
+
+function closeLyricsEditorDom() {
+  lyricsEditing = false;
+  refreshLyricsUi();
+}
+
+function hasLyricsToOverwrite() {
+  const lyr = lyricsStatus();
+  return Boolean(lyricsDoc) || Boolean(lyr && lyr.state === "done");
+}
+
+async function saveLyricsEditor() {
+  const { lines, error } = checkLyricsText(el("lyrics-text").value);
+  if (error) {
+    updateLyricsCount();
+    return;
+  }
+  if (hasLyricsToOverwrite()
+      && !window.confirm("Mevcut sözlerin üzerine yazılacak. Metin sese yeniden hizalanacak. Devam edilsin mi?")) {
+    return;
+  }
+  const language = el("lyrics-edit-lang").value || "auto";
+  const started = await startLyricsJob({ mode: "pasted", language, text: lines.join("\n") });
+  if (started) requestBack("lyrics-editor");
+}
+
+async function realignLyrics() {
+  if (!lyricsDoc) return;
+  if (!window.confirm("Sözler mevcut metinle sese yeniden hizalanacak. Devam edilsin mi?")) return;
+  await startLyricsJob({ mode: "pasted", language: lyricsDoc.language || "auto", text: linesToText(lyricsDoc.lines) });
+}
+
+buildLyricsLangOptions();
+bindLyricsList();
+on("lyrics-toggle", "click", () => {
+  const storage = lyricsStorage();
+  try { if (storage) storage.setItem(LYRICS_COLLAPSE_KEY, lyricsCollapsed() ? "0" : "1"); } catch { /* yok say */ }
+  refreshLyricsUi();
+  if (lyricsDoc && !lyricsCollapsed()) {
+    lyricsIndex = -2;
+    lyricsTick(engine.visualTime);
+    lyricsResumeFollow();
+  }
+});
+on("lyrics-follow", "click", lyricsResumeFollow);
+on("lyrics-extract", "click", () => {
+  if (lyricsDoc && !window.confirm("Mevcut sözlerin üzerine yazılacak. Devam edilsin mi?")) return;
+  startLyricsJob({ mode: "auto", language: el("lyrics-lang").value || "auto", replace: Boolean(lyricsDoc) });
+});
+on("lyrics-paste", "click", () => openLyricsEditor(""));
+on("lyrics-edit", "click", () => openLyricsEditor(lyricsDoc ? linesToText(lyricsDoc.lines) : ""));
+on("lyrics-realign", "click", realignLyrics);
+on("lyrics-cancel", "click", () => requestBack("lyrics-editor"));
+on("lyrics-save", "click", saveLyricsEditor);
+on("lyrics-text", "input", updateLyricsCount);
+
+
 // ---------------------------------------------------------------- olaylar
 
 on("open-settings", "click", () => {
@@ -2383,6 +2862,7 @@ on("seek", "input", () => {
   el("time-current").textContent = formatTime(time);
   el("time-remaining").textContent = `-${formatTime(engine.duration - time)}`;
   strip.update(time);
+  lyricsTick(time);
 });
 
 on("seek", "change", async () => {

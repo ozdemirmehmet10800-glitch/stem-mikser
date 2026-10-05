@@ -199,6 +199,24 @@ export class Api {
       { method: "POST" })).json();
   }
 
+  // Şarkı sözleri (Aşama 11). mode "auto" (çıkar) | "pasted" (verilen metni sese hizala);
+  // language "auto" | "tr" | "en" | "ja"; replace: mevcut sonucun üstüne yaz (auto için).
+  // Dönen `state`: "running" | "no_vocals" | "done" | "no_lyrics" (+ existing: true).
+  async startLyrics(id, { mode = "auto", language = "auto", text = "", replace = false } = {}) {
+    const body = { mode, language, replace };
+    if (mode === "pasted") body.text = text;
+    return (await this.#request(`/songs/${encodeURIComponent(id)}/lyrics`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })).json();
+  }
+
+  // {state, stale, source, language, version, warning, lyrics: lyrics.json}. Söz yoksa ApiError(notfound).
+  async getLyrics(id) {
+    return (await this.#request(`/songs/${encodeURIComponent(id)}/lyrics`)).json();
+  }
+
   async #fetchAudio(path, onProgress, signal) {
     const response = await this.#request(path, signal ? { signal } : {});
     const total = Number(response.headers.get("content-length")) || 0;

@@ -58,9 +58,38 @@ _pending = {"left": 0}
 # --sub-polls N: POST /sub sonrasi N durum sorgusu boyunca "running" kalir.
 _sub = {"mode": "done", "polls": 0, "left": {}, "state": {}}
 
+# Soz (Asama 11) taklidi: --lyrics-mode done|warn|no_vocals|error|no_lyrics,
+# --lyrics-polls N: POST sonrasi N durum sorgusu boyunca "running" kalir,
+# --lyrics-stale: sonuc "eski ayristirmadan" (parent_stems_version != stems_version).
+# SENTETIK satirlar uretir (gercek soz yok): "Sentetik satir N" / Japonca "テスト行 N".
+_lyrics = {"mode": "done", "polls": 0, "stale": False, "left": {}, "state": {}, "docs": {},
+           "pending": {}}
+
 # Stem servisini yavaslatma: telefondaki ~0.6-1.2 MB/sn'yi taklit etmek ve
 # ilerleme/duraklatma davranisini gorebilmek icin.
 STEM_DELAY = 0.0
+
+
+def synthetic_lyrics(duration, language, source, lines_text=None, version=1):
+    """Gercek soz degil: esit aralikli yer tutucu satirlar, ortada bir ara muzik boslugu."""
+    word = "テスト行" if language == "ja" else "Sentetik satir"
+    texts = list(lines_text) if lines_text else [f"{word} {i + 1}" for i in range(24)]
+    count = len(texts)
+    span = max(duration - 12.0, 3.0 * count)
+    step = span / count
+    lines = []
+    for i, text in enumerate(texts):
+        start = 3.0 + i * step + (6.0 if i >= count // 2 else 0.0)   # ortada ~6 sn ara muzik
+        end = start + min(step * 0.8, 6.0)
+        parts = text.split()
+        words = []
+        for j, part in enumerate(parts):
+            ws = start + (end - start) * j / max(len(parts), 1)
+            we = start + (end - start) * (j + 1) / max(len(parts), 1)
+            words.append([round(ws, 2), round(we, 2), part])
+        lines.append({"t": round(start, 2), "e": round(end, 2), "text": text, "w": words})
+    return {"schema": 1, "version": version, "source": source, "language": language,
+            "duration": round(duration, 2), "lines": lines}
 
 
 def cold_start_delay():
@@ -106,6 +135,8 @@ def find_songs():
         for group, key in (("vocals", "sub"), ("drums", "sub_drums")):
             if (entry.name, group) in _sub["state"]:
                 status[key] = _sub["state"][(entry.name, group)]
+        if entry.name in _lyrics["state"]:
+            status["lyrics"] = _lyrics["state"][entry.name]
         status["stems"] = [s for s in STEM_ORDER if s in stems] + \
                           [s for s in stems if s not in STEM_ORDER]
         songs.append({"dir": entry, "status": status, "chords": chords})
@@ -196,6 +227,55 @@ class Handler(BaseHTTPRequestHandler):
             _sub["state"][(song_id, group)] = {"state": "running", "started": int(time.time())}
             _sub["left"][(song_id, group)] = _sub["polls"]
             self._json(200, {"id": song_id, "group": group, "state": "running"})
+            return
+
+        match = re.fullmatch(r"/songs/([^/]+)/lyrics", path)
+        if match:
+            if not self._authorized():
+                return
+            song_id = match.group(1)
+            song = self._song(song_id)
+            if not song:
+                self._json(404, {"detail": "Sarki bulunamadi"})
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except ValueError:
+                self._json(400, {"detail": "Govde JSON olmali"})
+                return
+            mode = (body or {}).get("mode", "auto")
+            language = (body or {}).get("language", "auto")
+            replace = (body or {}).get("replace") is True
+            if mode not in ("auto", "pasted") or language not in ("auto", "tr", "en", "ja"):
+                self._json(400, {"detail": "Gecersiz mod ya da dil"})
+                return
+            lines = []
+            if mode == "pasted":
+                lines = [" ".join(x.split()) for x in str((body or {}).get("text") or "").splitlines()]
+                lines = [x for x in lines if x]
+                if not lines:
+                    self._json(400, {"detail": "metin bos"})
+                    return
+            current = song["status"].get("lyrics") or {}
+            if current.get("state") == "running":
+                self._json(200, {"id": song_id, "state": "running", "existing": True})
+                return
+            if mode == "auto" and not replace and current.get("state") in ("done", "no_vocals", "no_lyrics"):
+                self._json(200, {"id": song_id, "state": current["state"], "existing": True,
+                                 "source": current.get("source")})
+                return
+            if _lyrics["mode"] == "no_vocals":
+                _lyrics["state"][song_id] = {"state": "no_vocals", "rms_dbfs": -118.66}
+                self._json(200, {"id": song_id, "state": "no_vocals", "rms_dbfs": -118.66})
+                return
+            previous = current if current.get("state") == "done" else None
+            _lyrics["state"][song_id] = {"state": "running", "started": int(time.time()),
+                                         "mode": mode, "language_requested": language,
+                                         "previous": previous}
+            _lyrics["left"][song_id] = _lyrics["polls"]
+            _lyrics["pending"][song_id] = (mode, language, lines)
+            self._json(200, {"id": song_id, "state": "running", "mode": mode, "language": language})
             return
 
         if re.fullmatch(r"/songs/[^/]+/download-link", path):
@@ -315,10 +395,35 @@ class Handler(BaseHTTPRequestHandler):
                     "sub_version": (song["status"].get("sub") or {}).get("version"),
                     "sub_drums_state": (song["status"].get("sub_drums") or {}).get("state"),
                     "sub_drums_version": (song["status"].get("sub_drums") or {}).get("version"),
+                    "lyrics_state": (song["status"].get("lyrics") or {}).get("state"),
+                    "lyrics_version": (song["status"].get("lyrics") or {}).get("version"),
+                    "lyrics_source": (song["status"].get("lyrics") or {}).get("source"),
+                    "lyrics_stale": (
+                        (song["status"].get("lyrics") or {}).get("state") == "done"
+                        and (song["status"].get("lyrics") or {}).get("parent_stems_version")
+                        != song["status"].get("stems_version")),
                 }
                 for index, song in enumerate(find_songs())
             ]
             self._json(200, {"songs": songs})
+            return
+
+        match = re.fullmatch(r"/songs/([^/]+)/lyrics", path)
+        if match:
+            if not self._authorized():
+                return
+            song_id = match.group(1)
+            song = self._song(song_id)
+            doc = _lyrics["docs"].get(song_id)
+            if not song or not doc:
+                self._json(404, {"detail": "Soz yok"})
+                return
+            lyr = song["status"].get("lyrics") or {}
+            stale = (lyr.get("state") == "done"
+                     and lyr.get("parent_stems_version") != song["status"].get("stems_version"))
+            self._json(200, {"state": lyr.get("state"), "stale": stale, "source": lyr.get("source"),
+                             "language": lyr.get("language"), "version": lyr.get("version"),
+                             "warning": lyr.get("warning"), "lyrics": doc})
             return
 
         match = re.fullmatch(r"/songs/([^/]+)", path)
@@ -329,6 +434,8 @@ class Handler(BaseHTTPRequestHandler):
             if not song:
                 self._json(404, {"detail": "Sarki bulunamadi"})
                 return
+            self._finish_lyrics(match.group(1), song)
+            song = self._song(match.group(1)) or song
             self._finish_sub(match.group(1), song)
             self._json(200, {"status": song["status"], "chords": song["chords"]})
             return
@@ -389,6 +496,40 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"detail": "yok"})
 
     # ---------------- dosya servisi ----------------
+
+    def _finish_lyrics(self, song_id, song):
+        """Calisan sahte soz isini, bekleme sorgulari bitince sonuclandirir."""
+        lyr = song["status"].get("lyrics") or {}
+        if lyr.get("state") != "running":
+            return
+        left = _lyrics["left"].get(song_id, 0)
+        if left > 0:
+            _lyrics["left"][song_id] = left - 1
+            return
+        mode, language, lines = _lyrics["pending"].get(song_id, ("auto", "auto", []))
+        previous = lyr.get("previous")
+        if _lyrics["mode"] == "error":
+            _lyrics["state"][song_id] = (
+                dict(previous, last_attempt={"state": "error", "message": "sahte hata"})
+                if previous else {"state": "error", "message": "sahte hata"})
+            return
+        if _lyrics["mode"] == "no_lyrics" and mode == "auto":
+            _lyrics["state"][song_id] = (
+                dict(previous, last_attempt={"state": "no_lyrics", "message": "sonuc yok"})
+                if previous else {"state": "no_lyrics", "message": "sonuc yok"})
+            return
+        lang = language if language != "auto" else "tr"
+        version = int(time.time() * 1000) % 10**9
+        duration = float(song["status"].get("duration") or 120.0)
+        _lyrics["docs"][song_id] = synthetic_lyrics(duration, lang, mode, lines or None, version)
+        stems_version = song["status"].get("stems_version")
+        parent = (int(stems_version) - 1) if (_lyrics["stale"] and stems_version) else stems_version
+        warning = "text_mismatch" if (_lyrics["mode"] == "warn" and mode == "pasted") else None
+        _lyrics["state"][song_id] = {
+            "state": "done", "source": mode, "language": lang, "language_requested": language,
+            "version": version, "lines": len(_lyrics["docs"][song_id]["lines"]),
+            "warning": warning, "parent_stems_version": parent,
+        }
 
     def _finish_sub(self, song_id, song):
         """Calisan sahte alt ayrimlari, bekleme sorgulari bitince sonuclandirir."""
@@ -469,6 +610,13 @@ def main():
                         help="POST /sub sonucu (Asama 10 taklidi)")
     parser.add_argument("--sub-polls", type=int, default=0,
                         help="POST /sub sonrasi kac durum sorgusu 'running' kalsin")
+    parser.add_argument("--lyrics-mode", default="done",
+                        choices=["done", "warn", "no_vocals", "error", "no_lyrics"],
+                        help="POST /lyrics sonucu (Asama 11 taklidi)")
+    parser.add_argument("--lyrics-polls", type=int, default=0,
+                        help="POST /lyrics sonrasi kac durum sorgusu 'running' kalsin")
+    parser.add_argument("--lyrics-stale", action="store_true",
+                        help="sonuc 'eski ayristirmadan' (parent_stems_version farkli)")
     parser.add_argument("--stem-delay", type=float, default=0.0,
                         help="her stem istegini bu kadar saniye beklet (yavas ag taklidi)")
     args = parser.parse_args()
@@ -476,6 +624,9 @@ def main():
     global COLD_DELAY
     _sub["mode"] = args.sub_mode
     _sub["polls"] = args.sub_polls
+    _lyrics["mode"] = args.lyrics_mode
+    _lyrics["polls"] = args.lyrics_polls
+    _lyrics["stale"] = args.lyrics_stale
     COLD_DELAY = args.cold
     _pending["left"] = args.pending
     global STEM_DELAY

@@ -683,6 +683,16 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      NEM pasted -> done, 39 satır (referansla birebir), uyarı yok; Final Duet auto ve pasted -> `no_vocals` (-118.66 dBFS), GPU yok;
      auth yok 401. Testler: tests/test_lyrics_gate.py (57), tests/test_lyrics_api.py (53).
 
+   - **OTURUM 3 (söz arayüzü) YAPILDI (2026-10-05), SW v34, telefonda doğrulanmadı.** `frontend/js/lyrics.js` (saf, `tests/lyrics_test.mjs`):
+     satır bulma (ikili arama; satırdan 3 sn sonra ara müzikte vurgu kalkar), uzun-basma döngüsü (A = satır başı, B = sonraki satır başı;
+     sonraki satır 6 sn'den uzaksa ara müzik: B = bitiş + 1 sn; `minLoopLength` kuralı, şarkı sonunda A öne çekilir), bölüm durumu/mesajlar,
+     cihaz önbelleği (`stem-mikser.lyrics.<id>`, en çok 40 şarkı). Panel akor şeridinin altında; zaman `engine.visualTime` (şarkı saati, hız ve
+     döngüden bağımsız); dokununca `engine.seek`, uzun basınca (520 ms) satır A-B döngü; elle kaydırınca otomatik kaydırma durur, "Şimdiye dön";
+     `prefers-reduced-motion`; Japonca için `lang` özniteliği + CJK yazı tipi yedeği + `word-break: auto-phrase`. Düzenle/Yapıştır: metin kutusu,
+     kaydedince `mode: pasted` ile yeniden hizalanır; mevcut sözün üstüne yazmadan önce `confirm`. Stale ise "Yeniden hizala". Sunucu "söz yok"
+     derse cihaz kopyası silinir. Mock sunucu: `--lyrics-mode`, `--lyrics-polls`, `--lyrics-stale` (sentetik satırlar). Tarayıcıda uçtan uca denendi
+     (çıkar, yoklama, dokun, uzun bas, kaydırma, düzenle + Japonca, uyarı, stale, vokal yok, çevrimdışı açılış), hiza testi geçti, `engine_leak_test` geçti.
+
 ### Sonra (şimdilik gerek yok)
 **Anında başlatma (önizleme dosyaları).** KOD YOK, plan. **ERTELENDİ
 (2026-09-29):** telefon ölçümünde cihazda kayıtlı şarkılar 1-2 saniyede
