@@ -44,9 +44,10 @@ for (const name of files) {
 }
 check("localStorage.removeItem çağrıları yalnız türetilmiş anahtarlarla (metaKey/item.key/INDEX_KEY...), düz koleksiyon anahtarı yok",
   removals.every((entry) => !/collection/i.test(entry)), removals.join(" | "));
-const collectionRemovals = strip(source["collection.js"]).match(/removeItem/g) || [];
-check("collection.js hiçbir yerde removeItem çağırmıyor (yalnız safeStorage'ın bellek deposu tanımı hariç)", collectionRemovals.length <= 2
-  && !/storage\s*\.\s*removeItem\s*\(\s*COLLECTION/.test(strip(source["collection.js"])), String(collectionRemovals.length));
+const collectionSource = strip(source["collection.js"]);
+const storageRemovals = collectionSource.match(/\bstorage\s*\.\s*removeItem\s*\(/g) || [];
+check("collection.js depoda yalnız TEK removeItem çağırıyor (safeStorage yoklaması); koleksiyon anahtarını silen yok (liste öğesi silen removeItem(lid, iid) yöntemi başka şey)",
+  storageRemovals.length <= 1 && !/storage\s*\.\s*removeItem\s*\(\s*COLLECTION/.test(collectionSource), String(storageRemovals.length));
 
 // 4) "Önbelleği temizle" işleyicisi yalnız Cache Storage + SW
 const app = strip(source["app.js"]);

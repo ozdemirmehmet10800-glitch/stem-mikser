@@ -11,7 +11,7 @@
 // Belge (v1):  { v: 1, rev, updated,
 //   songs: { "<şarkı kimliği>": { fav?: true, tags?: ["<etiket kimliği>"], t, miss? } },   // yalnız favorisi/etiketi olanlar
 //   tags:  { "<etiket kimliği>": { name, t } },
-//   lists: {} }                                                                            // çalma listeleri (sonraki madde)
+//   lists: { "<liste kimliği>": { name, t, cur?, items: [{ iid, song, miss? }] } } }                       // çalma listeleri (prova modu)
 // Bilinmeyen alanlar (üst düzeyde, şarkı kaydında) kaydederken AYNEN korunur: eski önbellekli bir sürüm, sonraki
 // sürümün alanlarını silmesin. Etiketler kimlikle tutulur: yeniden adlandırma hiçbir şarkı kaydına dokunmaz.
 
@@ -24,12 +24,19 @@ export const TAG_NAME_MAX = 24;
 export const TAG_LIMIT = 60;
 export const ORPHAN_MS = 30 * 24 * 60 * 60 * 1000;      // sunucu listesinde görünmeyen şarkının kaydı bu kadar sonra silinir
 export const IMPORT_MAX_BYTES = 1024 * 1024;
+export const LIST_LIMIT = 30;                  // en çok liste
+export const LIST_ITEMS_MAX = 100;             // liste başına en çok şarkı (aynı şarkı birden çok kez olabilir)
+export const LIST_NAME_MAX = 40;
 
 const SONG_KNOWN = new Set(["fav", "tags", "t", "miss"]);
 const SONG_ID_RE = /^[0-9A-Za-z][0-9A-Za-z_-]{0,127}$/;     // "__proto__" gibi anahtarlar geçmez
 
 export function cleanTagName(raw) {
   return String(raw ?? "").split(/\s+/).filter(Boolean).join(" ").slice(0, TAG_NAME_MAX).trim();
+}
+
+export function cleanListName(raw) {
+  return String(raw ?? "").split(/\s+/).filter(Boolean).join(" ").slice(0, LIST_NAME_MAX).trim();
 }
 
 const emptyDoc = () => ({ v: COLLECTION_VERSION, rev: 0, updated: 0, songs: {}, tags: {}, lists: {} });
@@ -145,7 +152,51 @@ export class Collection {
   }
 
   stats() {
-    return { favs: this.favCount(), tags: Object.keys(this.doc.tags).length, songs: Object.keys(this.doc.songs).length };
+    return {
+      favs: this.favCount(), tags: Object.keys(this.doc.tags).length, songs: Object.keys(this.doc.songs).length,
+      lists: Object.keys(this.doc.lists || {}).length,
+    };
+  }
+
+  // ------------------------------------------------------ çalma listeleri (okuma)
+
+  #listItems(list) {
+    return Array.isArray(list && list.items)
+      ? list.items.filter((item) => isObject(item) && typeof item.iid === "string" && typeof item.song === "string")
+      : [];
+  }
+
+  /** Listeler: [{id, name, count, cur, t}] (oluşturulma sırası; eşitse ada göre). */
+  listSummaries() {
+    return Object.keys(this.doc.lists || {})
+      .filter((lid) => isObject(this.doc.lists[lid]))
+      .map((lid) => {
+        const list = this.doc.lists[lid];
+        return { id: lid, name: String(list.name || ""), count: this.#listItems(list).length, cur: list.cur || null, t: Number(list.t) || 0 };
+      })
+      .sort((a, b) => a.t - b.t || a.name.localeCompare(b.name, "tr"));
+  }
+
+  /** Tek liste: {id, name, cur, items: [{iid, song, miss}]} ya da null. Öğeler kopya (dışarıdan değiştirilemez). */
+  getList(lid) {
+    if (!has(this.doc.lists || {}, lid) || !isObject(this.doc.lists[lid])) return null;
+    const list = this.doc.lists[lid];
+    return {
+      id: lid, name: String(list.name || ""), cur: list.cur || null,
+      items: this.#listItems(list).map((item) => ({ iid: item.iid, song: item.song, miss: Number.isFinite(item.miss) ? item.miss : null })),
+    };
+  }
+
+  findListByName(name) {
+    const key = fold(cleanListName(name));
+    if (!key) return null;
+    return Object.keys(this.doc.lists || {}).find((lid) => isObject(this.doc.lists[lid]) && fold(String(this.doc.lists[lid].name || "")) === key) || null;
+  }
+
+  /** Şarkı bu listede kaç kez var? */
+  listCount(lid, songId) {
+    const list = this.getList(lid);
+    return list ? list.items.filter((item) => item.song === songId).length : 0;
   }
 
   // ------------------------------------------------------------ değiştirme
@@ -286,13 +337,140 @@ export class Collection {
     });
   }
 
-  /** Silinen şarkıların kayıtları HEMEN gider (uygulamadan silme). */
+  // ------------------------------------------------ çalma listeleri (değiştirme)
+
+  #newItemId(list) {
+    const taken = new Set(this.#listItems(list).map((item) => item.iid));
+    for (let i = 0; i < 20; i += 1) {
+      const iid = `i${Math.floor(this.random() * 36 ** 5).toString(36).padStart(5, "0")}`;
+      if (!taken.has(iid)) return iid;
+    }
+    return `i${this.now().toString(36)}${taken.size}`;
+  }
+
+  #newListId(doc) {
+    for (let i = 0; i < 20; i += 1) {
+      const lid = `l${Math.floor(this.random() * 36 ** 6).toString(36).padStart(5, "0")}`;
+      if (!has(doc.lists, lid)) return lid;
+    }
+    return `l${this.now().toString(36)}`;
+  }
+
+  #list(doc, lid) {
+    if (!isObject(doc.lists)) doc.lists = {};
+    return has(doc.lists, lid) && isObject(doc.lists[lid]) ? doc.lists[lid] : null;
+  }
+
+  /** Liste oluşturur; aynı ad (harf katlamasıyla) varsa onu döner: {ok, id, created}. */
+  createList(name) {
+    const clean = cleanListName(name);
+    if (!clean) return { ok: false, error: "empty" };
+    const existing = this.findListByName(clean);
+    if (existing) return { ok: true, id: existing, created: false };
+    return this.#mutate((doc) => {
+      if (!isObject(doc.lists)) doc.lists = {};
+      if (Object.keys(doc.lists).length >= LIST_LIMIT) return { ok: false, error: "limit" };
+      const id = this.#newListId(doc);
+      doc.lists[id] = { name: clean, t: this.now(), items: [] };
+      return { id, created: true };
+    });
+  }
+
+  renameList(lid, name) {
+    const clean = cleanListName(name);
+    if (!clean) return { ok: false, error: "empty" };
+    if (!this.getList(lid)) return { ok: false, error: "missing" };
+    const clash = this.findListByName(clean);
+    if (clash && clash !== lid) return { ok: false, error: "exists" };
+    return this.#mutate((doc) => {
+      const list = this.#list(doc, lid);
+      if (list.name === clean) return { noop: true };
+      list.name = clean;
+      return {};
+    });
+  }
+
+  deleteList(lid) {
+    if (!this.getList(lid)) return { ok: false, error: "missing" };
+    return this.#mutate((doc) => {
+      delete doc.lists[lid];
+      return {};
+    });
+  }
+
+  /** Şarkıları listenin SONUNA, verilen sırayla ekler (aynı şarkı tekrar olabilir). {ok, added} | {ok:false, error}. */
+  addToList(lid, songIds) {
+    if (!this.getList(lid)) return { ok: false, error: "missing" };
+    const valid = songIds.filter((id) => SONG_ID_RE.test(String(id)));
+    if (!valid.length) return { ok: false, error: "id" };
+    return this.#mutate((doc) => {
+      const list = this.#list(doc, lid);
+      if (!Array.isArray(list.items)) list.items = [];
+      if (list.items.length + valid.length > LIST_ITEMS_MAX) return { ok: false, error: "full" };
+      for (const song of valid) list.items.push({ iid: this.#newItemId(list), song });
+      return { added: valid.length };
+    });
+  }
+
+  removeItem(lid, iid) {
+    const list = this.getList(lid);
+    if (!list || !list.items.some((item) => item.iid === iid)) return { ok: false, error: "missing" };
+    return this.#mutate((doc) => {
+      const target = this.#list(doc, lid);
+      target.items = target.items.filter((item) => !(isObject(item) && item.iid === iid));
+      if (target.cur === iid) delete target.cur;
+      return {};
+    });
+  }
+
+  /** Öğeyi bir basamak yukarı (-1) / aşağı (+1) taşır. {ok, moved} (kenardaysa noop). */
+  moveItem(lid, iid, delta) {
+    const list = this.getList(lid);
+    if (!list) return { ok: false, error: "missing" };
+    const index = list.items.findIndex((item) => item.iid === iid);
+    if (index < 0) return { ok: false, error: "missing" };
+    const to = index + (delta < 0 ? -1 : 1);
+    if (to < 0 || to >= list.items.length) return { ok: true, moved: false, noop: true };
+    return this.#mutate((doc) => {
+      const items = this.#list(doc, lid).items;
+      const a = items.findIndex((item) => isObject(item) && item.iid === iid);
+      const b = a + (delta < 0 ? -1 : 1);
+      [items[a], items[b]] = [items[b], items[a]];
+      return { moved: true };
+    });
+  }
+
+  /** Son çalınan öğe (Devam): iid ya da null (temizle). Aynı değerse yazılmaz. */
+  setCur(lid, iid) {
+    const list = this.getList(lid);
+    if (!list) return { ok: false, error: "missing" };
+    if ((list.cur || null) === (iid || null)) return { ok: true, noop: true };
+    if (iid && !list.items.some((item) => item.iid === iid)) return { ok: false, error: "missing" };
+    return this.#mutate((doc) => {
+      const target = this.#list(doc, lid);
+      if (iid) target.cur = iid;
+      else delete target.cur;
+      return {};
+    });
+  }
+
+  /** Silinen şarkıların kayıtları ve LİSTE ÖĞELERİ HEMEN gider (uygulamadan silme). */
   removeSongs(ids) {
-    const present = [...new Set(ids)].filter((id) => has(this.doc.songs, id));
-    if (!present.length) return { ok: true, removed: 0, noop: true };
+    const gone = new Set(ids);
+    const present = [...gone].filter((id) => has(this.doc.songs, id));
+    const inLists = Object.values(this.doc.lists || {}).some((list) => this.#listItems(list).some((item) => gone.has(item.song)));
+    if (!present.length && !inLists) return { ok: true, removed: 0, noop: true };
     return this.#mutate((doc) => {
       for (const id of present) delete doc.songs[id];
-      return { removed: present.length };
+      let items = 0;
+      for (const list of Object.values(doc.lists || {})) {
+        if (!isObject(list) || !Array.isArray(list.items)) continue;
+        const before = list.items.length;
+        list.items = list.items.filter((item) => !(isObject(item) && gone.has(item.song)));
+        items += before - list.items.length;
+        if (list.cur && !list.items.some((item) => isObject(item) && item.iid === list.cur)) delete list.cur;
+      }
+      return { removed: present.length, items };
     });
   }
 
@@ -320,6 +498,35 @@ export class Collection {
           delete doc.songs[id];
           changed += 1;
         }
+      }
+      // Liste öğeleri: şarkı görünmüyorsa "miss" damgası (listede soluk "bulunamadı", çalmada atlanır), 30 günden uzun
+      // yoksa öğe silinir; tekrar görününce damga kalkar. (Liste, `songs` kayıtlarına bağlı DEĞİL.)
+      for (const list of Object.values(doc.lists || {})) {
+        if (!isObject(list) || !Array.isArray(list.items)) continue;
+        const keep = [];
+        for (const item of list.items) {
+          if (!isObject(item) || typeof item.song !== "string") {
+            keep.push(item);
+            continue;
+          }
+          if (presentIds.has(item.song)) {
+            if (item.miss !== undefined) {
+              delete item.miss;
+              changed += 1;
+            }
+            keep.push(item);
+          } else if (!Number.isFinite(item.miss)) {
+            item.miss = at;
+            changed += 1;
+            keep.push(item);
+          } else if (at - item.miss > ORPHAN_MS) {
+            changed += 1;                                  // atılır
+            if (list.cur === item.iid) delete list.cur;
+          } else {
+            keep.push(item);
+          }
+        }
+        if (keep.length !== list.items.length) list.items = keep;
       }
       return changed ? { changed } : { noop: true };
     });
@@ -399,7 +606,40 @@ export class Collection {
         }
         this.#tidy(doc, id);
       }
-      return { tagsAdded, favsAdded, songsTouched };
+      // Çalma listeleri: aynı adlı liste (harf katlamasıyla) BİRLEŞTİRİLİR; şarkı başına sayı dikkate alınır (yedekteki tekrar
+      // sayısı mevcuttan fazlaysa eksik tekrarlar eklenir; ikinci yüklemede çoğalma olmaz). Öğeler yeni kimlik alır.
+      let listsAdded = 0;
+      let itemsAdded = 0;
+      if (isObject(data.lists)) {
+        if (!isObject(doc.lists)) doc.lists = {};
+        for (const saved of Object.values(data.lists)) {
+          if (!isObject(saved) || !Array.isArray(saved.items)) continue;
+          const name = cleanListName(saved.name);
+          if (!name) continue;
+          let lid = this.findListByName(name);
+          if (!lid) {
+            if (Object.keys(doc.lists).length >= LIST_LIMIT) continue;
+            lid = this.#newListId(doc);
+            doc.lists[lid] = { name, t: this.now(), items: [] };
+            listsAdded += 1;
+          }
+          const list = doc.lists[lid];
+          if (!Array.isArray(list.items)) list.items = [];
+          const have = {};
+          for (const item of list.items) if (isObject(item) && typeof item.song === "string") have[item.song] = (have[item.song] || 0) + 1;
+          const seen = {};
+          for (const item of saved.items) {
+            if (!isObject(item) || typeof item.song !== "string" || !SONG_ID_RE.test(item.song)) continue;
+            seen[item.song] = (seen[item.song] || 0) + 1;
+            if (seen[item.song] <= (have[item.song] || 0)) continue;
+            if (list.items.length >= LIST_ITEMS_MAX) break;
+            list.items.push({ iid: this.#newItemId(list), song: item.song });
+            have[item.song] = (have[item.song] || 0) + 1;
+            itemsAdded += 1;
+          }
+        }
+      }
+      return { tagsAdded, favsAdded, songsTouched, listsAdded, itemsAdded };
     });
   }
 }
