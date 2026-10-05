@@ -3,7 +3,7 @@
 //
 //     node tests\lyricsscreen_test.mjs
 
-import { LyricsScreen, ROWS_DEFAULT, ROWS_MIN, ROWS_MAX, normalizeRows } from "../frontend/js/lyricsscreen.js";
+import { LyricsScreen, ROWS_DEFAULT, ROWS_MIN, ROWS_MAX, normalizeRows, syncScreenLines } from "../frontend/js/lyricsscreen.js";
 import { pickBeats } from "../frontend/js/beatpulse.js";
 
 let failed = 0;
@@ -336,6 +336,36 @@ env = makeEnv();
 const custom = new LyricsScreen({ ui: env.ui, createEl: (tag) => new FakeEl(tag), doc: env.doc, win: env.win, rows: 5 });
 check("kurucu rows ayarı", env.ui.root.style["--lf-span"] === "4" && custom.rows === 5);
 env.win.flushFrames();
+
+// --- çalma listesinde otomatik geçişte app'in söz listesi eşlemesi (syncScreenLines; app.renderLyricsList HER kurulumda çağırır)
+// GERÇEK HATA (telefon): sözü olmayan / yüklenen şarkıya geçince belge null olduğu için eşleme hiç çalışmıyordu, tam ekran
+// ESKİ şarkının sözlerinde kalıyordu. Birim testle (her şarkıya söz veren mock) görünmemişti.
+{
+  const trackText = () => env.ui.track.children.map((c) => c.textContent).join("|");
+  env = makeEnv();
+  const screen2 = makeScreen(env).screen;
+  screen2.open({ lines: lines(24), lang: "tr", title: "Şarkı A", mode: "plain", time: 100, playing: true });
+  check("kurulum: A'nın 24 satırı", env.ui.track.children.length === 24);
+  // geçiş: resetLyrics -> belge null, liste modu -> "yükleniyor"
+  check("belge YOK + liste modu: eşleme yapılır (true)", syncScreenLines(screen2, null, [], "Sözler yükleniyor…") === true);
+  check("A'nın satırları gitti, 'Sözler yükleniyor…' görünür, ekran açık", screen2.isOpen && trackText() === "Sözler yükleniyor…" && env.ui.root.classList.contains("empty"));
+  syncScreenLines(screen2, null, [], "Bu şarkıda söz yok");
+  check("söz gelmedi (yok): metin 'Bu şarkıda söz yok'", trackText() === "Bu şarkıda söz yok" && screen2.isOpen);
+  syncScreenLines(screen2, { lines: lines(7), language: "ja" }, [], "Bu şarkıda söz yok");
+  check("sonraki şarkının sözleri gelince satırlar kurulur, 'söz yok' görünümü kalkar",
+    env.ui.track.children.length === 7 && !env.ui.root.classList.contains("empty") && env.ui.track.children[0].children[0].textContent === "Sentetik satir 1" && env.ui.track.lang === "ja");
+  // doğrudan söz var -> söz var: eski satırlar kalmaz
+  screen2.setLines(lines(24), "tr", null);
+  syncScreenLines(screen2, { lines: lines(5), language: "tr" }, [], "x");
+  check("söz var -> söz var: yeni şarkının satır sayısı", env.ui.track.children.length === 5);
+  // liste DIŞI: belge yok ve metin yok -> ekrana dokunulmaz (eski davranış), kapanmaz
+  const before = env.ui.track.children.length;
+  check("liste dışı + belge yok: false, ekran olduğu gibi açık", syncScreenLines(screen2, null, [], null) === false && screen2.isOpen && env.ui.track.children.length === before);
+  // liste dışı + belge VAR ama satırsız: eski davranış (ekran kapanır)
+  syncScreenLines(screen2, { lines: [], language: null }, [], null);
+  check("liste dışı + belge var ama boş: ekran kapanır (eski davranış)", screen2.isOpen === false);
+  check("kapalı ekranda eşleme patlamaz, false", syncScreenLines(screen2, null, [], "x") === false && syncScreenLines(null, null, [], "x") === false);
+}
 
 if (failed) {
   console.error(`\n${failed} test başarısız`);

@@ -36,6 +36,20 @@ export function normalizeRows(value) {
 const POSITION_CLASSES = ["cur", "next", "dist"];
 const PULSE_MS = 420;
 
+/**
+ * Uygulamanın söz belgesi değişince (şarkı değişti / yükleniyor / geldi / yok) açık tam ekranı eşler. app.js söz listesini her
+ * kurduğunda BU çağrılır, belge null iken de: eskiden null belgede liste kurma erken dönüyordu, tam ekrana hiç ulaşılmıyordu ve
+ * çalma listesinde yeni şarkıya geçince ekran ESKİ şarkının sözlerinde kalıyordu.
+ *   doc: {lines, language} ya da null (söz yok / yükleniyor). emptyText: liste modunda ekranda gösterilecek metin; liste dışında null.
+ * Belge yok ve emptyText de yoksa (liste dışı) ekrana dokunulmaz.
+ */
+export function syncScreenLines(screen, doc, subs, emptyText) {
+  if (!screen || !screen.isOpen) return false;
+  if (!doc && !emptyText) return false;
+  screen.setLines(doc ? doc.lines : [], doc ? doc.language : null, subs, emptyText || null);
+  return true;
+}
+
 export class LyricsScreen {
   constructor({
     ui, createEl, doc = globalThis.document, win = globalThis.window,

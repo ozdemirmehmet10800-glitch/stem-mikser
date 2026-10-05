@@ -55,6 +55,7 @@ export class MediaBridge {
     this.onSeek = onSeek;
     this.keeper = null;
     this.handlersBound = false;
+    this.trackHandlers = null;   // liste modu: {onPrevious, onNext}; null = liste dışı
   }
 
   get supported() {
@@ -102,51 +103,61 @@ export class MediaBridge {
         { src: "icons/icon-512.png", sizes: "512x512", type: "image/png" },
       ],
     });
+    // Her yeni şarkıda (otomatik geçiş dahil) önceki/sonraki kilit ekranında DOĞRU bağlı kalsın.
+    this.#applyTrackActions();
+  }
+
+  #set(action, handler) {
+    try {
+      navigator.mediaSession.setActionHandler(action, handler);
+    } catch {
+      // Bu eylemi desteklemiyor; sorun değil.
+    }
   }
 
   bindHandlers({ onPlay, onPause }) {
-    if (!this.supported || this.handlersBound) return;
-    const set = (action, handler) => {
-      try {
-        navigator.mediaSession.setActionHandler(action, handler);
-      } catch {
-        // Bu eylemi desteklemiyor; sorun değil.
-      }
-    };
-    set("play", () => onPlay());
-    set("pause", () => onPause());
-    // visualTime: kilit ekranı kullanıcının DUYDUĞU konumu gösteriyor,
-    // ileri/geri de ona göre olsun.
-    set("seekbackward", (details) =>
-      this.onSeek(this.engine.visualTime - (details.seekOffset || 10)));
-    set("seekforward", (details) =>
-      this.onSeek(this.engine.visualTime + (details.seekOffset || 10)));
-    set("seekto", (details) => {
-      if (details.seekTime != null) this.onSeek(details.seekTime);
-    });
-    set("previoustrack", () => this.onSeek(0));
-    this.handlersBound = true;
+    if (!this.supported) return;
+    if (!this.handlersBound) {
+      this.#set("play", () => onPlay());
+      this.#set("pause", () => onPause());
+      this.#set("seekto", (details) => {
+        if (details.seekTime != null) this.onSeek(details.seekTime);
+      });
+      this.handlersBound = true;
+    }
+    // previoustrack/nexttrack/seekbackward/seekforward BURADA değil: listeye göre değişiyorlar, tek yerden (aşağıda) kuruluyor;
+    // eskiden ilk şarkıda buradaki previoustrack liste işleyicisinin ÜZERİNE yazılıyordu.
+    this.#applyTrackActions();
   }
 
   /**
    * Çalma listesi modu: kilit ekranında önceki/sonraki. handlers = {onPrevious, onNext} ya da null (liste dışı: önceki = başa sar,
-   * sonraki yok). Chrome Android düğmeleri yalnız işleyici varsa gösterir.
+   * sonraki yok, ileri/geri = 10 sn). Chrome Android düğmeleri yalnız işleyici varsa gösterir. İstenen durum burada tutulur ve
+   * setMetadata/bindHandlers her seferinde yeniden uygular, yani sıra ne olursa olsun son durum doğru.
    */
   setTrackControls(handlers) {
+    this.trackHandlers = handlers || null;
+    this.#applyTrackActions();
+  }
+
+  #applyTrackActions() {
     if (!this.supported) return;
-    const set = (action, handler) => {
-      try {
-        navigator.mediaSession.setActionHandler(action, handler);
-      } catch {
-        // Bu eylemi desteklemiyor; sorun değil.
-      }
-    };
-    if (handlers) {
-      set("previoustrack", () => handlers.onPrevious());
-      set("nexttrack", () => handlers.onNext());
+    const list = this.trackHandlers;
+    if (list) {
+      this.#set("previoustrack", () => list.onPrevious());
+      this.#set("nexttrack", () => list.onNext());
+      // Liste modunda ileri/geri = ŞARKI geçişi. 10 sn atlama işleyicileri yanında dururken Android kilit ekranı ileri/geri
+      // yuvalarını onlara verebiliyor (düğme 10 sn atlar, şarkı değişmez): liste modunda bunlar kaldırılır.
+      this.#set("seekbackward", null);
+      this.#set("seekforward", null);
     } else {
-      set("previoustrack", () => this.onSeek(0));
-      set("nexttrack", null);
+      this.#set("previoustrack", () => this.onSeek(0));
+      this.#set("nexttrack", null);
+      // visualTime: kilit ekranı kullanıcının DUYDUĞU konumu gösteriyor, ileri/geri de ona göre olsun.
+      this.#set("seekbackward", (details) =>
+        this.onSeek(this.engine.visualTime - ((details && details.seekOffset) || 10)));
+      this.#set("seekforward", (details) =>
+        this.onSeek(this.engine.visualTime + ((details && details.seekOffset) || 10)));
     }
   }
 

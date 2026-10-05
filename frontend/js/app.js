@@ -31,7 +31,7 @@ import {
   mapManual, fixTime, applyChanged,
   readCache as readLyricsCache, writeCache as writeLyricsCache, dropCache as dropLyricsCache,
 } from "./lyrics.js";
-import { LyricsScreen, ROWS_MIN, ROWS_MAX, normalizeRows } from "./lyricsscreen.js";
+import { LyricsScreen, ROWS_MIN, ROWS_MAX, normalizeRows, syncScreenLines } from "./lyricsscreen.js";
 import * as TR from "./translation.js";
 import { vinylPitch, nearestSemitone, keyShift, formatPitch } from "./vinyl.js";
 import {
@@ -3538,6 +3538,13 @@ function refreshLyricsUi() {
 }
 
 function renderLyricsList() {
+  renderLyricsPanel();
+  // Tam ekran sözler: belge YOKSA da eşlenir (çalma listesinde yeni şarkıya geçince "Sözler yükleniyor…" / "Bu şarkıda söz yok";
+  // panel kısmındaki erken dönüş buraya hiç ulaştırmıyordu, ekran eski şarkının sözlerinde kalıyordu).
+  syncScreenLines(lyricsScreen, lyricsDoc, lyricsDoc ? currentSubs() : [], playlistCtx ? lyricsEmptyText : null);
+}
+
+function renderLyricsPanel() {
   const list = el("lyrics-list");
   list.textContent = "";
   lyricsIndex = -2;
@@ -3568,11 +3575,6 @@ function renderLyricsList() {
   list.append(fragment);
   list.scrollTop = 0;
   refreshLyricSubs(false);
-  if (lyricsScreen && lyricsScreen.isOpen) {
-    // Çalma listesinde tam ekran AÇIK kalır: sözü olmayan şarkıda sade metin; liste dışında boş söz ekranı kapatır (eski davranış).
-    lyricsScreen.setLines(lyricsDoc ? lyricsDoc.lines : [], lyricsDoc ? lyricsDoc.language : null, currentSubs(),
-      playlistCtx ? lyricsEmptyText : null);
-  }
 }
 
 // ---- söz çevirisi (Aşama 14): alt satırlar, "Çevir/Güncelle", tercihler. Mantık translation.js'te.
@@ -4028,7 +4030,10 @@ async function loadLyricsDoc() {
   lyricsEmptyText = "Bu şarkıda söz yok";
   renderLyricsList();
   refreshLyricsUi();
-  if (lyricsDoc) lyricsTick(engine.visualTime);
+  if (lyricsDoc) {
+    lyricsTick(engine.visualTime);
+    if (lyricsScreen.isOpen) lyricsScreen.tick(engine.visualTime, true);   // setLines eski şarkının son konumuyla boyamıştı
+  }
   loadTranslation();
 }
 

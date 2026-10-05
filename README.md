@@ -245,6 +245,7 @@ node tests\collection_lists_test.mjs
 node tests\playlist_test.mjs
 node tests\engine_leak_test.mjs
 node tests\lyricsscreen_test.mjs
+node tests\media_test.mjs
 ```
 
 Listeler aynı belgede (`stem-mikser.collection`, `lists`), yedeğe dahil. Şarkı bitişi artık `onended` ile de algılanır (ekran
