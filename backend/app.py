@@ -463,6 +463,9 @@ def _delete_block_reason(status):
     if _export_is_running(status):
         return ("Disa aktarma surerken silinemez. "
                 "Bitmesini bekleyip tekrar dene.")
+    if _tr_is_running(status):
+        return ("Soz cevirisi surerken silinemez. "
+                "Bitmesini bekleyip tekrar dene.")
     return None
 
 
@@ -5448,6 +5451,535 @@ def _sign_download(key: str, song_id: str, name: str, fmt: str, exp: int) -> str
 
 
 # --------------------------------------------------------------------------
+# Söz çevirisi (Aşama 14)
+#
+# Yabancı (en, ja) sözlerin satır satır doğal TÜRKÇE çevirisi ve Japoncada okunuş (romaji).
+# Çeviri Gemini API'sinden (ücretsiz katman; PLAN.md Aşama 14), CPU işinde; anahtar YALNIZ
+# Modal secret'ında (`stem-mikser-gemini`: GEMINI_API_KEY, isteğe bağlı GEMINI_MODEL /
+# GEMINI_FALLBACK_MODEL) ve yalnız `translate_lyrics` işine bağlanır: web API'si ve telefon
+# görmez. Anahtar başlıkta (`x-goog-api-key`) gider, URL'e ya da log'a girmez.
+#
+# Çeviri `songs/<id>/translation.json`da (yalnız Volume, depoya girmez) SATIR METNİ HASH'ine
+# bağlı tutulur, sözlerin `version`'ına DEĞİL (o, "Zamanı düzelt"te de artıyor): zamanlar ve
+# sıra değişse de çeviri korunur; metni değişen/eklenen satır "çevrilmedi" olur ve yeniden
+# çeviri yalnız onları (tüm şarkı bağlamıyla) yapar.
+# --------------------------------------------------------------------------
+
+TRANSLATE_SECRET_NAME = "stem-mikser-gemini"
+TRANSLATE_LANGS = ("en", "ja")                 # çevrilebilir kaynak diller (tr çevrilmez)
+TRANSLATE_API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+TRANSLATE_DEFAULT_MODEL = "gemini-3.8-flash"
+TRANSLATE_DEFAULT_FALLBACK = "gemini-3.5-flash-lite"
+TRANSLATE_WAITS = (3.0, 8.0)                   # 429/503'te kısa bekleme, sonra aynı modelde yeniden
+TRANSLATE_RETRIES = 2                          # geçersiz çıktıda (satır sayısı vb.) yeniden deneme
+TRANSLATE_CHUNK = 20                           # son çare: bu kadarlık parçalar (bağlam yine tam şarkı)
+TRANSLATE_TIMEOUT = 120
+TRANSLATE_RUNNING_STALE_SECONDS = 900
+TRANSLATE_BUSY_MESSAGE = "Çeviri servisi şu an meşgul, biraz sonra tekrar dene."
+TRANSLATE_KANJI_RE = re.compile(r"[㐀-䶿一-鿿]")
+TRANSLATE_NUMBERING_RE = re.compile(r"^\s*(\d{1,3}\s*[:.)\]-]|\[\d{1,3}\])\s")
+TRANSLATE_LANG_NAMES = {"en": "English", "ja": "Japanese"}
+
+
+class TranslateError(Exception):
+    """Çeviri hatası; `code` arayüzde ayırt edilir, `message` kullanıcıya gösterilir."""
+    code = "error"
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+class TranslateBusy(TranslateError):
+    code = "busy"
+
+
+class TranslateRefused(TranslateError):
+    code = "refused"
+
+
+class TranslateAuth(TranslateError):
+    code = "auth"
+
+
+class TranslateInvalid(TranslateError):
+    code = "invalid"
+
+
+def _tr_is_running(status) -> bool:
+    record = (status or {}).get("translation") or {}
+    if record.get("state") != "running":
+        return False
+    return (time.time() - float(record.get("started") or 0)) < TRANSLATE_RUNNING_STALE_SECONDS
+
+
+def _tr_norm(text) -> str:
+    return " ".join(str(text or "").lower().split())
+
+
+def _tr_hash(text) -> str:
+    return hashlib.sha1(_tr_norm(text).encode("utf-8")).hexdigest()[:12]
+
+
+def _tr_missing(lines: list, items: dict) -> list:
+    """Çevirisi olmayan satırların İLK geçtiği dizinler (aynı metin tek kez; refren tekrarı bedava)."""
+    seen, out = set(), []
+    for i, text in enumerate(lines):
+        h = _tr_hash(text)
+        if h in seen or (items.get(h) or {}).get("tr"):
+            continue
+        seen.add(h)
+        out.append(i)
+    return out
+
+
+def _tr_prompt(lang: str, lines: list, indices: list, want_reading: bool, feedback: str = "") -> tuple:
+    """(sistem metni, kullanıcı metni). Tüm şarkı numaralı satırlarla BAĞLAM; yalnız `indices` istenir."""
+    source = TRANSLATE_LANG_NAMES.get(lang, lang)
+    system = (
+        "You are a professional song-lyrics translator into Turkish. You translate ONE song, line by line.\n"
+        "Rules:\n"
+        "- Read the WHOLE song first so each line is translated in context (who speaks, tone, repeated refrains).\n"
+        "- Write natural, fluent, poetic-but-plain Turkish that conveys the MEANING. Never translate word for word: "
+        "adapt idioms and figures of speech to equivalent Turkish expressions.\n"
+        "- One output item per requested line; never merge, split, reorder, skip or add lines. Keep each line short.\n"
+        "- Identical source lines must get identical translations.\n"
+        "- Keep proper names. Interjections or vocables (ah, la la, oh) may stay as they are.\n"
+        "- Do not add explanations, numbering, quotes or notes inside the translation text.\n"
+    )
+    if want_reading:
+        system += (
+            "- Also give, in `rd`, the reading of the line written ONLY in hiragana (katakana loanwords in hiragana too, "
+            "no kanji, no romaji): the way it is actually SUNG, including poetic readings of kanji. Keep spaces between words.\n"
+            "- In `rm`, give the SAME reading in Hepburn romaji, lowercase, with spaces between words and particles "
+            "(particle は = wa, へ = e, を = o; long vowels written doubled: ou, uu, ii, aa). `rm` must be exactly consistent with `rd`.\n"
+        )
+    wanted = ", ".join(str(i) for i in indices)
+    numbered = "\n".join(f"{i}: {text}" for i, text in enumerate(lines))
+    user = (
+        f"Song language: {source}.\nFull lyrics (line number: text):\n{numbered}\n\n"
+        f"Return a JSON array with exactly {len(indices)} objects, one for each of these line numbers, in this order: {wanted}.\n"
+        'Each object: {"i": <line number>, "tr": "<Turkish translation>"' + (', "rd": "<hiragana reading>", "rm": "<romaji>"' if want_reading else "") + "}."
+    )
+    if feedback:
+        user += f"\n\nYour previous answer was rejected: {feedback}\nFix it and answer again."
+    return system, user
+
+
+def _tr_schema(count: int, want_reading: bool) -> dict:
+    props = {"i": {"type": "INTEGER"}, "tr": {"type": "STRING"}}
+    required = ["i", "tr"]
+    if want_reading:
+        props["rd"] = {"type": "STRING"}
+        props["rm"] = {"type": "STRING"}
+        required += ["rd", "rm"]
+    return {"type": "ARRAY", "minItems": count, "maxItems": count,
+            "items": {"type": "OBJECT", "properties": props, "required": required}}
+
+
+def _tr_parse(text: str, lines: list, indices: list, want_reading: bool) -> list:
+    """Model çıktısını doğrular. Dönen: [{i, tr, rd?}] (indices sırasında). Geçersizse TranslateInvalid."""
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        raise TranslateInvalid("JSON degil")
+    if isinstance(data, dict):
+        for key in ("translations", "lines", "items", "result"):
+            if isinstance(data.get(key), list):
+                data = data[key]
+                break
+    if not isinstance(data, list):
+        raise TranslateInvalid("JSON dizisi degil")
+    if len(data) != len(indices):
+        raise TranslateInvalid(f"{len(indices)} oge beklendi, {len(data)} geldi")
+    out = []
+    for expected, item in zip(indices, data):
+        if not isinstance(item, dict) or item.get("i") != expected:
+            raise TranslateInvalid(f"{expected}. satirdan sonra siralama bozuk (i alani)")
+        tr = item.get("tr")
+        if not isinstance(tr, str) or not tr.strip():
+            raise TranslateInvalid(f"{expected}. satir bos")
+        tr = " ".join(tr.split())
+        source = lines[expected]
+        if TRANSLATE_NUMBERING_RE.match(tr) and not TRANSLATE_NUMBERING_RE.match(source):
+            raise TranslateInvalid(f"{expected}. satir numarayla basliyor")
+        if len(tr) > 4 * len(source) + 40:
+            raise TranslateInvalid(f"{expected}. satir kaynaktan cok uzun")
+        entry = {"i": expected, "tr": tr}
+        if want_reading:
+            rd = item.get("rd")
+            rd = " ".join(rd.split()) if isinstance(rd, str) else ""
+            if rd and not TRANSLATE_KANJI_RE.search(rd):       # kanjili okuma geçersiz: yalnız o okuma atılır
+                entry["rd"] = rd
+                rm = item.get("rm")
+                rm = " ".join(rm.split()) if isinstance(rm, str) else ""
+                if rm:
+                    entry["rm"] = rm
+        out.append(entry)
+    return out
+
+
+def _tr_gemini_text(raw: bytes) -> str:
+    """generateContent cevabından metni alır; engel/kesilme TranslateRefused/TranslateInvalid."""
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise TranslateInvalid("Gemini cevabi JSON degil")
+    block = (data.get("promptFeedback") or {}).get("blockReason")
+    if block:
+        raise TranslateRefused("Model bu şarkıyı çevirmeyi reddetti.")
+    candidates = data.get("candidates") or []
+    if not candidates:
+        raise TranslateRefused("Model bu şarkıyı çevirmeyi reddetti.")
+    cand = candidates[0]
+    reason = str(cand.get("finishReason") or "")
+    parts = (cand.get("content") or {}).get("parts") or []
+    text = "".join(part.get("text", "") for part in parts if isinstance(part, dict) and not part.get("thought"))
+    if reason in ("SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII") and not text.strip():
+        raise TranslateRefused("Model bu şarkıyı çevirmeyi reddetti.")
+    if reason == "MAX_TOKENS":
+        raise TranslateInvalid("cikti kesildi (MAX_TOKENS)")
+    if not text.strip():
+        raise TranslateInvalid("bos cevap")
+    return text
+
+
+def _tr_http_post(url: str, headers: dict, body: bytes, timeout: float = TRANSLATE_TIMEOUT) -> tuple:
+    """(durum, bayt). Ağ hatası/zaman aşımı durum 0 (yeniden denenebilir) sayılır."""
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as error:
+        try:
+            return error.code, error.read()
+        except Exception:
+            return error.code, b""
+    except Exception:
+        return 0, b""
+
+
+def _tr_call(api_key: str, models: list, system: str, user: str, schema: dict,
+             http=None, sleep=time.sleep, used: list = None) -> str:
+    """Gemini'ye bir istek: 429/503 (ve ağ/5xx) -> kısa bekleyip yeniden, olmazsa SONRAKİ (daha hafif)
+    modele; model yoksa (404) hemen sonrakine; hepsi olmazsa TranslateBusy. Dönen: cevap metni.
+    `used`: kullanılan model adı buraya eklenir."""
+    http = http or _tr_http_post
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+    body = json.dumps({
+        "systemInstruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": user}]}],
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 16384,
+                             "responseMimeType": "application/json", "responseSchema": schema},
+        "safetySettings": [{"category": f"HARM_CATEGORY_{name}", "threshold": "BLOCK_NONE"}
+                           for name in ("HARASSMENT", "HATE_SPEECH", "SEXUALLY_EXPLICIT", "DANGEROUS_CONTENT")],
+    }).encode("utf-8")
+    for model in models:
+        for attempt in range(len(TRANSLATE_WAITS) + 1):
+            began = time.time()
+            status, raw = http(TRANSLATE_API.format(model=model), headers, body)
+            print(f"[ceviri] istek {model} #{attempt}: HTTP {status}, {round(time.time() - began, 1)} sn")
+            if status == 200:
+                if used is not None:
+                    used.append(model)
+                return _tr_gemini_text(raw)
+            if status in (400, 401, 403):
+                detail = raw[:200].decode("utf-8", "replace") if raw else ""
+                if status == 400 and "API key" not in detail and "API_KEY" not in detail:
+                    raise TranslateInvalid(f"Gemini istegi reddetti (400): {detail}")
+                raise TranslateAuth("Çeviri anahtarı kabul edilmedi (Modal secret'ını kontrol et).")
+            print(f"[ceviri] {model}: HTTP {status} {raw[:160].decode('utf-8', 'replace') if raw else ''}")
+            if status == 404:
+                break                                     # model yok/kaldırıldı: sonraki model
+            # 429, 5xx, ağ hatası (0): kısa bekle, aynı modelde yeniden
+            if attempt < len(TRANSLATE_WAITS):
+                sleep(TRANSLATE_WAITS[attempt])
+                continue
+            break
+    raise TranslateBusy(TRANSLATE_BUSY_MESSAGE)
+
+
+def _tr_run(lang: str, lines: list, indices: list, want_reading: bool, call) -> list:
+    """`indices` satırlarını çevirir. call(system, user, schema) -> metin. Önce hepsi tek istekte (geçersizse
+    geri bildirimle TRANSLATE_RETRIES kez), olmazsa TRANSLATE_CHUNK'lık parçalar (her biri aynı kurallarla).
+    Dönen: [{i, tr, rd?}]; olmazsa TranslateInvalid (ya da call'ın Busy/Refused/Auth'u)."""
+    def attempt(part: list) -> list:
+        feedback = ""
+        for _ in range(TRANSLATE_RETRIES + 1):
+            system, user = _tr_prompt(lang, lines, part, want_reading, feedback)
+            try:
+                return _tr_parse(call(system, user, _tr_schema(len(part), want_reading)), lines, part, want_reading)
+            except TranslateInvalid as problem:
+                feedback = problem.message
+        raise TranslateInvalid(feedback)
+
+    try:
+        return attempt(indices)
+    except TranslateInvalid:
+        if len(indices) <= TRANSLATE_CHUNK:
+            raise TranslateInvalid("Model satır sayısını tutturamadı, tekrar dene.")
+    out = []
+    for start in range(0, len(indices), TRANSLATE_CHUNK):
+        try:
+            out.extend(attempt(indices[start:start + TRANSLATE_CHUNK]))
+        except TranslateInvalid:
+            raise TranslateInvalid("Model satır sayısını tutturamadı, tekrar dene.")
+    return out
+
+
+_KANA_BASE = {
+    "あ": "a", "い": "i", "う": "u", "え": "e", "お": "o",
+    "か": "ka", "き": "ki", "く": "ku", "け": "ke", "こ": "ko",
+    "さ": "sa", "し": "shi", "す": "su", "せ": "se", "そ": "so",
+    "た": "ta", "ち": "chi", "つ": "tsu", "て": "te", "と": "to",
+    "な": "na", "に": "ni", "ぬ": "nu", "ね": "ne", "の": "no",
+    "は": "ha", "ひ": "hi", "ふ": "fu", "へ": "he", "ほ": "ho",
+    "ま": "ma", "み": "mi", "む": "mu", "め": "me", "も": "mo",
+    "や": "ya", "ゆ": "yu", "よ": "yo",
+    "ら": "ra", "り": "ri", "る": "ru", "れ": "re", "ろ": "ro",
+    "わ": "wa", "を": "o", "ん": "n",
+    "が": "ga", "ぎ": "gi", "ぐ": "gu", "げ": "ge", "ご": "go",
+    "ざ": "za", "じ": "ji", "ず": "zu", "ぜ": "ze", "ぞ": "zo",
+    "だ": "da", "ぢ": "ji", "づ": "zu", "で": "de", "ど": "do",
+    "ば": "ba", "び": "bi", "ぶ": "bu", "べ": "be", "ぼ": "bo",
+    "ぱ": "pa", "ぴ": "pi", "ぷ": "pu", "ぺ": "pe", "ぽ": "po",
+    "ゔ": "vu", "ぁ": "a", "ぃ": "i", "ぅ": "u", "ぇ": "e", "ぉ": "o",
+}
+_KANA_COMBO = {"ゃ": "ya", "ゅ": "yu", "ょ": "yo"}
+_KANA_FOREIGN = {  # ぃ/ぇ/ぁ/ぉ ile kurulan yabancı sesler (ふぁ, てぃ, でぃ, うぃ ...)
+    "ふぁ": "fa", "ふぃ": "fi", "ふぇ": "fe", "ふぉ": "fo", "てぃ": "ti", "でぃ": "di", "うぃ": "wi", "うぇ": "we",
+    "うぉ": "wo", "ゔぁ": "va", "ゔぃ": "vi", "ゔぇ": "ve", "ゔぉ": "vo", "しぇ": "she", "じぇ": "je", "ちぇ": "che",
+    "つぁ": "tsa", "つぃ": "tsi", "つぇ": "tse", "つぉ": "tso", "いぇ": "ye", "とぅ": "tu", "どぅ": "du",
+}
+
+
+def _tr_kana_romaji(text: str):
+    """Hiragana/katakana -> Hepburn romaji, SÖZLÜKSÜZ (Gemini'nin okuma kanasını bölütlemeden çevirir; boşluklar
+    korunur). っ sonraki ünsüzü ikiler, ー önceki ünlüyü uzatır (ikiler), tek başına duran は -> wa, へ -> e,
+    を -> o. Kana olmayan karakterler olduğu gibi geçer. Boş/çevrilemezse None."""
+    chars = []
+    for ch in str(text or ""):
+        code = ord(ch)
+        chars.append(chr(code - 0x60) if 0x30A1 <= code <= 0x30F6 else ch)    # katakana -> hiragana
+    out, i, n = [], 0, len(chars)
+    sokuon = False
+    while i < n:
+        ch = chars[i]
+        pair = ch + chars[i + 1] if i + 1 < n else ""
+        piece = None
+        step = 1
+        if pair in _KANA_FOREIGN:
+            piece, step = _KANA_FOREIGN[pair], 2
+        elif ch in _KANA_BASE and i + 1 < n and chars[i + 1] in _KANA_COMBO and ch not in "あいうえおぁぃぅぇぉんをゔ":
+            base = _KANA_BASE[ch]
+            combo = _KANA_COMBO[chars[i + 1]]
+            if base.endswith("i"):
+                stem = base[:-1]
+                piece = (stem + combo[1:]) if stem in ("sh", "ch", "j") else stem + combo
+            else:
+                piece = base + combo
+            step = 2
+        elif ch == "っ":
+            sokuon = True
+            i += 1
+            continue
+        elif ch == "ー":
+            for back in range(len(out) - 1, -1, -1):
+                if out[back] and out[back][-1] in "aiueo":
+                    out.append(out[back][-1])
+                    break
+            i += 1
+            continue
+        elif ch in ("は", "へ") and (i == 0 or chars[i - 1].isspace()) and (i + 1 == n or chars[i + 1].isspace()):
+            piece = "wa" if ch == "は" else "e"
+        elif ch in _KANA_BASE:
+            piece = _KANA_BASE[ch]
+        if piece is None:
+            out.append(ch)
+            sokuon = False
+            i += 1
+            continue
+        if sokuon:
+            piece = ("t" + piece) if piece.startswith("ch") else piece[0] + piece        # tchi / kka / sshi
+            sokuon = False
+        out.append(piece)
+        i += step
+    result = " ".join("".join(out).split())
+    return (result[:1].upper() + result[1:]) if result else None
+
+
+def _tr_reading_romaji(kana: str, spaced=None):
+    """Gemini okumasından romaji. Güvenilir temel: kanadan sözlüksüz Hepburn. Gemini'nin KELİME-BOŞLUKLU `rm`'si
+    (okunaklı) yalnız kanayla ~%88+ örtüşüyorsa (boşluk/ünlü uzatma/parçacık farkları dışında aynı) kullanılır."""
+    import difflib
+
+    base = _tr_kana_romaji(kana)
+    if base and spaced:
+        a = base.lower().replace(" ", "")
+        b = str(spaced).lower().replace(" ", "").replace("-", "")
+        if a and b and difflib.SequenceMatcher(None, a, b).ratio() >= 0.88:
+            spaced = " ".join(str(spaced).split())
+            return spaced[:1].upper() + spaced[1:]
+    return base
+
+
+def _tr_romaji(katsu, text: str):
+    try:
+        value = " ".join(str(katsu.romaji(text)).split())
+        return value or None
+    except Exception:
+        return None
+
+
+def _tr_apply(items: dict, lines: list, results: list, lang: str, katsu=None) -> dict:
+    """Sonuçları hash'e göre `items`e işler. ja'da okunuş: `ro` = cutlet(metin), `rg` = Gemini hiraganası -> sözlüksüz Hepburn."""
+    for result in results:
+        text = lines[result["i"]]
+        entry = {"tr": result["tr"]}
+        if lang == "ja":
+            if result.get("rd"):
+                entry["rd"] = result["rd"]
+            if katsu is not None:
+                ro = _tr_romaji(katsu, text)
+                if ro:
+                    entry["ro"] = ro
+            if result.get("rd"):
+                rg = _tr_reading_romaji(result["rd"], result.get("rm"))
+                if rg:
+                    entry["rg"] = rg
+        items[_tr_hash(text)] = entry
+    return items
+
+
+def _tr_lines_view(lines: list, items: dict) -> tuple:
+    """Sözlerin güncel satırlarına göre çeviri listesi: [{tr, ro?}|None], eksik satır sayısı."""
+    view, missing = [], 0
+    for text in lines:
+        item = items.get(_tr_hash(text))
+        if item and item.get("tr"):
+            entry = {"tr": item["tr"]}
+            for key in ("ro", "rg", "rd"):
+                if item.get(key):
+                    entry[key] = item[key]
+            view.append(entry)
+        else:
+            view.append(None)
+            missing += 1
+    return view, missing
+
+
+def _tr_models() -> list:
+    primary = os.environ.get("GEMINI_MODEL") or TRANSLATE_DEFAULT_MODEL
+    fallback = os.environ.get("GEMINI_FALLBACK_MODEL") or TRANSLATE_DEFAULT_FALLBACK
+    return [primary] if fallback == primary else [primary, fallback]
+
+
+translate_image = light_image.pip_install("cutlet==0.5.2", "fugashi==1.5.2", "unidic-lite==1.0.8")
+
+
+@app.function(
+    image=translate_image,
+    volumes={DATA_DIR: volume},
+    secrets=[modal.Secret.from_name(TRANSLATE_SECRET_NAME, required_keys=["GEMINI_API_KEY"])],
+    timeout=900,
+    max_containers=2,
+)
+def translate_lyrics(song_id: str, replace: bool = False) -> dict:
+    """Sözlerin çevirisini (ve Japoncada okunuşunu) üretir/tamamlar. CPU. Sonuç `translation.json` + `status.translation`."""
+    started = time.time()
+    volume.reload()
+    song_dir = _song_dir(song_id)
+    try:
+        doc = json.loads((song_dir / "lyrics.json").read_text(encoding="utf-8"))
+        lang = doc.get("language")
+        lines = [str(line.get("text") or "") for line in doc.get("lines") or []]
+        if lang not in TRANSLATE_LANGS or not lines:
+            raise TranslateInvalid("Bu şarkının sözleri çevrilemez.")
+        path = song_dir / "translation.json"
+        items = {}
+        if path.exists() and not replace:
+            try:
+                old = json.loads(path.read_text(encoding="utf-8"))
+                if old.get("lang") == lang:
+                    items = dict(old.get("items") or {})
+            except (OSError, ValueError):
+                items = {}
+        todo = _tr_missing(lines, items)
+        used = []
+        katsu = None
+        if lang == "ja":
+            try:
+                import cutlet
+
+                katsu = cutlet.Cutlet()
+                katsu.use_foreign_spelling = False          # katakana dış sözcükleri İngilizceye çevirme
+            except Exception as error:
+                print(f"[ceviri] cutlet yuklenemedi: {type(error).__name__}: {error}")
+        if todo:
+            key = os.environ["GEMINI_API_KEY"]
+            models = _tr_models()
+            results = _tr_run(lang, lines, todo, lang == "ja",
+                              lambda system, user, schema: _tr_call(key, models, system, user, schema, used=used))
+            items = _tr_apply(items, lines, results, lang, katsu)
+        version = int(time.time())
+        out = {"schema": 1, "lang": lang, "target": "tr", "version": version,
+               "model": used[-1] if used else (doc_model(path) if path.exists() else None), "items": items}
+        tmp = path.with_name("translation.json.tmp")
+        tmp.write_text(json.dumps(out, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, path)                                # önce dosya (atomik), SONRA status
+        view, missing = _tr_lines_view(lines, items)
+        seconds = round(time.time() - started, 1)
+        _write_status(song_id, translation={
+            "state": "done", "lang": lang, "version": version, "lines": len(lines), "missing": missing,
+            "translated_now": len(todo), "model": out["model"], "seconds": seconds,
+            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+        print(f"[ceviri] {lang}: {len(todo)} satir cevrildi, {missing} eksik, model {out['model']}, {seconds} sn")
+        return _assert_plain({"song_id": song_id, "state": "done", "lines": len(lines), "translated": len(todo),
+                              "missing": missing, "seconds": seconds})
+    except Exception as error:
+        message = error.message if isinstance(error, TranslateError) else f"{type(error).__name__}: {error}"[:300]
+        code = error.code if isinstance(error, TranslateError) else "error"
+        with contextlib.suppress(Exception):
+            volume.reload()
+            _write_status(song_id, translation={
+                "state": "error", "code": code, "message": message[:300],
+                "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+        print(f"[ceviri] HATA ({code}): {message}")
+        return _assert_plain({"song_id": song_id, "state": "error", "code": code, "message": message[:300]})
+
+
+def doc_model(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("model")
+    except (OSError, ValueError):
+        return None
+
+
+@app.function(image=light_image, secrets=[modal.Secret.from_name(TRANSLATE_SECRET_NAME, required_keys=["GEMINI_API_KEY"])],
+              timeout=120)
+def translate_models_run() -> list:
+    """Anahtarın görebildiği, generateContent destekleyen Gemini model adları (anahtar basılmaz)."""
+    import urllib.request
+
+    request = urllib.request.Request("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+                                     headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    return sorted(str(m.get("name", "")).replace("models/", "") for m in data.get("models", [])
+                  if "generateContent" in (m.get("supportedGenerationMethods") or []) and "gemini" in str(m.get("name", "")))
+
+
+@app.local_entrypoint()
+def translate_models():
+    """Hangi Gemini modelleri kullanılabilir: modal run backend/app.py::translate_models"""
+    for name in translate_models_run.remote():
+        print(name)
+
+
+# --------------------------------------------------------------------------
 # Miks dışa aktarma (Aşama 12)
 #
 # Mikserde ayarlanan hâl TEK ses dosyası olarak SUNUCUDA hazırlanır: 24-bit master
@@ -6227,6 +6759,8 @@ def api():
                         "lyrics_version": (data.get("lyrics") or {}).get("version"),
                         "lyrics_source": (data.get("lyrics") or {}).get("source"),
                         "lyrics_stale": _lyr_stale(data),
+                        "translation_state": (data.get("translation") or {}).get("state"),
+                        "translation_version": (data.get("translation") or {}).get("version"),
                     }
                 )
             return found
@@ -6396,6 +6930,8 @@ def api():
             raise HTTPException(status_code=400, detail=problem)
         if _lyrics_is_running(status):
             return {"id": song_id, "state": "running", "existing": True}
+        if _tr_is_running(status):
+            raise HTTPException(status_code=409, detail="Soz cevirisi surerken sozler degistirilemez")
         previous = status.get("lyrics") or {}
         if (mode == "auto" and not replace
                 and previous.get("state") in ("done", "no_vocals", "no_lyrics")):
@@ -6489,6 +7025,76 @@ def api():
              "source": lyr.get("source"), "language": lyr.get("language"),
              "version": lyr.get("version"), "warning": lyr.get("warning"),
              "lyrics": json.loads(raw.decode("utf-8"))},
+            headers={"Cache-Control": "private, max-age=0, must-revalidate"})
+
+    # ---------------- söz çevirisi (Aşama 14) -----------------------------------
+
+    async def read_json_file(path: pathlib.Path):
+        """Volume'daki JSON dosyası (başka konteynerin commit'i için bir kez zorla yenile), yoksa None."""
+        if not await asyncio.to_thread(path.exists):
+            await gate.refresh(force=True)
+            if not await asyncio.to_thread(path.exists):
+                return None
+        raw = await asyncio.to_thread(_read_slice, path)
+        return json.loads(raw.decode("utf-8"))
+
+    @web.post("/songs/{song_id}/translate")
+    async def start_translate(song_id: str, request: Request, _=auth):
+        """Sözleri Türkçeye çevirir (ve Japoncada okunuş ekler). Gövde (isteğe bağlı): {"replace": false}.
+
+        Yalnız en/ja sözler (Türkçe 400). Çevirisi olmayan satırlar (yeni/değişen metin) çevrilir; hepsi
+        varsa yeniden iş yok (`existing`). `replace: true` hepsini baştan çevirir. Durum: GET .../translation.
+        """
+        replace = False
+        with contextlib.suppress(ValueError, TypeError):
+            body = await request.json()
+            replace = isinstance(body, dict) and body.get("replace") is True
+        await gate.refresh(force=True)
+        status = await require_status(song_id)
+        if _lyrics_is_running(status):
+            raise HTTPException(status_code=409, detail="Sozler hazirlanirken cevrilemez")
+        if (status.get("lyrics") or {}).get("state") != "done":
+            raise HTTPException(status_code=409, detail="Once sozler gerekli")
+        doc = await read_json_file(_song_dir(song_id) / "lyrics.json")
+        lines = [str(item.get("text") or "") for item in (doc or {}).get("lines") or []]
+        if not lines:
+            raise HTTPException(status_code=409, detail="Once sozler gerekli")
+        lang = doc.get("language")
+        if lang == "tr":
+            raise HTTPException(status_code=400, detail="Turkce sozler cevrilmez")
+        if lang not in TRANSLATE_LANGS:
+            raise HTTPException(status_code=400, detail="Bu dildeki sozler cevrilemez")
+        if _tr_is_running(status):
+            return {"id": song_id, "state": "running", "existing": True}
+        existing = await read_json_file(_song_dir(song_id) / "translation.json")
+        items = dict((existing or {}).get("items") or {}) if existing and existing.get("lang") == lang and not replace else {}
+        todo = _tr_missing(lines, items)
+        if not todo and not replace:
+            return {"id": song_id, "state": "done", "existing": True, "missing": 0}
+        await asyncio.to_thread(_write_status, song_id, translation={
+            "state": "running", "started": int(time.time()), "lang": lang, "todo": len(todo)})
+        call = translate_lyrics.spawn(song_id, replace)
+        return {"id": song_id, "state": "running", "lang": lang, "todo": len(todo), "call_id": str(call.object_id)}
+
+    @web.get("/songs/{song_id}/translation")
+    async def get_translation(song_id: str, _=auth):
+        """Çeviri, sözlerin GÜNCEL satırlarına hizalı: lines[i] = {tr, ro?} ya da null (çevrilmedi).
+        Metni değişen satır null olur (`missing`); zamanlar/sıra değişse de çeviri korunur."""
+        await gate.refresh()
+        status = await require_status(song_id)
+        doc = await read_json_file(_song_dir(song_id) / "lyrics.json")
+        stored = await read_json_file(_song_dir(song_id) / "translation.json")
+        if not doc or not stored:
+            raise HTTPException(status_code=404, detail="Ceviri yok")
+        lines = [str(item.get("text") or "") for item in doc.get("lines") or []]
+        view, missing = _tr_lines_view(lines, stored.get("items") or {})
+        record = status.get("translation") or {}
+        running = _tr_is_running(status)
+        return JSONResponse(
+            {"state": "running" if running else record.get("state"), "code": record.get("code"),
+             "message": record.get("message"), "lang": stored.get("lang"), "version": stored.get("version"),
+             "model": stored.get("model"), "missing": missing, "has_reading": stored.get("lang") == "ja",
+             "lines": view},
             headers={"Cache-Control": "private, max-age=0, must-revalidate"})
 
     # ---------------- miks dışa aktarma (Aşama 12) ------------------------------
@@ -6708,6 +7314,9 @@ def api():
         if _export_is_running(status):
             raise HTTPException(status_code=409,
                                 detail="Disa aktarma surerken yeniden islenemez")
+        if _tr_is_running(status):
+            raise HTTPException(status_code=409,
+                                detail="Soz cevirisi surerken yeniden islenemez")
         chosen = quality if quality in QUALITIES else DEFAULT_QUALITY
         call = separate.spawn(song_id, chosen, True)
         return {"id": song_id, "call_id": str(call.object_id),

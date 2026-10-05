@@ -754,7 +754,7 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
    vuruşa nabız / ikisi / kendi dosyam (200 MB üstü uyarı); tek ayar `settings.lyricsBg`, ⚙ ekrandaki panelden ve Ayarlar'dan seçilir. Yalnız transform+opacity; ekran kapalıyken ya da uygulama
    arka plandayken her şey durur (Wake Lock dahil). Testler: beatpulse_test, lyricsscreen_test (sahte DOM, aç/kapa sızıntısı), engine_leak_test'e ekran bölümü. Hiza testi bu turda yeniden koşulmadı.
 
-12. [ ] **Aşama 14 - söz çevirisi: PLAN HAZIR (2026-10-05, araştırma turu, KOD YOK).** Yabancı şarkılarda her söz satırının altında soluk (1) doğal Türkçe çeviri,
+12. [ ] **Aşama 14 - söz çevirisi: OTURUM 1 (backend) YAPILDI ve YAYINDA (2026-10-05); okunuş seçimi ve arayüz sırada.** (Plan ve kararlar aşağıda.) Yabancı şarkılarda her söz satırının altında soluk (1) doğal Türkçe çeviri,
    (2) Japonca şarkılarda okunuş (romaji); ikisi ayrı açılıp kapanır; panelde ve tam ekranda, sözlerle birlikte akar.
    - **Model: Gemini ücretsiz katman (öneri).** Doğrulandı (ai.google.dev, 2026-10-05): Gemini 3.x Flash modelleri ücretsiz katmanda "free of charge";
      Türkiye desteklenen bölgede; kart gerekmez (PLAN kuralı: kredi kartı gerektiren servis yok). Ücretsiz katman limitleri belgede SAYI olarak yok, AI Studio'dan
@@ -781,6 +781,17 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      solması ve kaydırma okunurluğu aynen çalışır; satır yüksekliği değişse de tam ekran konumu `offsetTop`'tan hesaplandığı için sorun yok). Söz panelinde "Çeviri" ve
      "Okunuş" açma/kapama çipleri (veri varken), yoksa "Çevir" çipi (yalnız yabancı dilde, çevrimdışıyken pasif). Açık/kapalı tercihi cihazda, TÜM şarkılar için tek;
      tam ekranda ⚙ paneline de konur. Çeviri cihaz önbelleğinde (`stem-mikser.translation.<id>`, 40 şarkı LRU, sözler gibi), çevrimdışı açılır; şarkı silinince gider.
+   - **OTURUM 1 YAPILDI (2026-10-05), `modal deploy` yapıldı, arayüz YOK.** `translate_lyrics` (CPU, `translate_image` = light + cutlet 0.5.2/fugashi/unidic-lite; secret
+     `stem-mikser-gemini` yalnız bu işe bağlı), `POST /songs/{id}/translate` {replace}, `GET /songs/{id}/translation` (sözlerin güncel satırlarına HİZALI `lines[i] = {tr, ro?, rg?, rd?} | null`,
+     `missing`, `state/code/message`), `status.translation`, `/songs`: `translation_state/version`. Çeviri sürerken söz çıkarma/hizalama, silme, yeniden işleme 409; "Zamanı düzelt" serbest.
+     Model: `GEMINI_MODEL` secret'ta YOK (eklemek gerekmiyor); varsayılan `gemini-3.8-flash`, yedek `gemini-3.5-flash-lite` (modeller `modal run backend/app.py::translate_models` ile
+     doğrulandı; adlar değişirse secret'a `GEMINI_MODEL` / `GEMINI_FALLBACK_MODEL` eklenir). 429/5xx/ağ: 3 sn + 8 sn bekleyip aynı modelde yeniden, olmazsa hafif modele (aynı kurallar), o da olmazsa
+     "Çeviri servisi şu an meşgul, biraz sonra tekrar dene." (kod `busy`). 404 model yok -> beklemeden sonrakine; 403 anahtar hatası; güvenlik/RECITATION engeli -> `refused`.
+     **Canlı:** NEM (en, 39 satır/19 benzersiz) 16 sn, `gemini-3.8-flash`; Ado (ja, 61 satır/58 benzersiz) 46-61 sn: ana model BU istekte 503 verdi (23 sn sonra) ve yedek `gemini-3.5-flash-lite`
+     devreye girdi (canlıda doğrulandı). Satır eşleşmesi ilk denemede tuttu (yeniden deneme/parçalama gerekmedi). Çeviri kalitesi iyi (idiomlar uyarlanıyor).
+     **Okunuş (Ado, 61 satır):** A = cutlet(metin), B = Gemini hiragana okuması -> sözlüksüz kana-Hepburn (+ kanayla ~%88 örtüşen kelime-boşluklu `rm`). 19/61 satırda fark; B şiirsel/söylenen okumada
+     daha iyi (皆 minna, 愚か oroka, 私 watashi, 何回 nankai), A tutarlı ama bağlamsız kanjide hatalı ve Whisper'ın bozuk metnine (ör. "っちゃな頃") bağımlı. KARAR kullanıcıda (bkz. sonraki tur).
+     Testler: tests/test_translate_gate.py (67), tests/test_translate_api.py (31); canlı deneme aracı tests/translate_live.py (token dosyadan, yazdırılmaz; çıktı gitignore'lı lyrics_out/).
    - **Sıra:** (1) backend çeviri + secret + gate/api testleri + Ado/NEM'de canlı doğrulama, (2) okunuş (cutlet) + ölçüm, (3) arayüz (panel, tam ekran, önbellek, mock) + telefon.
      ~3 oturum. **Test:** sahte HTTP ile saf işlevler (istem, doğrulama, eşleme, yeniden deneme, parçalama) `tests/test_translate_gate.py`; uçlar `test_translate_api.py`;
      mock sunucuda sentetik çeviri; GERÇEK sözler yalnız gitignore'lı `backend/lyrics_ref/` + `lyrics_out/` ile elle `modal run backend/app.py::translate_probe`
