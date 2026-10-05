@@ -828,6 +828,62 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      mock sunucuda sentetik çeviri; GERÇEK sözler yalnız gitignore'lı `backend/lyrics_ref/` + `lyrics_out/` ile elle `modal run backend/app.py::translate_probe`
      (satır sayısı eşleşme oranı, yeniden deneme sayısı, süre; çeviri kalitesini kullanıcı okur). Testlere ve commit'e gerçek söz GİRMEZ.
 
+13. [ ] **Aşama 15 - kanal başına pan / 3 bantlı EQ / yankı gönderimi + ortak yankı + "Slowed + reverb" ön ayarı: PLAN HAZIR (2026-10-05, araştırma turu, KOD YOK).**
+   - **Ses grafiği:** kanal başına şerit = kaynak -> `gainNode` (fader/mute, MEVCUT) -> bas rafı (lowshelf) -> orta (peaking) -> tiz rafı (highshelf) -> `StereoPanner` -> hedef (esnetici girişi ya da master);
+     panner çıkışından ayrıca `send` gain'i -> TEK ortak gönderim barası -> `ConvolverNode` -> yine esnetici girişine. HEPSİ ESNETİCİDEN ÖNCE: esnetici tek düğüm ve kanalların TOPLAMINI işliyor,
+     kanal başına işi sonrasına koymak ikinci bir esnetici (en pahalı kalem) demek. D gecikmesi değişmez: biquad/panner/gönderim gain'i ve Web Audio ConvolverNode sıfır gecikmeli (hiza testine
+     "EQ+pan+yankı açık" satırı eklenir, eşik ±10 ms aynı). Gönderim `gainNode`'dan SONRA (fader/mute/solo yankıyı da keser: susan kanal yankı vermez). Döngü dikiş çukuru master'dan sonra (`seamGain`)
+     ve değişmez; yankı kuyruğu native döngüde dikişi doğal yumuşatır. Konvolver `normalize = false` (kendi ölçeğimiz, sunucuyla aynı) ve her `play()`te yeniden kurulur (esnetici gibi: seek/duraklatta eski
+     kuyruk yeni konuma sızmasın). BYPASS GERÇEK: nötr kanalda (pan 0, EQ 0, gönderim 0) şerit zincire hiç bağlanmaz (`gainNode` doğrudan hedefe, bugünkü davranış); hiçbir kanalda gönderim yoksa konvolver ve
+     gönderim barası da bağlanmaz. Nötr <-> nötr değil geçişi kimlik filtresine bağlanmak olduğu için tıksız. Regroup (alt kanal açma/kapama): şerit fabrikası `#newStrip` / `#disposeStrip`; alt kanalın
+     etkin değeri = kendi + ana kanalın (pan toplanıp [-1,1]'e kırpılır, EQ dB toplanır, gönderim toplanıp kırpılır) — fader çarpımıyla aynı mantık (`mixmemory.effective*`, testli).
+   - **Yankı:** dış dosya YOK. Prosedürel impuls yanıtı: sabit tohumlu PRNG (mulberry32), 44100 Hz'de tanımlı, stereo (iki kanal ilintisiz), ön gecikme + seyrek erken yansımalar + üstel sönen gürültü, süreyle
+     artan tek kutuplu alçak geçiren (hava sönümü). Ayarlar: oda büyüklüğü (ön gecikme + yansıma aralığı) ve süre (RT60 0,4-3 sn, sınır 3 sn); bağlam hızına doğrusal yeniden örnekleme. Aynı algoritma Python'da
+     (stdlib `array`/`wave`, numpy gerekmez); JS<->Python örnek eşitliği testle (ilk N örnek + hash).
+   - **Telefon CPU:** 11 kanal x (3 biquad + panner) yaklaşık 11x2x3x48000x~10 işlem = ~30 MFLOP/s, <%1 çekirdek (biquad/panner kuantum başı); tek stereo konvolver (<=2,5 sn, 2 kanal x 120 bin örnek) FFT bölümlü,
+     tahmin tek çekirdeğin %3-8'i; ESNETİCİ (Signalsmith) baskın kalem. Önlem: bypass, mobilde varsayılan süre üst sınırı 2 sn, gerekirse mono IR (yarı maliyet). ÖLÇÜM: OfflineAudioContext ile (düğüm
+     başına maliyetin ölçüldüğü yöntemle; `bench.html`'e satır): 6/11 kanal, esnetici açık/kapalı, +EQ/pan, +konvolver, masaüstü + telefon; kabul: toplam artış <=%10 ve telefonda canlı çalmada kesinti yok.
+   - **Arayüz:** kanal satırı bugün isim+simge, fader, dB, S, M, indirme menüsü (küçük ekranda dolu). Yeni düğme EKLEMEK yerine isim/simgeye dokununca alttan açılan KANAL AYARI sayfası (dışa aktarma sayfası gibi, geri-tuşu
+     katmanı "channel-fx", arka plan karartması YOK ki çalarken ayar yapılsın): Pan (-100..100, çift dokunuş = orta), Bas / Orta / Tiz (±12 dB), Yankı gönderimi (%0-100), "Sıfırla". Ayarlı kanalın satırında küçük
+     nokta. Ortak yankı için mikser çubuğunda "Yankı" çipi: aynı biçimde sayfa (Oda: küçük/orta/büyük/salon + süre + yankı seviyesi). Ön ayarlara "Slowed + reverb" çipi.
+   - **Hafıza/ön ayar:** kayıt `v:1` kalır, EKLEMELİ alanlar: kanal girdisine isteğe bağlı `pan`, `eq:[bas,orta,tiz]`, `send`; kayda `room:{size,decay,level}`. Eski kayıt aynen okunur (alan yoksa nötr); `DEFAULT_STEM` ve
+     `isDefaultMix` yeni alanları kapsar (hepsi nötrse kayıt silinir). "Sıfırla" ve her ön ayar `cleanStates` ile BAŞLAR => yeni alanlar da sıfırlanır; oda varsayılana döner. "Slowed + reverb" = "Plak gibi" kipi AÇIK + hız ~0,85 (ton kendiliğinden 12·log2(0,85) = -2,81 yarım ton; tam yarım ton
+     sınırı ve esnetici yaklaşıklığı artık gerekmez) + tüm kanallara gönderim (vokal biraz fazla) + büyük oda; hız/ton/kip uygulama durumunda (kayda girmez), ön ayar eşleşmesi
+     (`presetLabel`) yeni alanları da karşılaştırır.
+   - **Dışa aktarma:** istek gövdesine kanal başına `pan/eq/send` + `room` (sunucu doğrular, hash'e girer; yoksa nötr = eski davranış). ffmpeg: dosya başına `volume` -> `pan` (Web Audio StereoPanner stereo formülü: pan<=0: L=inL+inR*cos(x pi/2),
+     R=inR*sin(x pi/2), x=pan+1; pan>0: L=inL*cos(x pi/2), R=inR+inL*sin(x pi/2), x=pan; `pan=stereo|c0=..|c1=..` sabit katsayılar) -> `lowshelf` (slope 1, Web Audio ile aynı RBJ S=1) -> `equalizer` (peaking, Q) -> `highshelf`;
+     her kanaldan `asplit`: kuru toplama + `volume=send` -> gönderim toplamı -> `afir` (IR = aynı prosedürden üretilmiş geçici WAV, `irnorm=0`, ölçek bizim) -> kuruya toplanır. SIRA uygulamadaki gibi: yankı rubberband'dan ÖNCE
+     (hız/ton açıkken IR süresi hıza göre ölçeklenir; sınırlar ölçümle). `export_mix` şu an `light_image` (yalnız ffmpeg): IR stdlib ile üretildiği için imaj değişmez. İLK İŞ: canlı konteynerde `ffmpeg -filters` ile afir/lowshelf/highshelf
+     varlığı doğrulanır. FARK ÖLÇÜMÜ: ayni deterministik sentetik giriş (PRNG gürültü + sinüsler) tarayıcıda gerçek şerit kodu + OfflineAudioContext ile ve sunucuda ffmpeg ile işlenir; kanal başına EQ/pan frekans yanıtı farkı (eşik 0,1 dB),
+     tam miks null-testi kalıntısı (hedef <= -40 dB) ve yankı için örnek hizası (0 örnek) + enerji farkı (<=0,5 dB); `export_validate`'e satırlar. Bilinen risk: mobil "Tasarruf" kipinde (mono) panner mono formülüyle çalışır, sunucu stereo.
+   - **Sızıntı:** tüm şerit düğümleri tek fabrika/söküm çiftinden geçer (`#newStrip`, `#disposeStrip`; `#releaseChannelAudio`, `#disposeChannels`, regroup, `releaseStems` hepsi bunu çağırır); sayaçlar gain sayacı gibi
+     (`nodesCreated/Released`, `liveNodes`), konvolver ve gönderim barası ömrü (bağlam başına bir, konvolver play başına) sayılır. `engine_leak_test`: sahte bağlam `createBiquadFilter/createStereoPanner/createConvolver` kazanır; 30-40 açılış,
+     çal/dur, parametre değişimi, aç/kapa (regroup), iki grup arası geçişten sonra bağlı düğüm sayısı == beklenen (nötr şeritler 0 ek düğüm bağlı) ve `releaseStems` sonrası 0; tohumlu IR üretimi için ayrı node testi.
+   - **"PLAK GİBİ" KİPİ (Tempo/Ton paneli anahtarı; EK, 2026-10-05):** açıkken tempo ve ton BAĞLI (ton = 12·log2(tempo oranı)), tempo kaydırılınca ton kendiliğinden kayar, ton kaydırıcısı kilitli ve türetilen
+     değeri gösterir ("-2,8 yarım ton"), ESNETİCİ KURULMAZ. Motorda bu zaten doğal yol: kaynaklar `playbackRate = rate` ile çalıyor ve perdeyi kendisi taşıyor; bugün perdeyi esnetici düzeltiyor. Yapılacak: `Engine.vinyl`
+     bayrağı => `stretchActive = !vinyl && !isBypass(...)`; `setTempoAndPitch` vinyl'da düğüme dokunmadan `source.playbackRate`'i canlı günceller (şimdi o satır yalnız `nowActive` dalında) ve gecikmeyi 0 yazar
+     (D = 0: metronom/ikili saat formülü aynı, yeniden çıpalama aynı); kip açma/kapama bypass sınırı gibi tek yeniden başlatma (konum korunur). Döngü (native loop + `playbackRate`) ve dikiş çukuru D=0 ile aynen çalışır.
+     Arayüz: panelde "Plak gibi" anahtarı; AÇARKEN ton kaydırıcısının önceki bağımsız değeri unutulmaz değil, KAPATIRKEN ton = round(12·log2(oran)) (±6'ya kırpılır) olur ki duyulan perde sıçramasın (esnetici
+     aynı sesi korur); BPM göstergesi aynı, anahtar/akor şeridi ton için en yakın yarım tonu kullanır (cent farkı >15 ise "≈"). Tempo aralığı aynı (±%50 => ton -12..+7 yarım ton). Sıfırla/"Orijinale geri dön" yalnız
+     tempoyu sıfırlar (kip kalır). Hız/ton/kip oturum durumu (bugünkü gibi kayda girmez). DIŞA AKTARMA: istek `vinyl: true` + `rate`; sunucu rubberband yerine `asetrate=<sr·oran>,aresample=<sr>` (gerçek plak
+     hızlandırması, uygulamanın `playbackRate`'iyle aynı mantık; bölge kırpma esnetmeden önce, çıktı süresi bölge/oran), `semitones` verilmez/0; hash'e girer; dosya adı kuyruğu "0.85x plak". Ölçüm: sentetik sinüsle
+     frekans = f·oran ve süre (mevcut `export_validate` ton satırlarının aynısı) + tarayıcı<->sunucu null-testi (yeniden örnekleme kalitesi farkı). TESTLER: node (`vinylPitch`, tempo<->ton eşlemesi, kip geçişinde ton değeri),
+     `engine_leak_test` (vinyl'da esnetici düğümü HİÇ kurulmaz, kaynak `playbackRate` = oran, kip değişiminde tek yeniden başlatma, 40 geçişte sızıntı yok), hiza testine "plak gibi 0.8x" satırı (D=0, eşik ±10 ms; döngü ve
+     canlı hız değişimi dahil). Etkisi: telefonda esnetici CPU'su tamamen kalkar (en ağır kalem); "Slowed + reverb" bu kipi kullanır, yankı bu kipte TAM gerçek plak modeli (önce yavaşlat, sonra yankı ekle).
+   - **0. OTURUM YAPILDI (2026-10-05), SW v45, `modal deploy` yapıldı:** "Plak gibi" kipi. `vinyl.js` (saf: `vinylPitch`, `nearestSemitone`, `keyShift`, `formatPitch`), `Engine.vinyl` (`stretchActive = !vinyl && !isBypass`;
+     `setTempoAndPitch(rate, semis, latency, vinyl = this.vinyl)`: vinyl'da ton 0, gecikme 0, esnetici kurulmaz, `playbackRate` canlı güncellenir; esnetici<->vinyl geçişi tek yeniden başlatma), panelde "Plak gibi" anahtarı (açıkken ton
+     kaydırıcısı kilitli ve türetilen perdeyi gösterir; kapatırken ton = en yakın tam yarım ses, ±6), anahtar/akor şeridi en yakın yarım sesi kullanır ("≈" 15 cent üstü), dışa aktarma `vinyl: true` + oran (ton verilirse 400;
+     yalnız açıkken spec'te anahtar var => eski hash'ler değişmez); sunucu `asetrate=44100·oran,aresample=44100` (A-B kırpma önce, limiter sonra; rubberband YOK). Testler: `tests/vinyl_test.mjs` (saf + sahte bağlam: esnetici yok,
+     playbackRate, canlı değişimde yeniden başlatma yok, kip kapanışında tek geçiş, döngü, 40 geçiş sızıntısı), `exportmix_test`, `test_export_gate` (92), hiza testine "plak gibi 0.8x" ve "plak gibi canlı 0.8x -> 1.1x" satırları,
+     canlı `export_validate` F6 (352,0 Hz / 12,495 sn) ve F7 (550,0 Hz / 7,995 sn) geçti (16/16).
+   - **DIŞA AKTARMA (3. oturum) İÇİN SIRA NOTU (kullanıcı, 2026-10-05):** uygulamada sıra "kaynak hızı (playbackRate) -> EQ/pan/yankı -> esnetici ton düzeltmesi". Dışa aktarma AYNI sırayı izler: `asetrate+aresample` ile hız ->
+     EQ/pan/yankı (kanal başına şerit, gönderim toplamı, `afir`) -> YALNIZ ton düzeltmesi için rubberband (plak gibi kipte rubberband HİÇ yok). Böylece yankı kuyruğu uygulamadakiyle aynı işlenir (IR gerçek saniyede, hızlandırılmış
+     sinyal üzerinde) ve null-testi anlamlı olur. Bağımsız kipte hız için de "kaynak hızı" adımı gerekir: oran != 1 ise önce `asetrate+aresample` (perde oranla kayar), sonra rubberband YALNIZ `pitch = istenen ton / oran` ile
+     perdeyi düzeltir (tempo=1). Bugünkü tek adımlı rubberband (tempo+pitch) EQ/pan/yankı yokken aynen kalabilir (nötr şeritte sıra fark etmez); sıra değişikliği ancak şerit/yankı varken uygulanır. Daha önceki not
+     ("yankı rubberband'dan ÖNCE, IR süresi hıza göre ölçeklenir") bununla DEĞİŞTİ: IR ölçeklenmez, hızlandırılmış sinyale gerçek saniyede uygulanır.
+   - **Sıra (~4 oturum; "Plak gibi" bağımsız ve küçük, 0. oturum olarak ÖNCE yapılabilir):** (0) "Plak gibi" kipi (motor + panel + dışa aktarma + testler); (1) motor: şerit fabrikası + pan/EQ/gönderim + ortak yankı + IR + hafıza alanları + engine_leak/node testleri + hiza satırı + bench ölçümü; (2) arayüz: kanal ayarı sayfası, Yankı sayfası, ön ayar, Sıfırla, telefon;
+     (3) dışa aktarma: ffmpeg zinciri + IR eşitlik testi + `export_validate` + tarayıcı<->sunucu fark ölçümü; (4) cila/ayar (telefon CPU sonucuna göre IR süresi/mono IR), gerekirse kesirli ton.
+
 ### Sonra (şimdilik gerek yok)
 **Cep listesi (2026-10-05, kullanıcı; sırasız, hiçbiri başlamadı):** dalga şeritleri; otomatik bölüm tespiti; şarkı söyleme antrenörü;
 akorlu söz sayfası; notaya/MIDI'ye çevirme; akort aleti; çalma listesi (prova modu); kanalları sağa-sola yerleştirme (pan); kanal başına

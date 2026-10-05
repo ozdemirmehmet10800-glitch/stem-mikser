@@ -33,6 +33,7 @@ import {
 } from "./lyrics.js";
 import { LyricsScreen, ROWS_MIN, ROWS_MAX, normalizeRows } from "./lyricsscreen.js";
 import * as TR from "./translation.js";
+import { vinylPitch, nearestSemitone, keyShift, formatPitch } from "./vinyl.js";
 import {
   BG_MODES, BG_LABELS, normalizeBg, wantsPulse, onsetsFromBuffer, pickBeats, readKicks, writeKicks, dropKicks,
   classifyBackground,
@@ -112,6 +113,7 @@ let lastAacDelta = "";
 const RATE_SPAN = 0.5;        // ±%50; MIN_RATE/MAX_RATE ile uyumlu
 let tempoOffset = 0;
 let pitchSemis = 0;
+let vinylMode = false;     // "Plak gibi": tempo ve ton bağlı, esnetici yok (vinyl.js)
 let originalBpm = 0;          // 0 = bilinmiyor
 let originalKey = null;
 let appliedSemis = 0;
@@ -1293,6 +1295,8 @@ async function openSong(song) {
     originalKey = (chords && chords.key) || null;
     tempoOffset = 0;
     pitchSemis = 0;
+    vinylMode = false;
+    if (el("vinyl-toggle")) el("vinyl-toggle").checked = false;
     appliedSemis = 0;
     stretchGen += 1;
     configureTuneRanges();
@@ -1404,10 +1408,16 @@ function currentRate() {
   return Math.min(Math.max(raw, MIN_RATE), MAX_RATE);
 }
 
+// Duyulan perde (tam yarım ses): bağımsız kipte kaydırıcı, plak gibi kipte oranın en yakın yarım sesi.
+function shownSemis() {
+  return vinylMode ? keyShift(currentRate()).shift : pitchSemis;
+}
+
 function effectiveKey() {
   if (!originalKey) return null;
-  if (!pitchSemis) return originalKey;
-  return transposeKey(originalKey, pitchSemis) || originalKey;
+  const semis = shownSemis();
+  if (!semis) return originalKey;
+  return transposeKey(originalKey, semis) || originalKey;
 }
 
 function refreshMeta() {
@@ -1454,8 +1464,14 @@ function refreshTuneUi() {
       : "şarkının temposu bilinmiyor";
   }
 
+  const derived = vinylMode ? vinylPitch(rate) : 0;
   if (el("pitch-value")) {
-    if (originalKey) {
+    if (vinylMode) {
+      const approx = keyShift(rate).approx ? " ≈" : "";
+      el("pitch-value").textContent = originalKey
+        ? (shownSemis() ? `${originalKey} → ${effectiveKey()}${approx}` : originalKey)
+        : formatPitch(derived);
+    } else if (originalKey) {
       el("pitch-value").textContent = pitchSemis
         ? `${originalKey} → ${effectiveKey()}`
         : originalKey;
@@ -1466,16 +1482,25 @@ function refreshTuneUi() {
     }
   }
   if (el("pitch-sub")) {
-    el("pitch-sub").textContent = pitchSemis
-      ? `${signed(pitchSemis)} yarım ses`
-      : "orijinal";
+    el("pitch-sub").textContent = vinylMode
+      ? `${formatPitch(derived)} · tempoya bağlı`
+      : pitchSemis ? `${signed(pitchSemis)} yarım ses` : "orijinal";
   }
 
+  // Plak gibi kipinde ton kaydırıcısı KİLİTLİ: tempoyu izliyor (türetilen değeri gösterir).
+  const pitchRow = el("pitch-range") ? el("pitch-range").closest(".tune-row") : null;
+  if (pitchRow) pitchRow.classList.toggle("locked", vinylMode);
+  for (const id of ["pitch-range", "pitch-minus", "pitch-plus"]) {
+    if (el(id)) el(id).disabled = vinylMode;
+  }
+  if (vinylMode && el("pitch-range")) el("pitch-range").value = String(nearestSemitone(rate));
+  if (el("vinyl-toggle")) el("vinyl-toggle").checked = vinylMode;
+
   if (el("tempo-reset")) el("tempo-reset").disabled = tempoOffset === 0;
-  if (el("pitch-reset")) el("pitch-reset").disabled = pitchSemis === 0;
+  if (el("pitch-reset")) el("pitch-reset").disabled = vinylMode || pitchSemis === 0;
   // Panel kapalıyken de esneticinin açık olduğu düğmeden görünsün.
   if (el("tempo-toggle")) {
-    el("tempo-toggle").classList.toggle("changed", tempoOffset !== 0 || pitchSemis !== 0);
+    el("tempo-toggle").classList.toggle("changed", tempoOffset !== 0 || (!vinylMode && pitchSemis !== 0));
   }
   refreshMeta();
 }
@@ -1492,20 +1517,27 @@ async function applyStretch(measure) {
   const rate = currentRate();
   const semis = pitchSemis;
   refreshTuneUi();
-  if (semis !== appliedSemis) {
-    appliedSemis = semis;
-    strip.setTranspose(semis, originalKey);
+  const shown = shownSemis();
+  if (shown !== appliedSemis) {
+    appliedSemis = shown;
+    strip.setTranspose(shown, originalKey);
   }
 
   const ctx = engine.ctx;
   if (!ctx) return;  // şarkı açılmadan buraya gelinmiyor, yine de korunalı
 
   const gen = ++stretchGen;
+  if (vinylMode) {
+    // Plak gibi: esnetici YOK, gecikme 0, ölçüm yok. Hız yalnız kaynağın playbackRate'inden.
+    await engine.setTempoAndPitch(rate, 0, 0, true);
+    media.updatePosition();
+    return;
+  }
   // İSTENEN değil GERÇEKTEN KURULAN arka ucun gecikmesi: kütüphane
   // yüklenemeyip yedeğe düşüldüyse ölçüm de yedeğe ait olmalı.
   const backend = engine.activeStretcher;
   const guess = estimateLatency(ctx.sampleRate, rate, semis, backend);
-  await engine.setTempoAndPitch(rate, semis, guess);
+  await engine.setTempoAndPitch(rate, semis, guess, false);
   media.updatePosition();
   if (!measure) return;
 
@@ -1513,8 +1545,21 @@ async function applyStretch(measure) {
   // Kullanıcı ölçüm sürerken başka bir değere geçtiyse bu sonuç bayat.
   if (gen !== stretchGen) return;
   if (Math.abs(measured - guess) < 0.002) return;
-  await engine.setTempoAndPitch(rate, semis, measured);
+  await engine.setTempoAndPitch(rate, semis, measured, false);
   media.updatePosition();
+}
+
+// "Plak gibi" anahtarı. AÇARKEN ton kaydırıcısı kilitlenir ve tempoyu izler; KAPATIRKEN bağımsız ton, duyulan
+// perdeye en yakın tam yarım ses olur (esnetici aynı sesi korur, perde sıçramaz).
+function setVinylMode(on) {
+  const next = Boolean(on);
+  if (next === vinylMode) return undefined;
+  if (!next) {
+    pitchSemis = nearestSemitone(currentRate());
+    if (el("pitch-range")) el("pitch-range").value = String(pitchSemis);
+  }
+  vinylMode = next;
+  return applyStretch(true);
 }
 
 function clampRange(id, value) {
@@ -1532,6 +1577,7 @@ function setTempoOffset(value, measure) {
 }
 
 function setPitchSemis(value, measure) {
+  if (vinylMode) return undefined;              // plak gibi kipinde ton tempoya bağlı
   const next = clampRange("pitch-range", value);
   if (next === pitchSemis && !measure) return undefined;
   pitchSemis = next;
@@ -1579,6 +1625,7 @@ on("tempo-range", "change", () => setTempoOffset(Number(el("tempo-range").value)
 on("tempo-minus", "click", () => setTempoOffset(tempoOffset - 1, true));
 on("tempo-plus", "click", () => setTempoOffset(tempoOffset + 1, true));
 on("tempo-reset", "click", () => setTempoOffset(0, true));
+on("vinyl-toggle", "change", () => setVinylMode(el("vinyl-toggle").checked));
 
 on("pitch-range", "input", () => setPitchSemis(Number(el("pitch-range").value), false));
 on("pitch-range", "change", () => setPitchSemis(Number(el("pitch-range").value), true));
@@ -1831,13 +1878,14 @@ let exportTicker = 0;
 function exportOptions() {
   const rate = engine.rate;
   const semis = engine.semitones;
+  const vinyl = engine.vinyl;
   const tempoChanged = rate !== 1 || semis !== 0;
   const hasLoop = loopA !== null && loopB !== null && loopB - loopA >= 0.1;
   return {
     format: document.querySelector('input[name="export-format"]:checked')?.value === "wav" ? "wav" : "m4a",
     useTempo: el("export-tempo").checked && tempoChanged,
     useRegion: el("export-region").checked && hasLoop,
-    tempoChanged, hasLoop, rate, semis,
+    tempoChanged, hasLoop, rate, semis, vinyl,
   };
 }
 
@@ -1845,7 +1893,7 @@ function exportInputs() {
   const options = exportOptions();
   return {
     channels: engine.channels, masterPercent: masterPercent(),
-    rate: options.rate, semitones: options.semis,
+    rate: options.rate, semitones: options.semis, vinyl: options.vinyl,
     loop: options.hasLoop ? { a: loopA, b: loopB } : null,
     options, labels: EXPORT_LABELS,
   };
@@ -1873,7 +1921,7 @@ function exportRefreshForm() {
 
   el("export-tempo").disabled = busy || !options.tempoChanged;
   el("export-tempo-row").classList.toggle("disabled", !options.tempoChanged);
-  el("export-tempo-note").textContent = tempoNote(options.rate, options.semis);
+  el("export-tempo-note").textContent = tempoNote(options.rate, options.semis, options.vinyl);
   el("export-region-row").hidden = !options.hasLoop;
   el("export-region").disabled = busy;
   el("export-region-note").textContent = options.hasLoop ? regionNote({ a: loopA, b: loopB }) : "";

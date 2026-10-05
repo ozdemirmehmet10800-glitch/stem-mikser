@@ -364,8 +364,12 @@ export async function runAlignmentCheck(report = () => {}, options = {}) {
 
     const applyRate = async (rate) => {
       const latency = await measureLatency(sampleRate, rate, 0, stretcher);
-      await engine.setTempoAndPitch(rate, 0, latency);
+      await engine.setTempoAndPitch(rate, 0, latency, false);
       return latency;
+    };
+    // "Plak gibi": esnetici yok, gecikme 0, hız yalnız kaynağın playbackRate'inden.
+    const applyVinyl = async (rate) => {
+      await engine.setTempoAndPitch(rate, 0, 0, true);
     };
     const startFrom = async (time) => {
       await engine.seek(time);
@@ -418,6 +422,35 @@ export async function runAlignmentCheck(report = () => {}, options = {}) {
         "yalnız değişim sonrası"
       )
     );
+    await wait(200);
+
+    // --- 4b: plak gibi kipi (esnetici YOK): sabit hız ve canlı değişim ---
+    report("plak gibi 0.8x ölçülüyor…");
+    await applyVinyl(0.8);
+    clear();
+    listen(true);
+    await startFrom(0);
+    const vinylNode = engine.stretchNode;     // null olmalı
+    await wait(WINDOW_MS);
+    halt();
+    listen(false);
+    rows.push(describe("Metronom hizası · plak gibi 0.8x", analyse(onsets[0], onsets[1]),
+      vinylNode ? "UYARI: esnetici kurulmuş" : "esnetici yok, D = 0"));
+    await wait(200);
+
+    report("plak gibi canlı değişim (0.8x → 1.1x) ölçülüyor…");
+    await applyVinyl(0.8);
+    clear();
+    listen(true);
+    await startFrom(0);
+    await wait(3500);
+    await applyVinyl(1.1);
+    await wait(500);
+    clear(); // yalnız DEĞİŞİMDEN SONRASI sayılsın
+    await wait(WINDOW_MS);
+    halt();
+    listen(false);
+    rows.push(describe("Metronom hizası · plak gibi canlı 0.8x → 1.1x", analyse(onsets[0], onsets[1]), "yalnız değişim sonrası"));
     await wait(200);
 
     // --- 5: seek sonrası bayat ses + konum ------------------------------

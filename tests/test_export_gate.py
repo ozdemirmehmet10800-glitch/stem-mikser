@@ -185,6 +185,20 @@ def main():
     check("komut: sinirlayici hiz/ton'dan SONRA", g.index("rubberband") < g.index("alimiter"))
     check("komut: ses ornekleme 44100", wav[wav.index("-ar") + 1] == "44100")
 
+    # --- plak gibi (vinyl): rubberband yok, asetrate+aresample
+    vspec, vproblem = chk(body(rate=0.85, vinyl=True, region={"a": 10, "b": 20}, format="wav"))
+    check("vinyl: kabul, spec'te vinyl", vproblem is None and vspec["vinyl"] is True and vspec["rate"] == 0.85 and vspec["semitones"] == 0, str(vproblem))
+    vcmd = app._export_command(vspec, paths, "/w/out.wav")
+    vg = vcmd[vcmd.index("-filter_complex") + 1]
+    check("vinyl komutu: rubberband YOK, asetrate = 44100 x oran + aresample", "rubberband" not in vg and "asetrate=37485.0000,aresample=44100" in vg, vg)
+    check("vinyl komutu: bolge kirpma asetrate'ten ONCE, limiter SONRA", vg.index("atrim=start=10.000") < vg.index("asetrate") < vg.index("alimiter"), vg)
+    check("vinyl: ton ayri verilirse 400", chk(body(rate=0.85, vinyl=True, semitones=2))[1] is not None)
+    check("vinyl: bool degilse 400", chk(body(rate=0.85, vinyl="evet"))[1] is not None)
+    plain = chk(body(rate=0.85))[0]
+    check("vinyl kapaliyken anahtar YOK (eski hash'ler korunur)", "vinyl" not in plain and app._export_hash(plain) != app._export_hash(vspec))
+    check("vinyl + oran 1: etkisiz, anahtar yok", "vinyl" not in chk(body(vinyl=True))[0])
+    check("dosya adi kuyrugu: '0.85x plak'", "0.85x plak" in app._export_filename("Sarki", dict(vspec, label="Miks")))
+
     # --- ölçüm ayrıştırma
     m = app._VOLUMEDETECT_MAX.search("[Parsed_volumedetect_0] max_volume: -0.7 dB\nmean_volume: -17.2 dB")
     check("volumedetect ayristirma", m and m.group(1) == "-0.7")

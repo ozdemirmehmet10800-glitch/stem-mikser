@@ -169,6 +169,9 @@ export class Engine {
     this.activeStretcher = DEFAULT_STRETCHER;  // gerçekten kurulan
     this.onStretcherFallback = null;           // yedeğe düşünce haber ver
     this.formants = false;  // yalnız destekleyen arka uçta anlamlı
+    // "Plak gibi": tempo ve ton BAĞLI, kaynaklar yalnız playbackRate ile çalar (perdeyi çalma hızı taşır);
+    // ESNETİCİ KURULMAZ, gecikme 0. Bkz. vinyl.js.
+    this.vinyl = false;
 
     // --- tanı (diag.js) ve kesinti ---
     this.gainsCreated = 0;
@@ -485,7 +488,7 @@ export class Engine {
   // -------------------------------------------------------- esnetici zinciri
 
   get stretchActive() {
-    return !isBypass(this.rate, this.semitones);
+    return !this.vinyl && !isBypass(this.rate, this.semitones);
   }
 
   #stretchOptions() {
@@ -630,12 +633,14 @@ export class Engine {
    * playbackRate'i ve düğümün parametreleri canlı değişiyor, ardından duyulan
    * konum sürekli kalacak şekilde yeniden çıpalanıyor.
    */
-  async setTempoAndPitch(rate, semitones, latency) {
+  async setTempoAndPitch(rate, semitones, latency, vinyl = this.vinyl) {
+    const nextVinyl = Boolean(vinyl);
     const nextRate = clamp(Number(rate) || 1, MIN_RATE, MAX_RATE);
-    const nextSemis = clamp(
+    // Plak gibi kipte ton ayrı bir değer değil: oranın doğurduğu perde (kaynaktan gelir), esnetici düzeltmez.
+    const nextSemis = nextVinyl ? 0 : clamp(
       Math.round(Number(semitones) || 0), -MAX_SEMITONES, MAX_SEMITONES
     );
-    const nowActive = !isBypass(nextRate, nextSemis);
+    const nowActive = !nextVinyl && !isBypass(nextRate, nextSemis);
     const nextLatency = nowActive
       ? (Number.isFinite(latency) ? latency : this.latency)
       : 0;
@@ -644,6 +649,7 @@ export class Engine {
       this.rate = nextRate;
       this.semitones = nextSemis;
       this.latency = nextLatency;
+      this.vinyl = nextVinyl;
       return;
     }
 
@@ -655,6 +661,7 @@ export class Engine {
       this.rate = nextRate;
       this.semitones = nextSemis;
       this.latency = nextLatency;
+      this.vinyl = nextVinyl;
       this.offset = position;
       await this.play();
       return;
@@ -681,9 +688,13 @@ export class Engine {
     this.rate = nextRate;
     this.semitones = nextSemis;
     this.latency = nextLatency;
+    this.vinyl = nextVinyl;
     if (nowActive) {
       updateNode(this.stretchNode, this.#stretchOptions(), this.activeStretcher,
                  this.ctx.currentTime);
+    }
+    // Hız KAYNAKTAN geliyor: esneticisiz (plak gibi) kipte de, esnetici açıkken de aynı.
+    if (nowActive || nextVinyl) {
       for (const channel of this.channels.values()) {
         if (channel.source) channel.source.playbackRate.value = nextRate;
       }
@@ -695,7 +706,7 @@ export class Engine {
   }
 
   resetTempoAndPitch() {
-    return this.setTempoAndPitch(1, 0, 0);
+    return this.setTempoAndPitch(1, 0, 0, false);       // yeni şarkı: plak gibi kipi de kapanır
   }
 
   // --------------------------------------------------------------- kanallar

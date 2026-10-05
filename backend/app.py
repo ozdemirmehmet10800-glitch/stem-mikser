@@ -6436,6 +6436,11 @@ def _export_check(body, status) -> tuple:
         return None, problem
     if semis != int(semis):
         return None, "semitones tam sayi olmali"
+    vinyl = body.get("vinyl", False)
+    if not isinstance(vinyl, bool):
+        return None, "vinyl true/false olmali"
+    if vinyl and semis != 0:
+        return None, "plak gibi kipte ton ayri verilemez (ton hizdan gelir)"
 
     region = None
     raw_region = body.get("region")
@@ -6467,6 +6472,8 @@ def _export_check(body, status) -> tuple:
         "sub_versions": {cfg["key"]: (status.get(cfg["key"]) or {}).get("version")
                          for cfg in SUB_GROUP_CFG.values()},
     }
+    if vinyl and spec["rate"] != 1.0:
+        spec["vinyl"] = True          # YALNIZ açıkken anahtar var: eski ayarların hash'i (önbellek) değişmez
     return spec, None
 
 
@@ -6489,7 +6496,7 @@ def _export_mmss(seconds: float) -> str:
 def _export_tail(spec: dict) -> str:
     parts = [spec["label"] or "Miks"]
     if spec["rate"] != 1.0:
-        parts.append(f"{spec['rate']:g}x")
+        parts.append(f"{spec['rate']:g}x" + (" plak" if spec.get("vinyl") else ""))
     if spec["semitones"]:
         parts.append(f"{spec['semitones']:+d}")
     if spec["region"]:
@@ -6532,7 +6539,12 @@ def _export_command(spec: dict, paths: dict, out_path, title: str = "") -> list:
             f"afade=t=in:d={EXPORT_FADE_SECONDS}",
             f"afade=t=out:st={max(length - EXPORT_FADE_SECONDS, 0):.3f}:d={EXPORT_FADE_SECONDS}",
         ]
-    if spec["rate"] != 1.0 or spec["semitones"]:
+    if spec.get("vinyl"):
+        # PLAK GİBİ: hız ve ton BAĞLI (uygulamadaki playbackRate ile aynı mantık): örnekleri daha hızlı/yavaş
+        # yorumla, sonra 44,1 kHz'e yeniden örnekle. Rubberband YOK. Bölge kırpma yukarıda (şarkı saniyesinde).
+        tail.append(f"asetrate={EXPORT_SAMPLE_RATE * spec['rate']:.4f}")
+        tail.append(f"aresample={EXPORT_SAMPLE_RATE}")
+    elif spec["rate"] != 1.0 or spec["semitones"]:
         pitch = 2 ** (spec["semitones"] / 12)
         # transients=smooth: ölçüm (saf ton, 5 frekans x 8 hız/ton durumu) varsayılan "crisp" ve
         # "mixed" kipte perdeyi 76 sente (%4) kadar kaydırıyor, "smooth" en kötü 0,4 sent.
@@ -6843,6 +6855,8 @@ def export_validate_run(song_id: str) -> dict:
             ("F3) yalniz hiz 0.8x (ton ayni)", {"rate": 0.8}, 440.0, 12.5),
             ("F4) hiz 1.25x (ton ayni)", {"rate": 1.25}, 440.0, 8.0),
             ("F5) hiz 0.8x + ton +2", {"rate": 0.8, "semitones": 2}, 440.0 * 2 ** (2 / 12), 12.5),
+            ("F6) plak gibi 0.8x (ton hizla duser: 352 Hz)", {"rate": 0.8, "vinyl": True}, 440.0 * 0.8, 12.5),
+            ("F7) plak gibi 1.25x (ton hizla cikar: 550 Hz)", {"rate": 1.25, "vinyl": True}, 440.0 * 1.25, 8.0),
         )
         for name, over, expect_hz, expect_len in cases:
             out, m = render(tone_spec(over), "tone", tone_paths)

@@ -82,6 +82,16 @@ check("istek: ana ses %150 sınırı", r.ok && r.body.master === 1.5);
 r = buildRequest({ channels: mix(), masterPercent: 100, rate: 0.83333333, options: { useTempo: true } });
 check("istek: hız 4 basamağa yuvarlanır", r.ok && r.body.rate === 0.8333);
 
+// --- plak gibi
+r = buildRequest({ channels: mix(), masterPercent: 100, rate: 0.85, semitones: 3, vinyl: true, options: { useTempo: true } });
+check("plak gibi: istekte vinyl + oran, ton GİTMEZ", r.ok && r.body.vinyl === true && r.body.rate === 0.85 && !("semitones" in r.body));
+r = buildRequest({ channels: mix(), masterPercent: 100, rate: 1, vinyl: true, options: { useTempo: true } });
+check("plak gibi + oran 1: vinyl alanı yok", r.ok && !("vinyl" in r.body) && !("rate" in r.body));
+r = buildRequest({ channels: mix(), masterPercent: 100, rate: 0.85, vinyl: true, options: {} });
+check("hız/ton kutusu kapalıysa vinyl de gitmez", r.ok && !("vinyl" in r.body) && !("rate" in r.body));
+check("özet/not: '0,85x plak gibi'", /0,85x plak gibi/.test(summarize({ channels: mix(), labels: LABELS, rate: 0.85, vinyl: true, options: { useTempo: true } }))
+  && tempoNote(0.85, 0, true) === "0,85x plak gibi" && tempoNote(0.85, -3, false) === "0,85x, -3 yarım ton");
+
 // --- özet
 const sum = (over, extra = {}) => summarize({ channels: mix(over, extra.expand), labels: LABELS, ...extra });
 check("özet: örnek cümle", summarize({ channels: mix({ lead: { mute: true } }, true), labels: LABELS, rate: 0.8,

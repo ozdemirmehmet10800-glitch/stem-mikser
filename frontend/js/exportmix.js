@@ -61,7 +61,7 @@ export function presetLabel(channels) {
  *   options: {format, useTempo, useRegion}, loop: {a, b} ya da null (kuruluysa).
  * Dönen: {ok: true, body, label} | {ok: false, problem}.
  */
-export function buildRequest({ channels, masterPercent, rate = 1, semitones = 0, loop = null,
+export function buildRequest({ channels, masterPercent, rate = 1, semitones = 0, vinyl = false, loop = null,
                                options = {} }) {
   const gains = leafGains(channels);
   if (!Object.keys(gains).length) {
@@ -79,9 +79,10 @@ export function buildRequest({ channels, masterPercent, rate = 1, semitones = 0,
   };
   if (options.useTempo) {
     const r = Math.round((Number(rate) || 1) * 10000) / 10000;
-    const s = Math.round(Number(semitones) || 0);
+    const s = vinyl ? 0 : Math.round(Number(semitones) || 0);
     if (r !== 1) body.rate = r;
     if (s !== 0) body.semitones = s;
+    if (vinyl && r !== 1) body.vinyl = true;          // plak gibi: sunucu rubberband yerine asetrate+aresample'ı kullanır
   }
   if (options.useRegion) {
     const region = validLoop(loop);
@@ -116,7 +117,7 @@ export function formatSemitones(semitones) {
  * kapalı kardeşi olan açık alt parçaları ayrıca "açık" diye yazar. Seviye ve ana ses
  * farklıysa onu da söyler. labels: ad -> görünen ad.
  */
-export function summarize({ channels, masterPercent = 100, rate = 1, semitones = 0, loop = null,
+export function summarize({ channels, masterPercent = 100, rate = 1, semitones = 0, vinyl = false, loop = null,
                             options = {}, labels = {} }) {
   const nameOf = (name) => labels[name] || name;
   const leaves = [];
@@ -141,10 +142,10 @@ export function summarize({ channels, masterPercent = 100, rate = 1, semitones =
 
   if (options.useTempo) {
     const r = Number(rate) || 1;
-    const s = Math.round(Number(semitones) || 0);
+    const s = vinyl ? 0 : Math.round(Number(semitones) || 0);
     if (r !== 1 || s !== 0) {
       const bits = [];
-      if (r !== 1) bits.push(formatRate(r));
+      if (r !== 1) bits.push(formatRate(r) + (vinyl ? " plak gibi" : ""));
       if (s !== 0) bits.push(formatSemitones(s));
       parts.push(bits.join(", "));
     }
@@ -156,12 +157,12 @@ export function summarize({ channels, masterPercent = 100, rate = 1, semitones =
 }
 
 /** Hız/ton kutusunun alt yazısı: "0,8x, +2 yarım ton" ya da "şu an orijinal". */
-export function tempoNote(rate, semitones) {
+export function tempoNote(rate, semitones, vinyl = false) {
   const r = Number(rate) || 1;
-  const s = Math.round(Number(semitones) || 0);
+  const s = vinyl ? 0 : Math.round(Number(semitones) || 0);
   if (r === 1 && s === 0) return "şu an orijinal hız ve ton";
   const bits = [];
-  if (r !== 1) bits.push(formatRate(r));
+  if (r !== 1) bits.push(formatRate(r) + (vinyl ? " plak gibi" : ""));
   if (s !== 0) bits.push(formatSemitones(s));
   return bits.join(", ");
 }
