@@ -128,6 +128,7 @@
     <div class="mix-bar">
       <div class="mix-presets" id="mix-presets" role="group" aria-label="Mikser ön ayarları"></div>
       <button type="button" class="chip" id="mix-reset">Sıfırla</button>
+      <button type="button" class="chip" id="room-open" aria-label="Yankı odası">Yankı</button>
       <button type="button" class="chip chip-primary" id="export-open" disabled>Dışa aktar</button>
     </div>
     <div class="mix-notice" id="mix-notice" hidden>
@@ -366,6 +367,40 @@
       </div>
     </form>
   </section>
+
+  <!-- kanal ayarı ve yankı odası (Aşama 15): alttan, geri-tuşu katmanı, karartma YOK (çalarken ayar yapılsın) -->
+  <div class="fx-sheet" id="fx-sheet" hidden>
+    <div class="fx-box" role="dialog" aria-labelledby="fx-title">
+      <div class="fx-head">
+        <h2 id="fx-title">Kanal ayarı</h2>
+        <button type="button" class="icon-btn" id="fx-close" aria-label="Kapat">
+          <svg viewBox="0 0 24 24"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
+        </button>
+      </div>
+      <div id="fx-channel">
+        <div class="fx-row"><label for="fx-pan">Pan</label><output id="fx-pan-val">Orta</output>
+          <input type="range" id="fx-pan" min="-100" max="100" step="1" value="0"></div>
+        <div class="fx-row"><label for="fx-eq0">Bas</label><output id="fx-eq0-val">0 dB</output>
+          <input type="range" id="fx-eq0" min="-12" max="12" step="0.5" value="0"></div>
+        <div class="fx-row"><label for="fx-eq1">Orta</label><output id="fx-eq1-val">0 dB</output>
+          <input type="range" id="fx-eq1" min="-12" max="12" step="0.5" value="0"></div>
+        <div class="fx-row"><label for="fx-eq2">Tiz</label><output id="fx-eq2-val">0 dB</output>
+          <input type="range" id="fx-eq2" min="-12" max="12" step="0.5" value="0"></div>
+        <div class="fx-row"><label for="fx-send">Yankı</label><output id="fx-send-val">%0</output>
+          <input type="range" id="fx-send" min="0" max="100" step="1" value="0"></div>
+        <button type="button" class="btn btn-small" id="fx-channel-reset">Bu kanalı sıfırla</button>
+      </div>
+      <div id="fx-room" hidden>
+        <div class="fx-rooms" id="fx-room-presets" role="group" aria-label="Oda"></div>
+        <div class="fx-row"><label for="fx-decay">Süre</label><output id="fx-decay-val">1,6 sn</output>
+          <input type="range" id="fx-decay" min="0.4" max="3" step="0.1" value="1.6"></div>
+        <div class="fx-row"><label for="fx-level">Seviye</label><output id="fx-level-val">%50</output>
+          <input type="range" id="fx-level" min="0" max="100" step="1" value="50"></div>
+        <small class="fx-note">Yankı kanal başına "Yankı" ayarıyla gönderilir; burası ortak odanın sesi.</small>
+        <button type="button" class="btn btn-small" id="fx-room-reset">Odayı sıfırla</button>
+      </div>
+    </div>
+  </div>
 
   <!-- miksi dışa aktar (Aşama 12) -->
   <div class="export-sheet" id="export-sheet" hidden>

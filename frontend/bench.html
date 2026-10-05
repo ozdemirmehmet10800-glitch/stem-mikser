@@ -68,6 +68,18 @@
 
 <div id="message" class="message" hidden></div>
 
+<h2 style="font-size:16px">0. Kanal şeridi + yankı CPU ölçümü (Aşama 15)</h2>
+<p class="lede">
+  11 kanal (6 ana + 5 alt parça), stereo, esnetici <strong>olmadan</strong>: taban (yalnız gain'ler) &rarr; her kanalda 3 biquad + panner &rarr;
+  + tek ortak konvolver (büyük oda 2,2 sn / salon 3 sn). <code>OfflineAudioContext</code> render süresi / ses süresi; artış tabana göre.
+  Kabul: şerit + yankı toplam artışı küçük kalmalı (hedef &lt; 0,10 oran), telefonda esnetici bunun ÜSTÜNE biner.
+</p>
+<div class="controls"><button class="btn btn-primary" id="run-fx">Şerit + yankı ölçümü</button></div>
+<table id="fx-results">
+  <thead><tr><th>Durum</th><th class="num">Render (sn)</th><th class="num">Oran</th><th class="num">Tabana göre</th></tr></thead>
+  <tbody></tbody>
+</table>
+
 <h2 style="font-size:16px">1. Nesnel ölçüm — gerçek zamandan hızlı mı?</h2>
 <p class="lede">
   <code>OfflineAudioContext</code> ile render edilip duvar saatiyle

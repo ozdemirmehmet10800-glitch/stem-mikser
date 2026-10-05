@@ -4,6 +4,7 @@
 
 import { STEM_ORDER, STEM_LABELS, gainToDb } from "./engine.js";
 import { Fader } from "./fader.js";
+import { isNeutralFx } from "./fx.js";
 
 const ICONS = {
   vocals: '<path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11z"/>',
@@ -37,6 +38,8 @@ export class Mixer {
     // Menü açılıp kapandığında haber veriliyor: geri tuşu katman yığınını
     // buradan öğreniyor (app.js). Mikser history'yi BİLMİYOR.
     this.onMenuChange = null;
+    // Kanal adına/simgesine dokunma: kanal ayarı sayfası (pan, EQ, yankı gönderimi; Aşama 15). app.js verir.
+    this.onFx = null;
     // Menü dışına dokununca kapansın.
     document.addEventListener("pointerdown", (event) => {
       if (this.openMenu && !this.openMenu.contains(event.target)) this.closeMenu();
@@ -192,6 +195,16 @@ export class Mixer {
       label.innerHTML =
         `<svg viewBox="0 0 24 24">${ICONS[name] || ICONS.other}</svg>` +
         `<span>${STEM_LABELS[name] || name}</span>`;
+      label.setAttribute("role", "button");
+      label.tabIndex = 0;
+      label.title = "Kanal ayarı: pan, ekolayzer, yankı";
+      label.addEventListener("click", () => { if (this.onFx) this.onFx(name); });
+      label.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          if (this.onFx) this.onFx(name);
+        }
+      });
 
       const db = document.createElement("div");
       db.className = "channel-db";
@@ -270,6 +283,8 @@ export class Mixer {
         ? members.some((child) => this.engine.isAudible(child))
         : this.engine.isAudible(name);
       parts.row.classList.toggle("audible", heard);
+      // Pan / EQ / yankı gönderimi nötr değilse isimde küçük nokta.
+      parts.row.classList.toggle("has-fx", !isNeutralFx(channel));
     }
     if (notify && this.onChange) this.onChange();
   }

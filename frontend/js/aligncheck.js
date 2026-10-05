@@ -453,6 +453,38 @@ export async function runAlignmentCheck(report = () => {}, options = {}) {
     rows.push(describe("Metronom hizası · plak gibi canlı 0.8x → 1.1x", analyse(onsets[0], onsets[1]), "yalnız değişim sonrası"));
     await wait(200);
 
+    // --- 4c: kanal şeridi + ortak yankı AÇIK (Aşama 15): hiza ve D gecikmesi DEĞİŞMEMELİ ---
+    // Şerit (EQ/pan/gönderim) ve konvolver esneticiden ÖNCE, hepsi sıfır gecikmeli.
+    const withFx = async (on) => {
+      for (const name of engine.channels.keys()) {
+        engine.setChannelFx(name, on ? { pan: 0.3, eq: [3, -2, 2], send: 0.35 } : { pan: 0, eq: [0, 0, 0], send: 0 });
+      }
+      engine.setRoom(on ? { size: 0.7, decay: 2.2, level: 0.6 } : { size: 0.5, decay: 1.6, level: 0.5 });
+    };
+    report("EQ + pan + yankı açıkken 0.8x ölçülüyor…");
+    await withFx(true);
+    await applyRate(0.8);
+    clear();
+    listen(true);
+    await startFrom(0);
+    await wait(WINDOW_MS);
+    halt();
+    listen(false);
+    rows.push(describe("Metronom hizası · EQ + pan + yankı açık, 0.8x", analyse(onsets[0], onsets[1]), "kanal şeridi + ortak yankı, esneticiden önce"));
+    await wait(200);
+
+    report("plak gibi 0.8x + EQ + pan + yankı ölçülüyor…");
+    await applyVinyl(0.8);
+    clear();
+    listen(true);
+    await startFrom(0);
+    await wait(WINDOW_MS);
+    halt();
+    listen(false);
+    rows.push(describe("Metronom hizası · plak gibi 0.8x + EQ + pan + yankı", analyse(onsets[0], onsets[1]), "esnetici yok, D = 0"));
+    await withFx(false);
+    await wait(200);
+
     // --- 5: seek sonrası bayat ses + konum ------------------------------
     report("seek sonrası bayat ses ölçülüyor…");
     const rate = 0.8;

@@ -192,6 +192,18 @@ node tests\lyricsscreen_test.mjs
 `engine_leak_test.mjs` ayrıca ekranı 60 kez açıp kapayarak ses düğümü, dinleyici, animasyon
 ve Wake Lock sızıntısı olmadığını denetler.
 
+**Plak gibi kipi, kanal şeridi (pan / EQ / yankı gönderimi), ortak yankı (Aşama 15) - saf mantık, sahte bağlamda motor:**
+
+```powershell
+node testsinyl_test.mjs
+node testsx_test.mjs
+node tests\engine_leak_test.mjs
+```
+
+`engine_leak_test` şerit/yankı topolojisini (nötr kanalda şerit bağlı değil, gönderimle ortak bara -> konvolver -> dönüş), 40 tur
+sızıntıyı ve söküm sayaçlarını denetler. CPU: `frontend/bench.html` içinde "Şerit + yankı ölçümü" (telefonda da koşturulur).
+Hiza testi (Ayarlar) plak gibi ve EQ+pan+yankı satırlarını da içerir.
+
 **Söz çevirisi (Aşama 14):** arayüz mantığı (node) ve sunucu (Python, Modal'a/ağa bağlanmaz, Gemini sahte HTTP ile):
 
 ```powershell

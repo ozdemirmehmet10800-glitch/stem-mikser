@@ -13,6 +13,7 @@ import SignalsmithStretch from "../vendor/signalsmith-stretch/SignalsmithStretch
 import { SoundTouchNode } from "../vendor/soundtouch-worklet/index.js";
 import { loadSettings, AUDIO_SAVE } from "./settings.js";
 import { MOBILE_SAMPLE_RATE, isMobile, nativeSampleRate } from "./engine.js";
+import { EQ_BANDS, impulseFor } from "./fx.js";
 
 const el = (id) => document.getElementById(id);
 const CHANNEL_COUNTS = [1, 2, 3, 4, 6];
@@ -151,6 +152,105 @@ function peakOf(buffer) {
     }
   }
   return peak;
+}
+
+// ------------------------------------- kanal şeridi + yankı (Aşama 15)
+// Esnetici YOK: yalnız şerit ve yankının eklediği maliyet. Aynı sinyal, 11 kaynak, stereo, bağlamın gerçek hızında.
+
+async function renderFxCase(seconds, rate, { strips, room }) {
+  const ctx = new OfflineAudioContext({ numberOfChannels: 2, length: Math.floor(seconds * rate), sampleRate: rate });
+  const master = ctx.createGain();
+  master.gain.value = 0.3;
+  master.connect(ctx.destination);
+  let sendBus = null;
+  if (room) {
+    sendBus = ctx.createGain();
+    const ir = impulseFor(room.size, room.decay, rate);
+    const buffer = ctx.createBuffer(2, ir.left.length, rate);
+    buffer.copyToChannel(ir.left, 0);
+    buffer.copyToChannel(ir.right, 1);
+    const convolver = ctx.createConvolver();
+    convolver.normalize = false;
+    convolver.buffer = buffer;
+    sendBus.connect(convolver);
+    convolver.connect(master);
+  }
+  const signal = makeSignal(seconds, 2, rate);
+  for (let i = 0; i < 11; i += 1) {
+    const buffer = ctx.createBuffer(2, Math.floor(seconds * rate), rate);
+    for (let ch = 0; ch < 2; ch += 1) buffer.copyToChannel(signal[ch], ch);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    const gain = ctx.createGain();
+    gain.gain.value = 1 / 11;
+    source.connect(gain);
+    if (strips) {
+      let last = gain;
+      for (const band of EQ_BANDS) {
+        const filter = ctx.createBiquadFilter();
+        filter.type = band.type;
+        filter.frequency.value = band.frequency;
+        if (band.q) filter.Q.value = band.q;
+        filter.gain.value = 3;                     // nötr değil: işlemci gerçekten çalışsın
+        last.connect(filter);
+        last = filter;
+      }
+      const panner = ctx.createStereoPanner();
+      panner.pan.value = (i % 5) / 2 - 1;
+      last.connect(panner);
+      panner.connect(master);
+      if (sendBus) {
+        const send = ctx.createGain();
+        send.gain.value = 0.5;
+        panner.connect(send);
+        send.connect(sendBus);
+      }
+    } else {
+      gain.connect(master);
+    }
+    source.start(0);
+  }
+  const started = performance.now();
+  const rendered = await ctx.startRendering();
+  const elapsed = (performance.now() - started) / 1000;
+  return { elapsed, peak: peakOf(rendered) };
+}
+
+async function runFxBench() {
+  const picked = await resolveSampleRate();
+  const seconds = Number(el("seconds").value);
+  const body = el("fx-results").querySelector("tbody");
+  body.innerHTML = "";
+  el("run-fx").disabled = true;
+  say(`Şerit + yankı ölçülüyor (${picked.rate} Hz, ${seconds} sn)… telefon başka iş yapmasın.`, "warn");
+  log(`fx ölçümü: ${picked.rate} Hz, ${seconds} sn`);
+  const cases = [
+    ["taban (11 gain)", { strips: false }],
+    ["+ 3 biquad + panner / kanal", { strips: true }],
+    ["+ ortak yankı: büyük oda (2,2 sn)", { strips: true, room: { size: 0.7, decay: 2.2 } }],
+    ["+ ortak yankı: salon (3 sn)", { strips: true, room: { size: 1, decay: 3 } }],
+  ];
+  let base = null;
+  try {
+    for (const [label, spec] of cases) {
+      await renderFxCase(Math.min(seconds, 4), picked.rate, { strips: false });   // ısınma
+      const { elapsed, peak } = await renderFxCase(seconds, picked.rate, spec);
+      const ratio = elapsed / seconds;
+      if (base === null) base = ratio;
+      const row = document.createElement("tr");
+      row.innerHTML =
+        `<td>${label}</td><td class="num">${elapsed.toFixed(2)}</td><td class="num">${ratio.toFixed(3)}</td>` +
+        `<td class="num ${peak < 0.0005 ? "bad" : ""}">${peak < 0.0005 ? "SESSİZ" : `+${(ratio - base).toFixed(3)}`}</td>`;
+      body.append(row);
+      log(`fx: ${label}: oran ${ratio.toFixed(3)} (taban ${base.toFixed(3)})`);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    }
+    say("Şerit + yankı ölçümü bitti. 'Tabana göre' sütunu eklenen maliyet (oran birimi).", "ok");
+  } catch (error) {
+    say(`Ölçüm hatası: ${error && error.message ? error.message : error}`, "error");
+  } finally {
+    el("run-fx").disabled = false;
+  }
 }
 
 // ---------------------------------------------------------------- nesnel
@@ -623,6 +723,7 @@ el("test-tone").addEventListener("click", () => {
   testTone().catch((e) => log(`test tonu hatası: ${e.message}`));
 });
 el("run-offline").addEventListener("click", runOffline);
+el("run-fx").addEventListener("click", runFxBench);
 el("run-single").addEventListener("click", runSingleNode);
 el("stop-single").addEventListener("click", stopSingleNode);
 el("run-realtime").addEventListener("click", runRealtime);

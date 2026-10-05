@@ -9,6 +9,10 @@
 //   source -> gainNode -> master -> destination
 // Esnetici açıkken TEK düğüm, toplama bus'ında (bkz. stretch.js):
 //   source -> gainNode -> bus -> SoundTouchNode -> master -> destination
+// Kanal şeridi (Aşama 15, fx.js) gainNode'dan SONRA, esneticiden ÖNCE; yalnız nötr olmayan kanalda bağlanır:
+//   gainNode -> bas -> orta -> tiz -> StereoPanner -> hedef (esnetici girişi ya da master)
+//                                          \-> gönderim -> ortak bara -> ConvolverNode -> dönüş -> hedef
+// Sıra uygulamada: kaynak hızı (playbackRate) -> EQ/pan/yankı -> esnetici ton düzeltmesi.
 //
 // ZAMAN EŞLEMESİ. Üç ayrı zaman var, karıştırılmamalı:
 //   currentTime  esneticiden ÇIKMIŞ olanın şarkı konumu. Metronomun
@@ -29,7 +33,10 @@ import {
 } from "./stretch.js";
 import { AUDIO_SAVE, normalizeAudioMode } from "./settings.js";
 import { diag } from "./diag.js";
-import { audible, effectiveGain } from "./mixmemory.js";
+import { audible, effectiveGain, effectiveFx } from "./mixmemory.js";
+import {
+  EQ_BANDS, isNeutralFx, normalizeFx, neutralFx, normalizeRoom, returnGain, impulseFor,
+} from "./fx.js";
 import { mapLoop, turnAt, normalizeLoop, seekClosesLoop } from "./loop.js";
 
 export const STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"];
@@ -173,6 +180,19 @@ export class Engine {
     // ESNETİCİ KURULMAZ, gecikme 0. Bkz. vinyl.js.
     this.vinyl = false;
 
+    // --- kanal şeridi + ortak yankı (Aşama 15) ---
+    this.room = normalizeRoom(null);
+    this.sendBus = null;           // tüm gönderimlerin toplandığı gain (bağlam başına en çok bir)
+    this.reverb = null;            // {convolver, ret}: her play()te yeniden kurulur (kuyruk sızmasın)
+    this.irCache = null;           // {key, buffer}
+    this.fxTarget = null;          // şeritlerin ve yankı dönüşünün bağlandığı düğüm
+    this.fxSettleTimer = 0;
+    this.reverbIdleTimer = 0;
+    this.retired = new Map();      // eski yankı çifti -> söküm zamanlayıcısı
+    this.reverbOn = false;         // yankı yalnız ÇALARKEN kurulur (play -> #rebuildStretch)
+    this.fxCreated = 0;            // şerit/yankı düğümü sayaçları (gain sayacı gibi: sızıntı denetimi)
+    this.fxReleased = 0;
+
     // --- tanı (diag.js) ve kesinti ---
     this.gainsCreated = 0;
     this.gainsReleased = 0;
@@ -257,6 +277,9 @@ export class Engine {
       gainsCreated: this.gainsCreated,
       gainsReleased: this.gainsReleased,
       liveGains: this.gainsCreated - this.gainsReleased,
+      fxCreated: this.fxCreated,
+      fxReleased: this.fxReleased,
+      liveFxNodes: this.fxCreated - this.fxReleased,
     };
   }
 
@@ -356,6 +379,7 @@ export class Engine {
         channel.gainNode = null;
         this.gainsReleased += 1;
       }
+      this.#disposeStrip(channel);
     }
     this.channels.clear();
   }
@@ -530,19 +554,305 @@ export class Engine {
     }
   }
 
-  #routeChannels() {
+  #routeChannels(withReverb = false) {
     if (!this.ctx) return;
+    this.#teardownReverb();                  // eski hedefe bağlı yankı kalmasın
+    this.reverbOn = withReverb;
     // Esnetici kapalıysa gain'ler DOĞRUDAN master'a gidiyor: varsayılan
-    // çalmada zincirde fazladan tek bir düğüm bile yok.
+    // çalmada zincirde fazladan tek bir düğüm bile yok. Şeritli kanallar
+    // (nötr olmayan pan/EQ/gönderim) gainNode'dan sonra şeritten geçiyor.
     const target = this.stretchNode || this.master;
-    for (const channel of this.channels.values()) {
+    this.fxTarget = target;
+    for (const [name, channel] of this.channels) {
       if (!channel.gainNode) continue;
+      this.#routeChannel(name, channel, target, true);
+    }
+    this.#updateReverbIdle();
+  }
+
+  // ------------------------------------------------- kanal şeridi (Aşama 15)
+
+  #fxNode(kind) {
+    this.fxCreated += 1;
+    if (kind === "biquad") return this.ctx.createBiquadFilter();
+    if (kind === "panner") return this.ctx.createStereoPanner();
+    if (kind === "convolver") return this.ctx.createConvolver();
+    return this.ctx.createGain();
+  }
+
+  #fxRelease(...nodes) {
+    for (const node of nodes) {
+      if (!node) continue;
       try {
-        channel.gainNode.disconnect();
+        node.disconnect();
       } catch {
         /* bağlı değildi */
       }
-      channel.gainNode.connect(target);
+      this.fxReleased += 1;
+    }
+  }
+
+  #ensureStrip(channel) {
+    if (channel.strip) return channel.strip;
+    const [loBand, midBand, hiBand] = EQ_BANDS;
+    const make = (band) => {
+      const node = this.#fxNode("biquad");
+      node.type = band.type;
+      node.frequency.value = band.frequency;
+      if (band.q) node.Q.value = band.q;
+      node.gain.value = 0;
+      return node;
+    };
+    const strip = {
+      lo: make(loBand), mid: make(midBand), hi: make(hiBand),
+      pan: this.#fxNode("panner"), send: this.#fxNode("gain"), active: false, sending: false,
+    };
+    strip.send.gain.value = 0;
+    strip.lo.connect(strip.mid);
+    strip.mid.connect(strip.hi);
+    strip.hi.connect(strip.pan);
+    channel.strip = strip;
+    return strip;
+  }
+
+  #disposeStrip(channel) {
+    const strip = channel.strip;
+    if (!strip) return;
+    this.#fxRelease(strip.lo, strip.mid, strip.hi, strip.pan, strip.send);
+    channel.strip = null;
+  }
+
+  #setStripParams(strip, fx, immediate) {
+    const now = this.ctx.currentTime;
+    const set = (param, value) => {
+      if (immediate) param.value = value;
+      else param.setTargetAtTime(value, now, GAIN_GLIDE);
+    };
+    set(strip.lo.gain, fx.eq[0]);
+    set(strip.mid.gain, fx.eq[1]);
+    set(strip.hi.gain, fx.eq[2]);
+    set(strip.pan.pan, fx.pan);
+    set(strip.send.gain, fx.send);
+  }
+
+  /**
+   * Bir kanalın bağlantısını kurar. Nötr kanal: gainNode -> hedef (şerit zincirde YOK). Nötr değil:
+   * gainNode -> bas -> orta -> tiz -> panner -> hedef, gönderim varsa panner -> gönderim -> ortak bara.
+   * Nötr -> nötr değil geçişinde şerit ÖNCE kimlik değerinde (0 dB, orta) bağlanır, sonra hedefe kayar (tıksız).
+   */
+  #routeChannel(name, channel, target, force = false) {
+    const gain = channel.gainNode;
+    if (!gain) return;
+    const fx = effectiveFx(this.channels, name);
+    const active = !isNeutralFx(fx);
+    const sending = active && fx.send > 0 && this.reverbOn;
+    const strip = channel.strip;
+    if (!force && strip && strip.active === active && strip.sending === sending && active) {
+      this.#setStripParams(strip, fx, false);
+      return;
+    }
+    if (!force && !active && !strip) return;                       // nötr ve zaten doğrudan bağlı
+    if (!force && !active && strip && !strip.active) return;
+    if (!force && !active && strip && strip.active) {
+      // Nötre dönüyor: önce kimlik değerine KAY (tıksız), zincirden çıkarma #applyStrips'in zamanlayıcısında.
+      this.#setStripParams(strip, neutralFx(), false);
+      return;
+    }
+    try {
+      gain.disconnect();
+    } catch {
+      /* bağlı değildi */
+    }
+    if (strip) {
+      try {
+        strip.pan.disconnect();
+      } catch {
+        /* bağlı değildi */
+      }
+      try {
+        strip.send.disconnect();
+      } catch {
+        /* bağlı değildi */
+      }
+    }
+    if (!active) {
+      gain.connect(target);
+      if (strip) {
+        strip.active = false;
+        strip.sending = false;
+      }
+      return;
+    }
+    const live = this.#ensureStrip(channel);
+    const wasActive = live.active;
+    if (!wasActive) this.#setStripParams(live, neutralFx(), true);   // kimlik değeriyle gir
+    gain.connect(live.lo);
+    live.pan.connect(target);
+    live.pan.connect(live.send);
+    if (sending) live.send.connect(this.#ensureSendBus());
+    live.active = true;
+    live.sending = sending;
+    this.#setStripParams(live, fx, false);
+  }
+
+  // Tüm şeritleri günceller (parametre değişimi, mikser yükleme, grup açma/kapama sonrası).
+  #applyStrips() {
+    if (!this.ctx || !this.fxTarget) return;
+    let anyNeutralActive = false;
+    for (const [name, channel] of this.channels) {
+      if (!channel.gainNode) continue;
+      this.#routeChannel(name, channel, this.fxTarget, false);
+      const strip = channel.strip;
+      if (strip && strip.active && isNeutralFx(effectiveFx(this.channels, name))) anyNeutralActive = true;
+    }
+    this.#updateReverbIdle();
+    // Nötre dönen şerit önce kimlik değerine KAYAR (yukarıda), sonra zincirden çıkarılır (tıksız).
+    if (anyNeutralActive) {
+      clearTimeout(this.fxSettleTimer);
+      this.fxSettleTimer = setTimeout(() => {
+        this.fxSettleTimer = 0;
+        if (!this.ctx || !this.fxTarget) return;
+        for (const [name, channel] of this.channels) {
+          const strip = channel.strip;
+          if (strip && strip.active && isNeutralFx(effectiveFx(this.channels, name))) {
+            this.#routeChannel(name, channel, this.fxTarget, true);
+          }
+        }
+      }, 120);
+    }
+  }
+
+  /** Kanalın pan / eq / send'ini değiştirir (kısmi). Değerler normalize edilir. */
+  setChannelFx(name, patch) {
+    const channel = this.channels.get(name);
+    if (!channel) return;
+    const next = normalizeFx({ pan: channel.pan, eq: channel.eq, send: channel.send, ...patch });
+    channel.pan = next.pan;
+    channel.eq = next.eq;
+    channel.send = next.send;
+    this.#applyStrips();
+  }
+
+  // ------------------------------------------------------ ortak yankı
+
+  #ensureSendBus() {
+    if (!this.sendBus) this.sendBus = this.#fxNode("gain");
+    if (!this.reverb) this.reverb = this.#buildReverb();
+    clearTimeout(this.reverbIdleTimer);
+    this.reverbIdleTimer = 0;
+    return this.sendBus;
+  }
+
+  #impulseBuffer() {
+    const { size, decay } = this.room;
+    const rate = this.ctx.sampleRate;
+    const key = `${size}|${decay}|${rate}`;
+    if (this.irCache && this.irCache.key === key) return this.irCache.buffer;
+    const ir = impulseFor(size, decay, rate);
+    const buffer = this.ctx.createBuffer(2, ir.left.length, rate);
+    buffer.copyToChannel(ir.left, 0);
+    buffer.copyToChannel(ir.right, 1);
+    this.irCache = { key, buffer };
+    return buffer;
+  }
+
+  #buildReverb(silent = false) {
+    const convolver = this.#fxNode("convolver");
+    convolver.normalize = false;             // ölçek bizim (fx.js: kanal başına birim enerji), sunucuyla aynı
+    convolver.buffer = this.#impulseBuffer();
+    const ret = this.#fxNode("gain");
+    ret.gain.value = silent ? 0 : returnGain(this.room.level);
+    this.sendBus.connect(convolver);
+    convolver.connect(ret);
+    ret.connect(this.fxTarget || this.stretchNode || this.master);
+    return { convolver, ret };
+  }
+
+  // Bir yankı çiftini sökerken gönderim barasından ona giden kenar da kaldırılır (yoksa her turda bir kenar artar).
+  #dropReverb(pair) {
+    if (this.sendBus) {
+      try {
+        this.sendBus.disconnect(pair.convolver);
+      } catch {
+        /* bağlı değildi */
+      }
+    }
+    this.#fxRelease(pair.convolver, pair.ret);
+  }
+
+  #teardownReverb() {
+    clearTimeout(this.reverbIdleTimer);
+    this.reverbIdleTimer = 0;
+    for (const [pair, timer] of this.retired) {
+      clearTimeout(timer);
+      this.#dropReverb(pair);
+    }
+    this.retired.clear();
+    if (this.reverb) {
+      this.#dropReverb(this.reverb);
+      this.reverb = null;
+    }
+    this.reverbOn = false;
+    if (this.sendBus) {
+      try {
+        this.sendBus.disconnect();
+      } catch {
+        /* bağlı değildi */
+      }
+    }
+    // Gönderim gain'leri bir sonraki yönlendirmede yeniden bağlanır (play -> #routeChannels).
+    for (const channel of this.channels.values()) {
+      if (channel.strip) {
+        try {
+          channel.strip.send.disconnect();
+        } catch {
+          /* bağlı değildi */
+        }
+        channel.strip.sending = false;
+      }
+    }
+  }
+
+  // Hiçbir kanalda gönderim kalmadıysa yankı (kuyruk sönünce) sökülür: boşta CPU yemesin.
+  #updateReverbIdle() {
+    if (!this.reverb) return;
+    for (const [name, channel] of this.channels) {
+      if (!channel.gainNode) continue;
+      if (effectiveFx(this.channels, name).send > 0) {
+        clearTimeout(this.reverbIdleTimer);
+        this.reverbIdleTimer = 0;
+        return;
+      }
+    }
+    if (this.reverbIdleTimer) return;
+    this.reverbIdleTimer = setTimeout(() => {
+      this.reverbIdleTimer = 0;
+      if (this.reverb) {
+        this.#dropReverb(this.reverb);
+        this.reverb = null;
+      }
+    }, (this.room.decay + 0.6) * 1000);
+  }
+
+  /** Ortak oda: {size, decay, level}. Çalarken boyut/süre değişince yeni yankı eskinin yerine yumuşakça geçer. */
+  setRoom(room) {
+    const next = normalizeRoom(room);
+    const previous = this.room;
+    this.room = next;
+    if (!this.ctx || !this.reverb) return;
+    if (previous.size !== next.size || previous.decay !== next.decay) {
+      const old = this.reverb;
+      this.reverb = this.#buildReverb(true);
+      const now = this.ctx.currentTime;
+      old.ret.gain.setTargetAtTime(0, now, 0.03);
+      this.reverb.ret.gain.setTargetAtTime(returnGain(next.level), now + 0.02, 0.03);
+      const timer = setTimeout(() => {
+        this.retired.delete(old);
+        this.#dropReverb(old);
+      }, 300);
+      this.retired.set(old, timer);
+    } else if (previous.level !== next.level) {
+      this.reverb.ret.gain.setTargetAtTime(returnGain(next.level), this.ctx.currentTime, GAIN_GLIDE);
     }
   }
 
@@ -570,7 +880,7 @@ export class Engine {
   async #rebuildStretch() {
     this.#teardownStretch();
     if (!this.stretchActive) {
-      this.#routeChannels();
+      this.#routeChannels(true);
       return;
     }
     if (!this.bus) {
@@ -584,7 +894,7 @@ export class Engine {
       diag.note("processor", (event && event.message) || this.activeStretcher);
     this.bus.connect(this.stretchNode);
     this.stretchNode.connect(this.master);
-    this.#routeChannels();
+    this.#routeChannels(true);
   }
 
   /**
@@ -807,6 +1117,8 @@ export class Engine {
         mute: false,
         source: null,
         parent: null,       // alt parçaysa ana kanalın adı (Aşama 10)
+        ...neutralFx(),     // pan / eq [bas, orta, tiz] / send (Aşama 15)
+        strip: null,        // {lo, mid, hi, pan, send}: yalnız gerektiğinde kurulur
       });
     }
 
@@ -846,8 +1158,13 @@ export class Engine {
       channel.fader = state.fader / 100;
       channel.mute = !!state.mute;
       channel.solo = !!state.solo;
+      const fx = normalizeFx(state);
+      channel.pan = fx.pan;
+      channel.eq = fx.eq;
+      channel.send = fx.send;
     }
     this.#applyAllGains(true);
+    this.#applyStrips();
   }
 
   #effectiveGain(name) {
@@ -952,8 +1269,9 @@ export class Engine {
       }
     }
     // Düğümü de düşürüyoruz: içindeki ~150 ms henüz DUYULMAMIŞ ses, bir
-    // sonraki çalmada yanlış konumdan sızardı.
+    // sonraki çalmada yanlış konumdan sızardı. Yankı kuyruğu için de aynısı.
     this.#teardownStretch();
+    this.#teardownReverb();
     this.playing = false;
   }
 
@@ -998,6 +1316,12 @@ export class Engine {
     this.#disposeChannels();
     this.bus = null;
     if (this.ctx) {
+      clearTimeout(this.fxSettleTimer);
+      this.fxSettleTimer = 0;
+      if (this.sendBus) this.#fxRelease(this.sendBus);
+      this.sendBus = null;
+      this.irCache = null;
+      this.fxTarget = null;
       this.ctx.close().catch(() => {});
       this.ctx = null;
       this.master = null;
@@ -1050,6 +1374,7 @@ export class Engine {
       channel.gainNode = null;
       this.gainsReleased += 1;
     }
+    this.#disposeStrip(channel);
     channel.buffer = null;
   }
 
@@ -1096,7 +1421,7 @@ export class Engine {
       for (const [name, buffer] of expand.buffers) {
         this.channels.set(name, {
           buffer, gainNode: this.#newGain(), fader: 1, solo: false, mute: false,
-          source: null, parent: expand.parent,
+          source: null, parent: expand.parent, ...neutralFx(), strip: null,
         });
         parent.children.push(name);
       }

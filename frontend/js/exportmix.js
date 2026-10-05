@@ -9,6 +9,7 @@
 import {
   PRESETS, applyPreset, snapshot, effectiveGain, validLoop,
 } from "./mixmemory.js";
+import { sameFx } from "./fx.js";
 
 export const MISC_LABEL = "Miks";            // hiçbir ön ayarla eşleşmeyen mikser
 export const MAX_GAIN = 2.0;                 // sunucu sınırı (dosya başına doğrusal kazanç)
@@ -36,7 +37,7 @@ function sameState(a, b) {
   for (const [name, state] of a) {
     const other = b.get(name);
     if (!other || other.fader !== state.fader || other.mute !== state.mute
-        || other.solo !== state.solo) return false;
+        || other.solo !== state.solo || !sameFx(other, state)) return false;
   }
   return true;
 }

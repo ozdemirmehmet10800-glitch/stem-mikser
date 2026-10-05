@@ -828,7 +828,7 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      mock sunucuda sentetik çeviri; GERÇEK sözler yalnız gitignore'lı `backend/lyrics_ref/` + `lyrics_out/` ile elle `modal run backend/app.py::translate_probe`
      (satır sayısı eşleşme oranı, yeniden deneme sayısı, süre; çeviri kalitesini kullanıcı okur). Testlere ve commit'e gerçek söz GİRMEZ.
 
-13. [ ] **Aşama 15 - kanal başına pan / 3 bantlı EQ / yankı gönderimi + ortak yankı + "Slowed + reverb" ön ayarı: PLAN HAZIR (2026-10-05, araştırma turu, KOD YOK).**
+13. [ ] **Aşama 15 - kanal başına pan / 3 bantlı EQ / yankı gönderimi + ortak yankı + "Slowed + reverb" ön ayarı: 0, 1 ve 2. OTURUMLAR YAPILDI (2026-10-05, SW v46, telefonda doğrulanmadı); 3. oturum (dışa aktarma) SIRADA.**
    - **Ses grafiği:** kanal başına şerit = kaynak -> `gainNode` (fader/mute, MEVCUT) -> bas rafı (lowshelf) -> orta (peaking) -> tiz rafı (highshelf) -> `StereoPanner` -> hedef (esnetici girişi ya da master);
      panner çıkışından ayrıca `send` gain'i -> TEK ortak gönderim barası -> `ConvolverNode` -> yine esnetici girişine. HEPSİ ESNETİCİDEN ÖNCE: esnetici tek düğüm ve kanalların TOPLAMINI işliyor,
      kanal başına işi sonrasına koymak ikinci bir esnetici (en pahalı kalem) demek. D gecikmesi değişmez: biquad/panner/gönderim gain'i ve Web Audio ConvolverNode sıfır gecikmeli (hiza testine
@@ -876,6 +876,23 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      yalnız açıkken spec'te anahtar var => eski hash'ler değişmez); sunucu `asetrate=44100·oran,aresample=44100` (A-B kırpma önce, limiter sonra; rubberband YOK). Testler: `tests/vinyl_test.mjs` (saf + sahte bağlam: esnetici yok,
      playbackRate, canlı değişimde yeniden başlatma yok, kip kapanışında tek geçiş, döngü, 40 geçiş sızıntısı), `exportmix_test`, `test_export_gate` (92), hiza testine "plak gibi 0.8x" ve "plak gibi canlı 0.8x -> 1.1x" satırları,
      canlı `export_validate` F6 (352,0 Hz / 12,495 sn) ve F7 (550,0 Hz / 7,995 sn) geçti (16/16).
+   - **1. VE 2. OTURUM YAPILDI (2026-10-05), SW v46, `modal deploy` GEREKMEDİ (yalnız arayüz/motor):**
+     * `fx.js` (saf): sabitler (`EQ_BANDS` bas rafı 120 Hz / orta çan 1 kHz Q 0,9 / tiz rafı 6 kHz, ±12 dB, pan ±1, gönderim 0..1), `normalizeFx/isNeutralFx/composeFx` (alt kanal = kendi + ana: pan/gönderim toplanıp kırpılır, EQ dB toplanır),
+       oda `{size, decay 0,4-3 sn, level}` (+ hazır odalar Küçük/Orta/Büyük/Salon), prosedürel impuls yanıtı `makeImpulse` (mulberry32 tohumlu, 44100 Hz, stereo ilintisiz, ön gecikme + 8 erken yansıma + RT60'a göre sönen gürültü +
+       zamanla kararan alçak geçiren, kanal başına BİRİM enerji; `resample` ile bağlam hızına; `impulseFor` önbellekli). Sunucu portu için parmak izi: `makeImpulse(0.5, 1.6).left` uzunluk 83349, örnekler [0,1000,5000,10000,20000] =
+       0, 0, -1.42528e-3, 1.29586e-3, -6.35874e-4 (3. oturumda Python portu bununla karşılaştırılacak).
+     * `Engine`: kanal başına `pan/eq/send` + tembel `strip` {bas, orta, tiz, panner, gönderim}; `#routeChannel`: nötr kanal `gainNode -> hedef` (bugünkü yol, şerit HİÇ bağlı değil), nötr değil `gainNode -> bas -> orta -> tiz -> panner -> hedef` ve
+       `panner -> gönderim -> ortak bara -> ConvolverNode(normalize=false) -> dönüş -> hedef`. Hepsi esneticiden/master'dan ÖNCE. Nötre dönen şerit önce kimlik değerine kayar, 120 ms sonra zincirden çıkar (tıksız); nötr->nötr değil geçişte
+       şerit kimlik değeriyle girer. Yankı yalnız ÇALARKEN kurulur, her `play()te` yeniden (kuyruk sızmasın), `stop()`ta sökülür; oda boyutu/süresi çalarken değişirse yeni yankı eskinin yerine 300 ms'de geçer; gönderim kalmazsa (süre+0,6 sn) boşta sökülür;
+       bara -> konvolver kenarları sökümde kaldırılır (bayat kenar yok). `setChannelFx(ad, {pan, eq, send})`, `setRoom({size, decay, level})`, `applyMix` fx alanlarını uygular; sızıntı sayaçları `fxCreated/fxReleased/liveFxNodes` (`diagnostics()`).
+     * `mixmemory.js`: kanal girdisine isteğe bağlı `pan/eq/send`, kayda `room` (ESKİ KAYITLAR AYNEN OKUNUR, v:1 kaldı); `isDefaultMix` fx ve odayı da görür (hepsi nötrse kayıt silinir); `effectiveFx`; ön ayar `slowed-reverb`
+       (gönderim 0,5, vokal 0,65, oda 0,7/2,2 sn/%80, plak gibi kipi + oran 0,85; AÇIK grupta gönderim alt kanallara yazılır); `exportmix.presetLabel` fx'i de karşılaştırır ("Slowed + reverb" yalnız birebir eşleşince).
+     * Arayüz: kanal adı/simgesine dokununca alttan KANAL AYARI sayfası (Pan, Bas/Orta/Tiz, Yankı, "Bu kanalı sıfırla"; karartma yok, aktarma çubuğunun ÜSTÜNDE: çalarken ayar yapılır; geri tuşu katmanı "fx"), ayarlı kanalda isimde nokta;
+       mikser çubuğunda "Yankı" çipi => aynı sayfada oda (Küçük/Orta/Büyük/Salon, Süre, Seviye, "Odayı sıfırla"); oda şarkıya kayıtlı (varsayılan değilse); "Sıfırla" fader/mute/solo + pan/EQ/gönderim + odayı sıfırlar (hız/ton kendi
+       "Orijinale geri dön"üyle; Plak gibi kipi KALIR); "Slowed + reverb" ön ayarı oda + plak gibi + hız 0,85 (BPM adımına yuvarlanır) uygular. Dışa aktarma sayfası, pan/EQ/yankı 3. oturuma kadar dahil olmadığını özetin sonunda söyler.
+     * Testler: `tests/fx_test.mjs` (53), `engine_leak_test` (şerit/yankı topolojisi, bypass, 40 tur sızıntı, oda değişimi, grup aç/kapa, applyMix, releaseStems/dispose => 0 düğüm), `mixmemory_test`, `exportmix_test`; hiza testine "EQ + pan + yankı açık 0.8x" ve
+       "plak gibi 0.8x + EQ + pan + yankı" satırları; `bench.html` "0. Şerit + yankı CPU ölçümü" (masaüstü, 11 kanal stereo, 20 sn, esnetici YOK, oran = render/ses): taban 0,005; +3 biquad+panner/kanal 0,022 (+0,017); +büyük oda 0,039 (+0,035);
+       +salon 0,041 (+0,036) => masaüstünde toplam şerit+yankı ~%3,6 gerçek zaman. TELEFON ÖLÇÜMÜ (bench.html'de "Şerit + yankı ölçümü") kullanıcıda; kabul: artış < 0,10. Ses kalitesi/tutarlılık 3. oturumda tarayıcı<->sunucu null-testiyle.
    - **DIŞA AKTARMA (3. oturum) İÇİN SIRA NOTU (kullanıcı, 2026-10-05):** uygulamada sıra "kaynak hızı (playbackRate) -> EQ/pan/yankı -> esnetici ton düzeltmesi". Dışa aktarma AYNI sırayı izler: `asetrate+aresample` ile hız ->
      EQ/pan/yankı (kanal başına şerit, gönderim toplamı, `afir`) -> YALNIZ ton düzeltmesi için rubberband (plak gibi kipte rubberband HİÇ yok). Böylece yankı kuyruğu uygulamadakiyle aynı işlenir (IR gerçek saniyede, hızlandırılmış
      sinyal üzerinde) ve null-testi anlamlı olur. Bağımsız kipte hız için de "kaynak hızı" adımı gerekir: oran != 1 ise önce `asetrate+aresample` (perde oranla kayar), sonra rubberband YALNIZ `pitch = istenen ton / oran` ile

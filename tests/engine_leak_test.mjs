@@ -30,14 +30,18 @@ class FakeParam {
 }
 
 class FakeNode {
-  constructor(ctx) {
+  constructor(ctx, kind = "gain") {
     this.ctx = ctx;
+    this.kind = kind;
     this.targets = new Set();
     this.gain = new FakeParam();
     this.playbackRate = new FakeParam();
+    this.pan = new FakeParam();
+    this.frequency = new FakeParam();
+    this.Q = new FakeParam();
   }
   connect(target) { this.targets.add(target); return target; }
-  disconnect() { this.targets.clear(); }
+  disconnect(target) { if (target) this.targets.delete(target); else this.targets.clear(); }
   start() { this.started = true; }
   stop() { this.stopped = true; }
 }
@@ -51,6 +55,12 @@ class FakeContext {
     this.destination = new FakeNode(this);
   }
   createGain() { const n = new FakeNode(this); this.nodes.push(n); return n; }
+  createBiquadFilter() { const n = new FakeNode(this, "biquad"); this.nodes.push(n); return n; }
+  createStereoPanner() { const n = new FakeNode(this, "panner"); this.nodes.push(n); return n; }
+  createConvolver() { const n = new FakeNode(this, "convolver"); this.nodes.push(n); return n; }
+  createBuffer(channels, length, rate) {
+    return { numberOfChannels: channels, length, sampleRate: rate, copyToChannel() {}, getChannelData() { return new Float32Array(length); } };
+  }
   createBufferSource() {
     const node = new FakeNode(this);
     this.sources = this.sources || [];
@@ -432,6 +442,112 @@ const near = (x, y, eps = 1e-6) => Math.abs(x - y) <= eps;
   e.releaseStems();
   check("davul acikken releaseStems: hepsi birakildi", e.channels.size === 0 && liveGains(e) === 0 && liveSources(e) === 0);
   e.dispose();
+}
+
+// ---- kanal şeridi + ortak yankı (Asama 15): sizinti, bypass, baglanti topolojisi
+{
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const e = new Engine();
+  await e.loadStems(STEMS, provide, { concurrency: 3 });
+  const nodesOf = (kind) => e.ctx.nodes.filter((n) => n.kind === kind);
+  const fxLive = () => e.diagnostics().liveFxNodes;
+  const direct = () => [...e.channels.values()].every((c) => c.gainNode.targets.size === 1 && [...c.gainNode.targets][0] === e.master);
+
+  await e.play();
+  check("seritler: varsayilan (notr) -> HIC fx dugumu yok, gain'ler dogrudan master'a", fxLive() === 0 && nodesOf("biquad").length === 0
+    && nodesOf("panner").length === 0 && nodesOf("convolver").length === 0 && direct());
+
+  e.setChannelFx("guitar", { pan: -1 });
+  const guitar = e.channels.get("guitar");
+  check("pan: gitar seridi kuruldu (3 biquad + panner + gonderim = 5), gonderimsiz -> konvolver YOK", fxLive() === 5 && nodesOf("convolver").length === 0 && !e.sendBus);
+  const strip = guitar.strip;
+  check("zincir: gain -> bas -> orta -> tiz -> panner -> master", [...guitar.gainNode.targets][0] === strip.lo && [...strip.lo.targets][0] === strip.mid
+    && [...strip.mid.targets][0] === strip.hi && [...strip.hi.targets][0] === strip.pan && strip.pan.targets.has(e.master) && !strip.send.targets.size);
+  check("zincir: gitar seridinden geciyor, ote kanallar dogrudan", [...guitar.gainNode.targets][0] === strip.lo
+    && [...e.channels.values()].filter((c) => c !== guitar).every((c) => [...c.gainNode.targets][0] === e.master));
+  check("EQ bantlari: bas rafi 120 Hz, orta cani 1 kHz Q 0.9, tiz rafi 6 kHz", strip.lo.type === "lowshelf" && strip.lo.frequency.value === 120
+    && strip.mid.type === "peaking" && strip.mid.frequency.value === 1000 && strip.mid.Q.value === 0.9 && strip.hi.type === "highshelf" && strip.hi.frequency.value === 6000);
+
+  e.setChannelFx("piano", { pan: 1, eq: [3, -2, 4] });
+  check("ikinci kanal: 10 fx dugumu", fxLive() === 10);
+  e.setChannelFx("guitar", { send: 0.4 });
+  check("gonderim > 0 (calarken): ortak bara + konvolver + donus kuruldu, normalize=false", e.sendBus && e.reverb && nodesOf("convolver").length === 1
+    && e.reverb.convolver.normalize === false && fxLive() === 10 + 1 + 2, String(fxLive()));
+  check("yankı topolojisi: gonderim -> bara -> konvolver -> donus -> master", strip.send.targets.has(e.sendBus) && e.sendBus.targets.has(e.reverb.convolver)
+    && e.reverb.convolver.targets.has(e.reverb.ret) && e.reverb.ret.targets.has(e.master));
+  check("konvolver 2 kanalli, bagiilin hizinda impuls yaniti", e.reverb.convolver.buffer.numberOfChannels === 2 && e.reverb.convolver.buffer.sampleRate === 48000);
+
+  e.pause();
+  check("durdurunca yankı sokulur (kuyruk sizmasin): konvolver/donus yok, bara bagi yok; serit dugumleri ve bara kalir", !e.reverb && e.sendBus.targets.size === 0
+    && fxLive() === 10 + 1 && nodesOf("convolver").length === 1 && e.ctx.nodes.filter((n) => n.kind === "convolver" && n.targets.size > 0).length === 0);
+  await e.play();
+  check("tekrar calinca yankı yeniden kurulur, barada TEK cikis (bayat kenar yok)", e.reverb && e.sendBus.targets.size === 1 && e.sendBus.targets.has(e.reverb.convolver)
+    && e.reverb.ret.targets.has(e.master) && fxLive() === 13);
+
+  // oda degisimi: yeni yankı eskinin yerine gecer, eski 300 ms sonra sokulur
+  e.setRoom({ size: 0.9, decay: 2.5, level: 0.7 });
+  check("oda boyut/sure degisimi: gecis sirasinda iki yankı, sonra eski sokulur", e.retired.size === 1 && e.sendBus.targets.size === 2 && fxLive() === 15);
+  await sleep(380);
+  check("gecis bitince eski yankı sokulmus ve bara kenari kalkmis", e.retired.size === 0 && e.sendBus.targets.size === 1 && fxLive() === 13, `${fxLive()}/${e.sendBus.targets.size}`);
+  e.setRoom({ size: 0.9, decay: 2.5, level: 0.2 });
+  check("yalniz seviye degisimi: yankı yeniden KURULMAZ", e.retired.size === 0 && fxLive() === 13);
+  const bufferBefore = e.irCache.buffer;
+  e.setRoom({ size: 0.9, decay: 2.5, level: 0.9 });
+  check("impuls yaniti onbellekte (ayni oda icin tek)", e.irCache.buffer === bufferBefore);
+
+  // sıfırlama: hepsi notr -> seritler zincirden cikar (kimlige kayar, sonra), dugumler kalir, yankı bosta sokulur
+  e.setRoom({ size: 0.9, decay: 0.4, level: 0.5 });
+  await sleep(380);
+  for (const name of ["guitar", "piano"]) e.setChannelFx(name, { pan: 0, eq: [0, 0, 0], send: 0 });
+  await sleep(160);
+  check("hepsi notr: gain'ler yeniden DOGRUDAN master'a, seritler zincirde degil", direct() && [...e.channels.values()].every((c) => !c.strip || (c.strip.pan.targets.size === 0 && !c.strip.active)));
+  await sleep(1000);
+  check("gonderim kalmadi: bosta yankı (sure + 0.6 sn sonra) sokulur", !e.reverb && e.sendBus.targets.size === 0, `${fxLive()}`);
+
+  // 40 tur: parametre degisimi + calma/durdurma + oda
+  for (let i = 0; i < 40; i += 1) {
+    e.setChannelFx(["guitar", "piano", "bass", "other"][i % 4], { pan: (i % 5) / 4 - 0.5, eq: [i % 3, 0, -(i % 4)], send: (i % 3) * 0.3 });
+    if (i % 4 === 0) e.pause();
+    if (i % 4 === 1) await e.play();
+    if (i % 7 === 0) e.setRoom({ size: (i % 10) / 10, decay: 0.5 + (i % 5) * 0.5, level: 0.5 });
+  }
+  await e.play();
+  await sleep(380);
+  const strips = [...e.channels.values()].filter((c) => c.strip).length;
+  const expected = strips * 5 + (e.sendBus ? 1 : 0) + (e.reverb ? 2 : 0);
+  check("40 tur sonrasi fx dugumu sayisi = serit x 5 + bara + (yankı varsa 2): sizinti yok", fxLive() === expected && e.retired.size === 0, `${fxLive()} vs ${expected}`);
+  check("40 tur sonrasi barada en cok 1 cikis (bayat kenar yok)", e.sendBus.targets.size <= 1, String(e.sendBus.targets.size));
+  check("40 tur sonrasi kanal gain'i = 6 (eski gain sizintisi tekrar etmedi)", e.diagnostics().liveGains === 6
+    && [...e.channels.values()].filter((c) => c.gainNode.targets.size > 0).length === 6, String(e.diagnostics().liveGains));
+
+  // grup acma/kapama: ana kanal gonderimi alt kanallara EKLENIR, ana kanalin seridi yok
+  e.pause();
+  for (const name of ["guitar", "piano", "bass", "other"]) e.setChannelFx(name, { pan: 0, eq: [0, 0, 0], send: 0 });
+  e.setChannelFx("vocals", { send: 0.3, pan: 0.2 });
+  const kids = new Map([["lead", await e.decode(new ArrayBuffer(8))], ["backing", await e.decode(new ArrayBuffer(8))]]);
+  await e.expandChannel("vocals", kids);
+  e.setChannelFx("lead", { send: 0.2 });
+  await e.play();
+  const lead = e.channels.get("lead");
+  const backing = e.channels.get("backing");
+  check("acik grup: ana kanalin gain'i/seridi yok; alt kanallar ana kanalin pan'ini miras alir (ayri serit)", e.channels.get("vocals").gainNode === null && e.channels.get("vocals").strip === null
+    && lead.strip && lead.strip.active && backing.strip && backing.strip.active);
+  check("acik grup: alt kanal gonderimleri toplanir (ana 0.3 + alt 0.2 -> lead gonderimi baglı, backing 0.3 baglı)", lead.strip.sending && backing.strip.sending && e.reverb !== null);
+  await e.collapseChannel("vocals", await e.decode(new ArrayBuffer(8)));
+  check("grup kapaninca alt kanal serit dugumleri sokulur (sizinti yok)", !e.channels.has("lead") && !e.channels.has("backing") && fxLive() === ([...e.channels.values()].filter((c) => c.strip).length * 5) + (e.sendBus ? 1 : 0) + (e.reverb ? 2 : 0) + 0 + (e.retired.size * 2),
+    String(fxLive()));
+  check("kapanan grubun ana kanali yeniden serit kullanir", e.channels.get("vocals").gainNode !== null && e.channels.get("vocals").send === 0.3);
+
+  // mikser yukleme (applyMix) fx alanlarini uygular
+  e.applyMix(new Map([["drums", { fader: 100, mute: false, solo: false, pan: -0.5, eq: [2, 0, 0], send: 0 }]]));
+  check("applyMix: pan/eq/send kanal alanlarina yazilir ve serit kurulur", e.channels.get("drums").pan === -0.5 && e.channels.get("drums").eq[0] === 2 && e.channels.get("drums").strip.active);
+
+  // sarki degisimi: releaseStems hepsini sokmeli
+  e.releaseStems();
+  await sleep(60);
+  check("releaseStems: tum seritler ve yankı sokuldu (yalniz baglam duzeyindeki gonderim barasi kalir)", e.channels.size === 0 && fxLive() === (e.sendBus ? 1 : 0), String(fxLive()));
+  e.dispose();
+  check("dispose: fx dugumu 0", fxLive() === 0, String(fxLive()));
 }
 
 // ------------- tam ekran sozler (Asama 13): acip kapamak iz BIRAKMAZ, motora dokunmaz

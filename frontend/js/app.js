@@ -35,6 +35,10 @@ import { LyricsScreen, ROWS_MIN, ROWS_MAX, normalizeRows } from "./lyricsscreen.
 import * as TR from "./translation.js";
 import { vinylPitch, nearestSemitone, keyShift, formatPitch } from "./vinyl.js";
 import {
+  normalizeFx, neutralFx, isNeutralFx, DEFAULT_ROOM, ROOM_PRESETS, normalizeRoom, roomPresetId, isDefaultRoom,
+  DECAY_MIN, DECAY_MAX,
+} from "./fx.js";
+import {
   BG_MODES, BG_LABELS, normalizeBg, wantsPulse, onsetsFromBuffer, pickBeats, readKicks, writeKicks, dropKicks,
   classifyBackground,
 } from "./beatpulse.js";
@@ -114,6 +118,9 @@ const RATE_SPAN = 0.5;        // ±%50; MIN_RATE/MAX_RATE ile uyumlu
 let tempoOffset = 0;
 let pitchSemis = 0;
 let vinylMode = false;     // "Plak gibi": tempo ve ton bağlı, esnetici yok (vinyl.js)
+let roomState = normalizeRoom(null);   // ortak yankı odası {size, decay, level} (şarkı başına kayıtlı)
+let fxMode = "channel";               // kanal ayarı sayfası: "channel" | "room"
+let fxChannel = null;                 // sayfada düzenlenen kanal
 let originalBpm = 0;          // 0 = bilinmiyor
 let originalKey = null;
 let appliedSemis = 0;
@@ -365,6 +372,7 @@ const layerClosers = {
   },
   panel: closePanelsDom,
   export: () => closeExportDom(),
+  fx: () => closeFxDom(),
   "lyrics-full": () => { if (lyricsScreen) lyricsScreen.close(); },
   select: closeSelectModeDom,
   view: () => {
@@ -1189,6 +1197,7 @@ async function openSong(song) {
   mixer.groupSpecs.clear();
   resetLyrics();
   exportReset();
+  closeFxDom();
   refreshExportAvailability();
 
   setOverlay(true, "Şarkı bilgileri alınıyor…");
@@ -1745,7 +1754,7 @@ function masterPercent() {
 function scheduleMixSave(options = {}) {
   if (!mixSongId) return;
   mixPending = {
-    id: mixSongId, states: snapshot(engine.channels), master: masterPercent(),
+    id: mixSongId, states: snapshot(engine.channels), master: masterPercent(), room: roomState,
     // Sıfırlama: kapalı alt kanalların (lead/backing) kayıtlı ayarı da silinsin.
     replaceAbsent: Boolean(options.replaceAbsent || (mixPending && mixPending.replaceAbsent
       && mixPending.id === mixSongId)),
@@ -1763,7 +1772,7 @@ function flushMixSave() {
   const storage = mixStorage();
   if (pending && storage) {
     writeMix(storage, pending.id, pending.states, pending.master, Date.now(),
-             { replaceAbsent: pending.replaceAbsent });
+             { replaceAbsent: pending.replaceAbsent, room: pending.room });
   }
 }
 
@@ -1788,13 +1797,14 @@ function restoreMix(songId) {
   const record = storage ? readMix(storage, songId) : null;
   const names = [...engine.channels.keys()];
   updatePresetButtons(names);
+  setRoomState(record && record.room ? record.room : DEFAULT_ROOM);     // oda her şarkıda kayıttan ya da varsayılan
   if (record) {
     const plan = planRestore(record, names);
     engine.applyMix(plan);
     setMasterPercent(record.master);
     mixer.syncFromEngine();
     // Yalnız döngü kayıtlıysa "ayar geri yüklendi" rozeti boşuna çıkmasın.
-    el("mix-notice").hidden = isDefaultMix(plan, record.master);
+    el("mix-notice").hidden = isDefaultMix(plan, record.master, record.room);
     // Döngü KAPALI gelir, uçlar yerinde görünür, tek dokunuşla açılır.
     const saved = record.loop ? normalizeLoop(record.loop.a, record.loop.b, engine.duration) : null;
     if (saved) {
@@ -1844,18 +1854,23 @@ function buildPresetButtons() {
       const states = applyPreset(preset, [...engine.channels.keys()]);
       // Ön ayar "temiz başlangıç": kapalı alt kanalların eski kayıtlı ayarı da gitsin.
       if (states) applyMixStates(states, { replaceAbsent: true });
+      if (states && preset.room) setRoomState(preset.room);
+      if (states && preset.tempo) applyTempoPreset(preset.tempo);
     });
     box.append(button);
   }
 }
 
-on("mix-reset", "click", () => {
+// "Sıfırla": fader/mute/solo + pan/EQ/yankı gönderimi + ortak oda (hız/ton kendi "Orijinale geri dön"üyle sıfırlanır).
+function resetMix() {
+  setRoomState(DEFAULT_ROOM, false);
   applyMixStates(cleanStates([...engine.channels.keys()]), { replaceAbsent: true });
-});
+  refreshFxSheet();
+}
 
-on("mix-notice-reset", "click", () => {
-  applyMixStates(cleanStates([...engine.channels.keys()]), { replaceAbsent: true });
-});
+on("mix-reset", "click", resetMix);
+
+on("mix-notice-reset", "click", resetMix);
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") flushMixSave();
@@ -1917,7 +1932,9 @@ function exportRefreshForm() {
   const busy = exportWorking();
 
   el("export-preset").textContent = presetLabel(engine.channels);
-  el("export-summary-text").textContent = summarizeExport(input);
+  // Pan/EQ/yankı henüz dışa aktarmaya girmiyor (Aşama 15, 3. oturum): sessizce farklı duyulmasın diye söyle.
+  const hasFx = [...engine.channels.values()].some((c) => !isNeutralFx(c)) || !isDefaultRoom(roomState);
+  el("export-summary-text").textContent = summarizeExport(input) + (hasFx ? " · pan/EQ/yankı henüz dahil değil" : "");
 
   el("export-tempo").disabled = busy || !options.tempoChanged;
   el("export-tempo-row").classList.toggle("disabled", !options.tempoChanged);
@@ -2424,6 +2441,143 @@ getBackground().then((record) => {
 });
 on("bg-file", "change", onBgFilePicked);
 on("lyrics-full-open", "click", openLyricsScreen);
+
+// ---------------------------------------- kanal ayarı ve yankı odası (Aşama 15)
+// Mantık fx.js'te (saf) ve engine.js'te (şerit düğümleri). Burası yalnız sayfa ve bağlama.
+
+const EQ_IDS = ["fx-eq0", "fx-eq1", "fx-eq2"];
+
+function fmtDb(value) {
+  if (!value) return "0 dB";
+  return `${value > 0 ? "+" : ""}${Number(value).toFixed(1).replace(".", ",")} dB`;
+}
+
+function fmtPan(percent) {
+  if (!percent) return "Orta";
+  return percent < 0 ? `Sol ${-percent}` : `Sağ ${percent}`;
+}
+
+function fmtSeconds(value) {
+  return `${Number(value).toFixed(1).replace(".", ",")} sn`;
+}
+
+function setRoomState(room, save = true) {
+  roomState = normalizeRoom(room);
+  engine.setRoom(roomState);
+  refreshFxSheet();
+  if (save) scheduleMixSave();
+}
+
+// "Slowed + reverb" gibi ön ayarların hız/ton kısmı: plak gibi kipi + oran (tek yeniden çıpalama).
+function applyTempoPreset(tempo) {
+  const rate = Math.min(Math.max(Number(tempo.rate) || 1, MIN_RATE), MAX_RATE);
+  const offset = originalBpm ? Math.round(originalBpm * (rate - 1)) : Math.round((rate - 1) * 100);
+  tempoOffset = clampRange("tempo-range", offset);
+  if (el("tempo-range")) el("tempo-range").value = String(tempoOffset);
+  if (tempo.vinyl) vinylMode = true;
+  return applyStretch(true);
+}
+
+function fxSheetBottom() {
+  const bar = document.querySelector(".transport");
+  el("fx-sheet").style.bottom = `${bar ? Math.round(bar.getBoundingClientRect().height) : 0}px`;
+}
+
+function openFxSheet(mode, name = null) {
+  if (!currentSong || !engine.channels.size) return;
+  if (mode === "channel" && !engine.channels.has(name)) return;
+  fxMode = mode;
+  fxChannel = mode === "channel" ? name : null;
+  el("fx-channel").hidden = mode !== "channel";
+  el("fx-room").hidden = mode !== "room";
+  fxSheetBottom();
+  el("fx-sheet").hidden = false;
+  refreshFxSheet();
+  pushLayer("fx");
+}
+
+function closeFxDom() {
+  el("fx-sheet").hidden = true;
+  fxChannel = null;
+}
+
+function setOut(id, text) {
+  const node = el(id);
+  if (node.textContent !== text) node.textContent = text;
+}
+
+function refreshFxSheet() {
+  const sheet = el("fx-sheet");
+  if (!sheet || sheet.hidden) return;
+  if (fxMode === "room") {
+    el("fx-title").textContent = "Yankı odası";
+    const preset = roomPresetId(roomState);
+    for (const button of el("fx-room-presets").children) {
+      button.setAttribute("aria-pressed", String(button.dataset.room === preset));
+    }
+    el("fx-decay").value = String(roomState.decay);
+    setOut("fx-decay-val", fmtSeconds(roomState.decay));
+    el("fx-level").value = String(Math.round(roomState.level * 100));
+    setOut("fx-level-val", `%${Math.round(roomState.level * 100)}`);
+    return;
+  }
+  const channel = engine.channels.get(fxChannel);
+  if (!channel) {
+    requestBack("fx");                      // kanal kalktı (grup kapandı)
+    return;
+  }
+  const fx = normalizeFx(channel);
+  el("fx-title").textContent = `${STEM_LABELS[fxChannel] || SUB_LABELS[fxChannel] || fxChannel}${engine.isExpanded(fxChannel) ? " · tüm grup" : ""}`;
+  const pan = Math.round(fx.pan * 100);
+  el("fx-pan").value = String(pan);
+  setOut("fx-pan-val", fmtPan(pan));
+  EQ_IDS.forEach((id, i) => {
+    el(id).value = String(fx.eq[i]);
+    setOut(`${id}-val`, fmtDb(fx.eq[i]));
+  });
+  el("fx-send").value = String(Math.round(fx.send * 100));
+  setOut("fx-send-val", `%${Math.round(fx.send * 100)}`);
+}
+
+function applyChannelFx(patch) {
+  if (!fxChannel) return;
+  engine.setChannelFx(fxChannel, patch);
+  mixer.refresh();                          // nokta + kayıt
+  refreshFxSheet();
+}
+
+function buildFxSheet() {
+  const presets = el("fx-room-presets");
+  for (const room of ROOM_PRESETS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chip";
+    button.dataset.room = room.id;
+    button.textContent = room.label;
+    button.setAttribute("aria-pressed", "false");
+    button.addEventListener("click", () => setRoomState({ ...roomState, size: room.size, decay: room.decay }));
+    presets.append(button);
+  }
+  el("fx-decay").min = String(DECAY_MIN);
+  el("fx-decay").max = String(DECAY_MAX);
+  on("fx-close", "click", () => requestBack("fx"));
+  on("room-open", "click", () => openFxSheet("room"));
+  on("fx-pan", "input", () => applyChannelFx({ pan: Number(el("fx-pan").value) / 100 }));
+  on("fx-pan", "dblclick", () => applyChannelFx({ pan: 0 }));
+  EQ_IDS.forEach((id, i) => on(id, "input", () => {
+    const channel = engine.channels.get(fxChannel);
+    if (!channel) return;
+    const eq = [...normalizeFx(channel).eq];
+    eq[i] = Number(el(id).value);
+    applyChannelFx({ eq });
+  }));
+  on("fx-send", "input", () => applyChannelFx({ send: Number(el("fx-send").value) / 100 }));
+  on("fx-channel-reset", "click", () => applyChannelFx(neutralFx()));
+  on("fx-decay", "input", () => setRoomState({ ...roomState, decay: Number(el("fx-decay").value) }));
+  on("fx-level", "input", () => setRoomState({ ...roomState, level: Number(el("fx-level").value) / 100 }));
+  on("fx-room-reset", "click", () => setRoomState(DEFAULT_ROOM));
+  mixer.onFx = (name) => openFxSheet("channel", name);
+}
 
 // ------------------------------------------------ alt parçalar (Aşama 10)
 // İki grup: vokal (lead/backing) ve davul (kick/snare/tom/hi-hat/zil). Her ana
@@ -4270,6 +4424,7 @@ ${eventsText(diag)}`;
 });
 
 mixer = new Mixer(el("channels"), engine, scheduleMixSave, downloadStem);
+buildFxSheet();
 buildPresetButtons();
 buildLoopButtons();
 engine.onLoopCleared = () => {

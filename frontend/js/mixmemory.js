@@ -8,17 +8,25 @@
 //     v: 1, savedAt, master: 0-150,
 //     stems: { "<stem adı>": { fader: 0-150, mute: bool, solo: bool } }
 //     loop?: {a, b}   döngü uçları (sn). Şarkı açılınca döngü KAPALI gelir.
+//     room?: {size, decay, level}   ortak yankı odası (varsayılan değilse)
 //   }
+// Kanal girdisine (Aşama 15) İSTEĞE BAĞLI alanlar eklendi: pan (-1..1), eq [bas, orta, tiz] (dB), send (0..1).
+// Alan yoksa nötr; EKLEMELİ olduğu için v:1 kaldı ve eski kayıtlar aynen okunur.
 // Biçim "stem adı -> ayar". Kayıtta olmayan kanal varsayılan kalır, şarkıda
 // olmayan ad sessizce atlanır: Aşama 10'un alt kanalları (kick, snare, ana/arka
 // vokal) eklenince eski kayıtlar bozulmaz.
+
+import { normalizeFx, composeFx, isNeutralFx, normalizeRoom, isDefaultRoom } from "./fx.js";
+import { SUB_GROUPS } from "./sub.js";
 
 export const MIX_PREFIX = "stem-mikser.mix.";   // meta ile AYRI önek
 export const MIX_LIMIT = 40;                    // meta ile aynı LRU sınırı
 export const MIX_VERSION = 1;
 export const FADER_MIN = 0;
 export const FADER_MAX = 150;
-export const DEFAULT_STEM = Object.freeze({ fader: 100, mute: false, solo: false });
+export const DEFAULT_STEM = Object.freeze({
+  fader: 100, mute: false, solo: false, pan: 0, eq: Object.freeze([0, 0, 0]), send: 0,
+});
 
 export function mixKey(songId) {
   return MIX_PREFIX + songId;
@@ -51,6 +59,14 @@ export function audible(channels, name) {
 
 // Kanalın nihai kazancı: duyulmuyorsa 0; duyuluyorsa kendi fader'ı x grup
 // fader'ı (ana kanalın fader'ı tüm grubun seviyesi).
+/** Kanalın ETKİN şerit değeri (pan, eq, send): alt kanalda kendi + ana kanalın (bkz. fx.composeFx). */
+export function effectiveFx(channels, name) {
+  const channel = channels.get(name);
+  if (!channel) return normalizeFx(null);
+  const parent = channel.parent ? channels.get(channel.parent) : null;
+  return composeFx(channel, parent);
+}
+
 export function effectiveGain(channels, name) {
   if (!audible(channels, name)) return 0;
   const channel = channels.get(name);
@@ -63,6 +79,9 @@ export function effectiveGain(channels, name) {
 // ---------------------------------------------------------------- ön ayarlar
 // Ön ayar TÜM kanalları temiz başlangıca (fader %100, mute/solo yok) çekip
 // yalnız kendi belirttiklerini uygular. Ana ses'e dokunmaz.
+// Ön ayar alanları: mute/solo (kanal adları), send (tüm duyulan kanallara gönderim), sendBy (kanal başına üstüne yazar),
+// room (ortak yankı odası), tempo {vinyl, rate} (uygulama durumu: kayda girmez). Alt kanalları AÇIK bir ana kanalın gönderimi
+// alt kanallara yazılır (ana + alt kanal toplanır, çift sayılmasın).
 export const PRESETS = [
   // Karaoke: ana vokal kanalını susturur; alt parçalar açıksa TÜM grup susar
   // (ana kanalın M/S'i gruba uygulanır).
@@ -76,11 +95,14 @@ export const PRESETS = [
   { id: "no-guitar", label: "Gitarı ben çalıyorum", mute: ["guitar"] },
   { id: "no-piano", label: "Piyanoyu ben çalıyorum", mute: ["piano"] },
   { id: "vocals-only", label: "Yalnız vokal", solo: ["vocals"] },
+  // Plak gibi yavaşlat (hız ve ton birlikte) + belirgin yankı: önce yavaşlat, sonra yankı ekle.
+  { id: "slowed-reverb", label: "Slowed + reverb", send: 0.5, sendBy: { vocals: 0.65, lead: 0.65, backing: 0.65 },
+    room: { size: 0.7, decay: 2.2, level: 0.8 }, tempo: { vinyl: true, rate: 0.85 } },
 ];
 
 export function cleanStates(names) {
   const states = new Map();
-  for (const name of names) states.set(name, { ...DEFAULT_STEM });
+  for (const name of names) states.set(name, { ...DEFAULT_STEM, eq: [0, 0, 0] });
   return states;
 }
 
@@ -89,10 +111,23 @@ export function applyPreset(preset, names) {
   const present = new Set(names);
   const mute = (preset.mute || []).filter((name) => present.has(name));
   const solo = (preset.solo || []).filter((name) => present.has(name));
-  if (!mute.length && !solo.length) return null;
+  // Açık bir grubun ana kanalı (alt kanalları da varsa) gönderimi almaz; alt kanallar alır.
+  const expandedParents = new Set();
+  for (const [parent, kids] of Object.entries(SUB_GROUPS)) {
+    if (present.has(parent) && kids.some((kid) => present.has(kid))) expandedParents.add(parent);
+  }
+  const sendTargets = [...present].filter((name) => !expandedParents.has(name));
+  const hasSend = Number(preset.send) > 0 || Object.keys(preset.sendBy || {}).length > 0;
+  if (!mute.length && !solo.length && !(hasSend && sendTargets.length)) return null;
   const states = cleanStates(names);
   for (const name of mute) states.get(name).mute = true;
   for (const name of solo) states.get(name).solo = true;
+  if (hasSend) {
+    for (const name of sendTargets) {
+      const own = (preset.sendBy || {})[name];
+      states.get(name).send = Number.isFinite(own) ? own : Number(preset.send) || 0;
+    }
+  }
   return states;
 }
 
@@ -125,6 +160,7 @@ export function normalizeRecord(raw) {
       fader: clampFader(entry.fader),
       mute: entry.mute === true,
       solo: entry.solo === true,
+      ...normalizeFx(entry),                       // pan / eq / send (eski kayıtta yok -> nötr)
     });
   }
   const record = {
@@ -134,6 +170,7 @@ export function normalizeRecord(raw) {
   };
   const loop = validLoop(raw.loop);
   if (loop) record.loop = loop;
+  if (raw.room && typeof raw.room === "object") record.room = normalizeRoom(raw.room);
   return record;
 }
 
@@ -144,15 +181,16 @@ export function planRestore(record, names) {
   if (!record) return plan;
   for (const name of names) {
     const saved = record.stems.get(name);
-    if (saved) plan.set(name, { ...saved });
+    if (saved) plan.set(name, { ...saved, eq: [...saved.eq] });
   }
   return plan;
 }
 
-export function isDefaultMix(states, master = 100) {
+export function isDefaultMix(states, master = 100, room = null) {
   if (master !== 100) return false;
+  if (room && !isDefaultRoom(room)) return false;
   for (const state of states.values()) {
-    if (state.fader !== DEFAULT_STEM.fader || state.mute || state.solo) return false;
+    if (state.fader !== DEFAULT_STEM.fader || state.mute || state.solo || !isNeutralFx(state)) return false;
   }
   return true;
 }
@@ -165,6 +203,7 @@ export function snapshot(channels) {
       fader: clampFader(channel.fader * 100),
       mute: !!channel.mute,
       solo: !!channel.solo,
+      ...normalizeFx(channel),
     });
   }
   return states;
@@ -204,7 +243,11 @@ export function writeMix(storage, songId, states, master, now = Date.now(),
         }
       }
     }
-    if (isDefaultMix(states, master) && loop === undefined) {
+    // Oda: verilmediyse eski kayıttaki korunur (yalnız app oda değiştirince/sıfırlayınca verir)
+    const room = options.room !== undefined
+      ? normalizeRoom(options.room)
+      : (old && old.v === MIX_VERSION && old.room ? normalizeRoom(old.room) : null);
+    if (isDefaultMix(states, master, room) && loop === undefined) {
       storage.removeItem(mixKey(songId));
       return;
     }
@@ -212,6 +255,7 @@ export function writeMix(storage, songId, states, master, now = Date.now(),
     for (const [name, state] of states) stems[name] = state;
     const record = { v: MIX_VERSION, savedAt: now, master, stems };
     if (loop !== undefined) record.loop = loop;
+    if (room && !isDefaultRoom(room)) record.room = room;
     storage.setItem(mixKey(songId), JSON.stringify(record));
     pruneMix(storage);
   } catch {
@@ -234,7 +278,7 @@ export function writeLoop(storage, songId, loop, now = Date.now()) {
     if (clean) record.loop = clean;
     else delete record.loop;
     const norm = normalizeRecord(record);
-    if (!clean && norm && isDefaultMix(norm.stems, norm.master)) {
+    if (!clean && norm && isDefaultMix(norm.stems, norm.master, norm.room)) {
       storage.removeItem(mixKey(songId));
       return;
     }
