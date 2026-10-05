@@ -31,6 +31,12 @@ import {
   mapManual, fixTime, applyChanged,
   readCache as readLyricsCache, writeCache as writeLyricsCache, dropCache as dropLyricsCache,
 } from "./lyrics.js";
+import { LyricsScreen } from "./lyricsscreen.js";
+import {
+  BG_MODES, BG_LABELS, normalizeBg, wantsPulse, onsetsFromBuffer, pickBeats, readKicks, writeKicks, dropKicks,
+  classifyBackground,
+} from "./beatpulse.js";
+import { getBackground, putBackground, clearBackground } from "./bgstore.js";
 import { MediaBridge } from "./media.js";
 import { WakeLock } from "./wakelock.js";
 import { StemCache, cacheTag } from "./stemcache.js";
@@ -76,6 +82,7 @@ let pollTimer = null;
 let rafHandle = 0;
 let seeking = false;
 let currentSong = null;
+let lyricsScreen = null;       // tam ekran sözler (Aşama 13); aşağıda kurulur
 let media = null;
 const wakeLock = new WakeLock();
 const stemCache = new StemCache();
@@ -344,6 +351,7 @@ const layerClosers = {
   },
   panel: closePanelsDom,
   export: () => closeExportDom(),
+  "lyrics-full": () => { if (lyricsScreen) lyricsScreen.close(); },
   select: closeSelectModeDom,
   view: () => {
     // Ayarlar mı oynatıcı mı açık, DOM söylüyor.
@@ -712,7 +720,10 @@ function writeMeta(id, detail) {
 
 function dropMeta(ids) {
   const lyricsKeep = lyricsStorage();
-  if (lyricsKeep) dropLyricsCache(lyricsKeep, ids);       // cihazdaki sözler de gitsin
+  if (lyricsKeep) {
+    dropLyricsCache(lyricsKeep, ids);       // cihazdaki sözler de gitsin
+    dropKicks(lyricsKeep, ids);             // ve kick vuruş listesi
+  }
   for (const id of ids || []) {
     try {
       localStorage.removeItem(metaKey(id));
@@ -1608,6 +1619,13 @@ function setPlayIcon(playing) {
     ? '<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>'
     : '<path d="M8 5v14l11-7z"/>';
   el("play").setAttribute("aria-label", playing ? "Duraklat" : "Oynat");
+  if (lyricsScreen) lyricsScreen.setPlaying(playing);
+}
+
+// Tam ekran sözler açıkken ekran kilidi (Wake Lock) çalma bitse de tutulur; ekran kapanınca
+// (LyricsScreen.close) çalma da yoksa bırakılır.
+function releasePlaybackWake() {
+  if (!(lyricsScreen && lyricsScreen.isOpen)) wakeLock.release();
 }
 
 function startLoop() {
@@ -1619,6 +1637,7 @@ function startLoop() {
     const time = engine.visualTime;
     strip.update(time);
     lyricsTick(time);
+    if (lyricsScreen) lyricsScreen.tick(time);
     if (!seeking) {
       el("seek").value = String(Math.round(time * 10));
       el("time-current").textContent = formatTime(time);
@@ -1629,7 +1648,7 @@ function startLoop() {
       media.stopKeeper();
       media.setPlaybackState(false);
       metronome.stop();
-      wakeLock.release();
+      releasePlaybackWake();
     }
     // Kilit ekranı konumu: saniyede bir yeter, her karede değil.
     if (time - lastPositionSync > 1 || time < lastPositionSync) {
@@ -2069,6 +2088,245 @@ for (const radio of document.querySelectorAll('input[name="export-format"]')) {
   radio.addEventListener("change", exportRefreshForm);
 }
 
+// -------------------------------------------- tam ekran sözler (Aşama 13)
+// Mantık: lyricsscreen.js (ekran), beatpulse.js (vuruş), lyrics.js (satır bulma: panelle
+// AYNI işlevler). Burada yalnız bağlama. Arka plan seçimi TÜM şarkılar için tek ayar
+// (settings.lyricsBg); kendi dosyan yalnız cihazda (bgstore.js, IndexedDB).
+
+let kickState = { id: null, tag: null, times: null };
+let bgInfo = null;                 // {name, size, kind} ya da null (kayıtlı özel dosya)
+let bgMediaGen = 0;
+let bgNote = { text: "", warn: false };
+
+function kickTag() {
+  return String(subTag("drums"));
+}
+
+function kickStorage() {
+  return lyricsStorage();
+}
+
+function currentBeats() {
+  const kicks = currentSong && kickState.id === currentSong.id && kickState.tag === kickTag()
+    ? kickState.times : null;
+  return pickBeats({ kicks, grid: loopGrid });
+}
+
+// Kick vuruşları bir kez çıkarılır ve şarkıya kaydedilir; davul grubu kapalıyken de çalışsın.
+async function extractKicks(songId, tag) {
+  try {
+    let buffer = null;
+    const channel = engine.channels.get("kick");
+    if (channel && channel.buffer) {
+      buffer = channel.buffer;
+    } else {
+      const status = subStatus("drums");
+      if (!status || status.state !== "done") return null;
+      const raw = await stemCache.get(songId, "kick", subTag("drums"));
+      if (!raw) return null;
+      buffer = await engine.decode(raw);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));      // ses motoruna nefes
+    const times = onsetsFromBuffer(buffer);
+    const storage = kickStorage();
+    if (times.length && storage) writeKicks(storage, songId, tag, times);
+    return times.length ? times : null;
+  } catch (error) {
+    console.info("[kick] vuruşlar çıkarılamadı:", error);
+    return null;
+  }
+}
+
+async function ensureKicks() {
+  if (!currentSong) return;
+  const songId = currentSong.id;
+  const tag = kickTag();
+  if (kickState.id === songId && kickState.tag === tag && kickState.times) return;
+  const storage = kickStorage();
+  let times = storage ? readKicks(storage, songId, tag) : null;
+  if (!times) times = await extractKicks(songId, tag);
+  if (!times || !currentSong || currentSong.id !== songId) return;
+  kickState = { id: songId, tag, times };
+  if (lyricsScreen && lyricsScreen.isOpen) lyricsScreen.setBeats(currentBeats());
+}
+
+async function loadScreenMedia() {
+  const gen = ++bgMediaGen;
+  const record = await getBackground();
+  if (gen !== bgMediaGen || !lyricsScreen.isOpen || settings.lyricsBg !== "custom" || !record) return;
+  const { kind } = classifyBackground(record.blob);
+  if (!kind) return;
+  const url = URL.createObjectURL(record.blob);
+  lyricsScreen.setMedia({ kind, url, revoke: () => URL.revokeObjectURL(url) });
+}
+
+function openLyricsScreen() {
+  if (!lyricsDoc || !currentSong || lyricsScreen.isOpen) return;
+  const mode = normalizeBg(settings.lyricsBg);
+  lyricsScreen.open({
+    lines: lyricsDoc.lines, lang: lyricsDoc.language, title: currentSong.title || "", mode,
+    beats: currentBeats(), playing: engine.playing, time: engine.visualTime,
+  });
+  pushLayer("lyrics-full");
+  if (mode === "custom") loadScreenMedia();
+  if (wantsPulse(mode)) ensureKicks();
+}
+
+async function seekFromScreen(index) {
+  const line = lyricsDoc && lyricsDoc.lines[index];
+  if (!line || !(engine.duration > 0)) return;
+  await engine.seek(Math.min(line.t, engine.duration));
+  metronome.resync();
+  lyricsScreen.tick(engine.visualTime, true);
+}
+
+// ---- arka plan seçici (ekrandaki ⚙ paneli ve Ayarlar aynı kodu kullanır)
+
+const bgChoosers = [];
+
+function bgMb(bytes) {
+  return `${(bytes / (1024 * 1024)).toFixed(bytes > 10 * 1024 * 1024 ? 0 : 1)} MB`;
+}
+
+function buildBgChooser(container, name) {
+  const radios = new Map();
+  for (const mode of BG_MODES) {
+    const label = document.createElement("label");
+    label.className = "bg-opt";
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = name;
+    input.value = mode;
+    input.addEventListener("change", () => onBgChoice(mode));
+    const text = document.createElement("span");
+    text.textContent = BG_LABELS[mode];
+    label.append(input, text);
+    container.append(label);
+    radios.set(mode, input);
+  }
+  const actions = document.createElement("div");
+  actions.className = "bg-actions";
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "chip";
+  pick.textContent = "Dosya seç";
+  pick.addEventListener("click", () => el("bg-file").click());
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "chip";
+  remove.textContent = "Kaldır";
+  remove.addEventListener("click", removeBgFile);
+  actions.append(pick, remove);
+  const note = document.createElement("small");
+  note.className = "bg-note";
+  container.append(actions, note);
+  bgChoosers.push({ radios, remove, note });
+}
+
+function refreshBgChoosers() {
+  const mode = normalizeBg(settings.lyricsBg);
+  for (const chooser of bgChoosers) {
+    for (const [value, input] of chooser.radios) input.checked = value === mode;
+    chooser.remove.disabled = !bgInfo;
+    const fileText = bgInfo ? `${bgInfo.name} (${bgMb(bgInfo.size)})` : "Dosya seçilmedi";
+    chooser.note.textContent = bgNote.text || (mode === "custom" || bgInfo ? fileText : "");
+    chooser.note.classList.toggle("warn", bgNote.warn);
+  }
+}
+
+function setLyricsBg(mode) {
+  settings = saveSettings({ lyricsBg: mode });
+  bgNote = { text: "", warn: false };
+  refreshBgChoosers();
+  if (!lyricsScreen || !lyricsScreen.isOpen) return;
+  lyricsScreen.setMode(mode);
+  if (mode === "custom") {
+    loadScreenMedia();
+  } else {
+    bgMediaGen += 1;
+    lyricsScreen.setMedia(null);
+  }
+  if (wantsPulse(mode)) {
+    lyricsScreen.setBeats(currentBeats());
+    ensureKicks();
+  }
+}
+
+function onBgChoice(mode) {
+  if (mode === "custom" && !bgInfo) {
+    refreshBgChoosers();               // dosya seçilene kadar eski seçim görünür kalsın
+    el("bg-file").click();
+    return;
+  }
+  setLyricsBg(mode);
+}
+
+async function removeBgFile() {
+  await clearBackground();
+  bgInfo = null;
+  if (normalizeBg(settings.lyricsBg) === "custom") setLyricsBg("plain");
+  else refreshBgChoosers();
+}
+
+async function onBgFilePicked() {
+  const input = el("bg-file");
+  const file = input.files && input.files[0];
+  input.value = "";
+  if (!file) return;
+  const { kind, warn } = classifyBackground(file);
+  if (!kind) {
+    bgNote = { text: "Bir resim ya da video seç.", warn: true };
+    refreshBgChoosers();
+    return;
+  }
+  if (warn && !window.confirm(`Bu dosya büyük (${bgMb(file.size)}). Telefonda yavaşlık ya da bellek sorunu olabilir. Yine de kullanılsın mı?`)) {
+    return;
+  }
+  const saved = await putBackground(file);
+  if (!saved) {
+    bgNote = { text: "Dosya telefona kaydedilemedi (yer yok olabilir).", warn: true };
+    refreshBgChoosers();
+    return;
+  }
+  bgInfo = { name: file.name, size: file.size, kind };
+  setLyricsBg("custom");
+}
+
+lyricsScreen = new LyricsScreen({
+  ui: {
+    root: el("lyrics-full"), media: el("lf-media"), flow: el("lf-flow"), pulse: el("lf-pulse"),
+    track: el("lf-track"), stage: el("lf-stage"), title: el("lf-title"),
+    closeBtn: el("lf-close"), playBtn: el("lf-play"), settingsBtn: el("lf-settings"),
+  },
+  doc: document, win: window,
+  wakeLock, keepAwake: () => engine.playing,
+  reducedMotion: () => Boolean(reducedMotion && reducedMotion.matches),
+  onSeek: seekFromScreen,
+  onTogglePlay: togglePlayback,
+  onRequestClose: () => requestBack("lyrics-full"),
+  onClosed: () => {
+    el("lf-panel").hidden = true;
+    el("lf-settings").setAttribute("aria-expanded", "false");
+    bgMediaGen += 1;
+  },
+  onSettings: () => {
+    const panel = el("lf-panel");
+    panel.hidden = !panel.hidden;
+    el("lf-settings").setAttribute("aria-expanded", String(!panel.hidden));
+  },
+});
+buildBgChooser(el("bg-chooser-screen"), "bg-mode-screen");
+buildBgChooser(el("bg-chooser-settings"), "bg-mode-settings");
+refreshBgChoosers();
+getBackground().then((record) => {
+  if (record) {
+    bgInfo = { name: record.name, size: record.size, kind: classifyBackground(record.blob).kind };
+    refreshBgChoosers();
+  }
+});
+on("bg-file", "change", onBgFilePicked);
+on("lyrics-full-open", "click", openLyricsScreen);
+
 // ------------------------------------------------ alt parçalar (Aşama 10)
 // İki grup: vokal (lead/backing) ve davul (kick/snare/tom/hi-hat/zil). Her ana
 // kanalın altında KENDİ "Alt parçaları ayır" düğmesi / durumu / açma oku var.
@@ -2311,6 +2569,7 @@ async function expandSub(group) {
   } finally {
     subBusy = false;
     rebuildMixer();
+    if (group === "drums" && subExpanded("drums")) ensureKicks();   // kick tamponu şimdi elde
   }
 }
 
@@ -2662,7 +2921,8 @@ function refreshLyricsUi() {
   show("lyrics-edit", view.canEdit);
   show("lyrics-realign", view.canRealign);
   show("lyrics-fix", view.canFix);
-  for (const id of ["lyrics-extract", "lyrics-lang", "lyrics-paste", "lyrics-edit", "lyrics-realign", "lyrics-fix"]) {
+  show("lyrics-full-open", Boolean(lyricsDoc));      // sözü olmayan şarkıda görünmez
+  for (const id of ["lyrics-extract", "lyrics-lang", "lyrics-paste", "lyrics-edit", "lyrics-realign", "lyrics-fix", "lyrics-full-open"]) {
     el(id).disabled = off;
   }
   if (!view.canFix) lyricsFixing = false;
@@ -2708,6 +2968,9 @@ function renderLyricsList() {
   });
   list.append(fragment);
   list.scrollTop = 0;
+  if (lyricsScreen && lyricsScreen.isOpen) {
+    lyricsScreen.setLines(lyricsDoc ? lyricsDoc.lines : [], lyricsDoc ? lyricsDoc.language : null);
+  }
 }
 
 function lyricsReducedMotion() {
@@ -3188,13 +3451,15 @@ function stopPlayback() {
   media.stopKeeper();
   media.setPlaybackState(false);
   media.updatePosition();
-  wakeLock.release();
+  releasePlaybackWake();
 }
 
-on("play", "click", async () => {
+async function togglePlayback() {
   if (engine.playing) stopPlayback();
   else await startPlayback();
-});
+}
+
+on("play", "click", togglePlayback);
 
 on("reprocess", "click", async () => {
   if (!currentSong) return;

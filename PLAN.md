@@ -700,7 +700,7 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      **Aşama 11 kapandı.** Açık/ileride: sözleri silme ucu yok; kelime düzeyi vurgu yok (veri `w` alanında hazır); karışık dil yok; zaman doğruluğu
      için otomatik araç yazılmadı (telefonda gözle).
 
-10. [ ] **Aşama 12 - miks dışa aktarma: OTURUM 1 (backend) YAYINDA (2026-10-05); OTURUM 2 (arayüz) YAPILDI, SW v37, telefonda doğrulanmadı.**
+10. [x] **Aşama 12 - miks dışa aktarma KAPANDI (2026-10-05): oturum 1 (backend) canlıda, oturum 2 (arayüz, SW v37) TELEFONDA DOĞRULANDI (İndir ve WhatsApp'a Paylaş çalıştı).**
    Kararlar: sunucuda, 24-bit master FLAC'lardan, CPU (GPU yok); biçim m4a (varsayılan) + wav, mp3 YOK; hız/ton rubberband; varsayılan
    "orijinal hız ve ton", işaret kutusuyla "mikserdeki hız ve ton"; A-B bölgesi seçeneği; teslim İndir + (destekleniyorsa) Paylaş.
    - **Rubberband kararı:** Debian ffmpeg 5.1.9 `--enable-librubberband` ile geliyor (Rubber Band 3.1.2, canlı konteynerde ölçüldü), ayrı CLI/Python
@@ -723,7 +723,7 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      tepe -2,3 dB) üretildi, imzalı linkle token'sız indi; tekrar istek `existing`; geçersiz kazanç 400; token yok 401. Dosyalar `out/export_test/` (kulak testi).
      Testler: tests/test_export_gate.py (84), tests/test_export_api.py (49). Açık: arayüz, Paylaş (Web Share) ve ön ayar adını etiket yapma oturum 2.
 
-   - **OTURUM 2 (dışa aktarma arayüzü) YAPILDI (2026-10-05), SW v37, telefonda doğrulanmadı.** Mantık `frontend/js/exportmix.js` (saf, `tests/exportmix_test.mjs`):
+   - **OTURUM 2 (dışa aktarma arayüzü) YAPILDI (2026-10-05), SW v37, telefonda doğrulandı.** Mantık `frontend/js/exportmix.js` (saf, `tests/exportmix_test.mjs`):
      `leafGains` (efektif kazanç; AÇIK grubun ana kanalı GİTMEZ, yalnız alt parçalar), `presetLabel` (mikserin hâli `PRESETS`'ten biriyle BİREBİR eşleşirse onun adı,
      yoksa "Miks"; ana ses hesaba girmez), `summarize` ("Ana vokal kapalı, arka vokal açık, 0,8x"), `errorMessage` (400/409/404/ağ/token için Türkçe tek-iki cümle;
      sunucunun ASCII `detail`'i kullanıcıya sızmaz), `runExport` (başlat, 2 sn'de bir yokla, 15 dk'da bırak, ardışık 3 ağ hatasına kadar tolerans, iptal).
@@ -748,6 +748,11 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      yığılıyor, şarkı 432 sn); yeni yol otomatik kelime zamanlarına göre medyan 0,40 sn (eski 41 sn). Zeus: medyan 0,08 sn (eski 0,14). NEM'in canlı yapıştırılmış
      sözü eski yolla üretilmişti, yeniden hizalanmalı (kullanıcı onayıyla). Sınırlar: konuşma/rap bölümlerinde Whisper zayıf, o satırlar düşük güven kalır (elle düzelt).
      Arayüz: eşleşme notları, soluk düşük güvenli satırlar, "Zamanı düzelt" kipi (dokunma = satır başı = konum - 0,25 sn), elle satırlar `•` ile işaretli ve yeniden hizalamada metne göre korunur.
+
+11. [ ] **Aşama 13 - tam ekran sözler: YAPILDI (2026-10-05), SW v38, telefonda doğrulanmadı.** Yalnız arayüz. `lyricsscreen.js` (ekran; satır bulma `lyrics.js`'ten yeniden kullanıldı),
+   `beatpulse.js` (kick'ten vuruş çıkarma, BeatTracker, ızgara yedeği, `stem-mikser.kicks.<id>` önbelleği), `bgstore.js` (özel resim/video yalnız IndexedDB). Arka plan: sade / akan renkler /
+   vuruşa nabız / ikisi / kendi dosyam (200 MB üstü uyarı); tek ayar `settings.lyricsBg`, ⚙ ekrandaki panelden ve Ayarlar'dan seçilir. Yalnız transform+opacity; ekran kapalıyken ya da uygulama
+   arka plandayken her şey durur (Wake Lock dahil). Testler: beatpulse_test, lyricsscreen_test (sahte DOM, aç/kapa sızıntısı), engine_leak_test'e ekran bölümü. Hiza testi bu turda yeniden koşulmadı.
 
 ### Sonra (şimdilik gerek yok)
 **Anında başlatma (önizleme dosyaları).** KOD YOK, plan. **ERTELENDİ

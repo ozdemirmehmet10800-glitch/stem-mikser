@@ -98,6 +98,7 @@
           <button type="button" class="chip" id="lyrics-edit">Düzenle</button>
           <button type="button" class="chip" id="lyrics-fix" aria-pressed="false">Zamanı düzelt</button>
           <button type="button" class="chip" id="lyrics-realign">Yeniden hizala</button>
+          <button type="button" class="chip" id="lyrics-full-open" hidden>Tam ekran</button>
         </div>
       </div>
       <div class="lyrics-notices" id="lyrics-notices"></div>
@@ -333,6 +334,12 @@
       </div>
 
       <div class="field">
+        <span>Tam ekran sözler: arka plan</span>
+        <div class="bg-chooser" id="bg-chooser-settings"></div>
+        <small>Tüm şarkılar için tek ayar. Kendi resmin ya da videon yalnız bu telefonda saklanır; sunucuya gitmez.</small>
+      </div>
+
+      <div class="field">
         <span>Hiza testi</span>
         <small>
           Gerçek zamanlı ölçüm: sentetik bir tık stem'i motorun gerçek
@@ -404,6 +411,39 @@
       <button type="button" class="btn btn-primary export-go" id="export-go">Dışa aktar</button>
     </div>
   </div>
+
+  <!-- tam ekran sözler (Aşama 13) -->
+  <div class="lyrics-full" id="lyrics-full" hidden role="dialog" aria-modal="true" aria-label="Tam ekran sözler">
+    <div class="lf-bg" aria-hidden="true">
+      <div class="lf-media" id="lf-media"></div>
+      <div class="lf-flow" id="lf-flow" hidden><i></i><i></i><i></i></div>
+      <div class="lf-pulse" id="lf-pulse" hidden></div>
+      <div class="lf-scrim"></div>
+    </div>
+    <div class="lf-top">
+      <button type="button" class="lf-btn" id="lf-close" aria-label="Kapat">
+        <svg viewBox="0 0 24 24"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
+      </button>
+      <span class="lf-title" id="lf-title"></span>
+      <button type="button" class="lf-btn" id="lf-settings" aria-label="Arka plan ayarı" aria-expanded="false">
+        <svg viewBox="0 0 24 24"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5L19.4 13zM13 15.5A3.5 3.5 0 1 1 13 8.5a3.5 3.5 0 0 1 0 7z"/></svg>
+      </button>
+    </div>
+    <div class="lf-stage" id="lf-stage">
+      <ul class="lf-track" id="lf-track" aria-live="off"></ul>
+    </div>
+    <div class="lf-bottom">
+      <button type="button" class="lf-play" id="lf-play" aria-label="Oynat">
+        <svg class="i-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+        <svg class="i-pause" viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>
+      </button>
+    </div>
+    <div class="lf-panel" id="lf-panel" hidden>
+      <b>Arka plan</b>
+      <div class="bg-chooser" id="bg-chooser-screen"></div>
+    </div>
+  </div>
+  <input type="file" id="bg-file" accept="image/*,video/*" hidden>
 
   <!-- yükleniyor katmanı -->
   <div class="overlay" id="overlay" hidden>

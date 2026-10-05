@@ -1,6 +1,8 @@
 // API adresi ve token'ı localStorage'da tutar.
 // Kodda hiçbir sır yok; token yalnızca bu ekrandan giriliyor.
 
+import { normalizeBg, BG_DEFAULT } from "./beatpulse.js";
+
 const KEY = "stem-mikser.settings";
 
 // Esnetici seçimi ve formant telafisi de burada: cihaza özgü tercihler,
@@ -46,6 +48,7 @@ export const DECODE_PARALLEL = [2, 3];
 const DEFAULTS = {
   url: "", token: "", stretcher: "signalsmith", formants: false,
   mobileAudio: AUDIO_HIGH, decodeParallel: 3,
+  lyricsBg: BG_DEFAULT,      // tam ekran sözlerin arka planı (tüm şarkılar için tek ayar)
 };
 
 export function normalizeParallel(value) {
@@ -75,6 +78,7 @@ export function loadSettings() {
       formants: Boolean(parsed.formants),
       mobileAudio: normalizeAudioMode(parsed.mobileAudio),
       decodeParallel: normalizeParallel(parsed.decodeParallel),
+      lyricsBg: normalizeBg(parsed.lyricsBg),
     };
   } catch {
     return { ...DEFAULTS };
@@ -91,6 +95,7 @@ export function saveSettings(next) {
     formants: Boolean(merged.formants),
     mobileAudio: normalizeAudioMode(merged.mobileAudio),
     decodeParallel: normalizeParallel(merged.decodeParallel),
+    lyricsBg: normalizeBg(merged.lyricsBg),
   };
   localStorage.setItem(KEY, JSON.stringify(clean));
   return clean;

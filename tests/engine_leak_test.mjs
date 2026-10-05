@@ -434,6 +434,53 @@ const near = (x, y, eps = 1e-6) => Math.abs(x - y) <= eps;
   e.dispose();
 }
 
+// ------------- tam ekran sozler (Asama 13): acip kapamak iz BIRAKMAZ, motora dokunmaz
+{
+  const { LyricsScreen } = await import("../frontend/js/lyricsscreen.js");
+  const { pickBeats } = await import("../frontend/js/beatpulse.js");
+  const { live, FakeEl, makeEnv } = await import("./fakedom.mjs");
+  const e = new Engine();
+  await e.loadStems(STEMS, provide, { concurrency: 3 });
+  await e.play();
+  const nodesBefore = e.ctx.nodes.length;
+  const gainsBefore = e.diagnostics().liveGains;
+  const createdBefore = e.gainsCreated;
+
+  const env = makeEnv();
+  let wake = 0;
+  const wakeLock = { request() { wake += 1; }, release() { wake -= 1; } };
+  const screen = new LyricsScreen({
+    ui: env.ui, createEl: (tag) => new FakeEl(tag), doc: env.doc, win: env.win, wakeLock,
+    keepAwake: () => e.playing,
+  });
+  const listenersBase = live.listeners;
+  const lines = Array.from({ length: 30 }, (_, i) => ({ t: i * 2, e: i * 2 + 1.5, text: `Sentetik ${i}`, w: [] }));
+  const beats = pickBeats({ kicks: Array.from({ length: 60 }, (_, i) => i * 0.5) });
+  let revoked = 0;
+  let madeMedia = 0;
+  for (let i = 0; i < 60; i += 1) {
+    const mode = ["plain", "flow", "pulse", "both", "custom"][i % 5];
+    const media = mode === "custom" ? (madeMedia += 1, { kind: "video", url: `blob:${i}`, revoke: () => { revoked += 1; } }) : null;
+    screen.open({ lines, mode, beats, media, playing: e.playing, time: 4 });
+    for (let t = 4; t < 5; t += 0.016) screen.tick(t, false);
+    screen.close();
+  }
+  env.win.flushFrames();
+  check("60 ekran acma/kapama: ses dugumu eklenmedi", e.ctx.nodes.length === nodesBefore, `(${e.ctx.nodes.length} vs ${nodesBefore})`);
+  check("60 ekran acma/kapama: gain sayaci ayni", e.gainsCreated === createdBefore && e.diagnostics().liveGains === gainsBefore);
+  check("60 ekran acma/kapama: calma surer", e.playing === true);
+  check("60 ekran acma/kapama: dinleyici sayisi basa dondu", live.listeners === listenersBase, `(${live.listeners}/${listenersBase})`);
+  check("60 ekran acma/kapama: canli animasyon ve bekleyen kare yok", live.anims === 0 && live.frames.size === 0,
+    `(${live.anims}/${live.frames.size})`);
+  check("60 ekran acma/kapama: video URL'leri iptal", revoked === madeMedia, `(${revoked}/${madeMedia})`);
+  check("calarken kapatinca ekran kilidi birakilmaz (oynatici tutuyor)", wake === 60, `(${wake})`);
+  e.pause();
+  screen.open({ lines, mode: "plain", playing: false, time: 0 });
+  screen.close();
+  check("calma yokken kapatinca ekran kilidi birakilir", wake === 60, `(${wake})`);
+  e.dispose();
+}
+
 if (failed) {
   console.log(`\n${failed} test BASARISIZ`);
   process.exit(1);

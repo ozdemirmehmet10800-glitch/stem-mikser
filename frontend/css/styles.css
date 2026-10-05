@@ -976,3 +976,126 @@ input[type="range"]::-moz-range-thumb {
 .export-sheet .btn-primary:disabled { background: var(--panel); color: var(--text-dim); }
 .export-sheet .icon-btn { width: 40px; height: 40px; }
 .export-sheet .icon-btn svg { width: 20px; height: 20px; }
+
+/* ---------- tam ekran sözler (Aşama 13) ----------
+   Hareket eden her şey YALNIZ transform + opacity (kompozitör). Hareketli öğede blur,
+   kare başı yeniden boyama, canvas piksel işleme YOK. Ekran kapalıyken DOM'da hiçbir
+   animasyon yok (hidden); uygulama arka plandayken .paused animasyonları durdurur. */
+
+.lyrics-full {
+  position: fixed; inset: 0; z-index: 45;
+  display: flex; flex-direction: column;
+  background: #090b10; color: #fff; overflow: hidden;
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.lyrics-full[hidden] { display: none; }
+.lf-bg { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.lf-media { position: absolute; inset: 0; }
+.lf-media img, .lf-media video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.lf-scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0); }
+.lyrics-full.has-media .lf-scrim { background: rgba(4, 6, 10, 0.62); }   /* yazı okunur kalsın */
+
+.lf-flow[hidden], .lf-pulse[hidden] { display: none; }
+.lf-flow { position: absolute; inset: 0; }
+.lf-flow i {
+  position: absolute; width: 95vmax; height: 95vmax; border-radius: 50%;
+  background: radial-gradient(circle at center, var(--lf-c, #22d3ee) 0%, transparent 62%);
+  opacity: 0.34; will-change: transform;
+}
+.lf-flow i:nth-child(1) { --lf-c: #22d3ee; left: -35vmax; top: -30vmax; animation: lf-drift-a 26s ease-in-out infinite alternate; }
+.lf-flow i:nth-child(2) { --lf-c: #8b5cf6; right: -45vmax; top: 10vmax; animation: lf-drift-b 32s ease-in-out infinite alternate; }
+.lf-flow i:nth-child(3) { --lf-c: #ec4899; left: -20vmax; bottom: -55vmax; animation: lf-drift-c 38s ease-in-out infinite alternate; opacity: 0.26; }
+@keyframes lf-drift-a { from { transform: translate3d(0, 0, 0) scale(1); } to { transform: translate3d(32vmax, 20vmax, 0) scale(1.18); } }
+@keyframes lf-drift-b { from { transform: translate3d(0, 0, 0) scale(1.1); } to { transform: translate3d(-30vmax, 26vmax, 0) scale(0.9); } }
+@keyframes lf-drift-c { from { transform: translate3d(0, 0, 0) scale(0.95); } to { transform: translate3d(36vmax, -24vmax, 0) scale(1.2); } }
+.lyrics-full.paused .lf-flow i { animation-play-state: paused; }
+
+.lf-pulse {
+  position: absolute; inset: 0; opacity: 0; will-change: opacity, transform;
+  background: radial-gradient(circle at 50% 58%, rgba(34, 211, 238, 0.7) 0%, rgba(139, 92, 246, 0.25) 38%, transparent 66%);
+}
+
+.lf-top {
+  position: relative; z-index: 3; display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+}
+.lf-title { flex: 1; min-width: 0; text-align: center; font-size: 13px; color: rgba(255, 255, 255, 0.6);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lf-btn {
+  width: 44px; height: 44px; border-radius: 50%; border: 0; padding: 0;
+  display: grid; place-items: center; cursor: pointer;
+  background: rgba(255, 255, 255, 0.1); color: #fff;
+}
+.lf-btn svg { width: 22px; height: 22px; fill: currentColor; }
+.lf-btn:focus-visible, .lf-play:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.lf-stage { position: relative; z-index: 2; flex: 1; min-height: 0; overflow: hidden; }
+.lf-track {
+  list-style: none; margin: 0; padding: 0; position: relative;
+  transition: transform 0.6s cubic-bezier(0.22, 0.8, 0.3, 1);
+  will-change: transform;
+}
+.lf-track.instant { transition: none; }
+.lf-track:lang(ja), .lf-line:lang(ja) {
+  font-family: system-ui, -apple-system, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic",
+    "Meiryo", "Noto Sans JP", "Noto Sans CJK JP", "Segoe UI", Roboto, sans-serif;
+}
+.lf-line {
+  padding: 0.5rem 9%; font-size: clamp(22px, 6.6vw, 38px); line-height: 1.28; font-weight: 650;
+  text-align: center; color: #fff; text-shadow: 0 1px 10px rgba(0, 0, 0, 0.55);
+  opacity: 0; transform: scale(0.74); pointer-events: none;
+  overflow-wrap: anywhere; word-break: normal; line-break: strict;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: pointer;
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+.lf-line:lang(ja) { word-break: auto-phrase; }
+.lf-line.d2 { opacity: 0.14; transform: scale(0.72); pointer-events: auto; }
+.lf-line.d1 { opacity: 0.36; transform: scale(0.8); pointer-events: auto; }
+.lf-line.next { opacity: 0.6; transform: scale(0.95); pointer-events: auto; }
+.lf-line.cur { opacity: 1; transform: scale(1); pointer-events: auto; }
+/* düşük güven: metin sesle eşleşmedi, yeri kestirme (daha soluk + kesik çizgi) */
+.lf-line.low { text-decoration: underline dotted rgba(255, 255, 255, 0.5); text-underline-offset: 6px; }
+.lf-line.low.d2 { opacity: 0.08; }
+.lf-line.low.d1 { opacity: 0.22; }
+.lf-line.low.next { opacity: 0.4; }
+.lf-line.low.cur { opacity: 0.7; }
+
+.lf-bottom {
+  position: relative; z-index: 3; display: flex; justify-content: center;
+  padding: 8px 0 calc(18px + env(safe-area-inset-bottom, 0px));
+}
+.lf-play {
+  width: 56px; height: 56px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.14); color: #fff; display: grid; place-items: center; cursor: pointer; padding: 0;
+}
+.lf-play svg { width: 26px; height: 26px; fill: currentColor; grid-area: 1 / 1; }
+.lf-play .i-pause { display: none; }
+.lyrics-full.playing .lf-play .i-play { display: none; }
+.lyrics-full.playing .lf-play .i-pause { display: block; }
+
+.lf-panel {
+  position: absolute; z-index: 5; top: calc(env(safe-area-inset-top, 0px) + 62px); right: 12px;
+  width: min(330px, calc(100vw - 24px)); padding: 12px 14px;
+  background: rgba(20, 24, 31, 0.97); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+}
+.lf-panel[hidden] { display: none; }
+.lf-panel > b { display: block; margin-bottom: 8px; font-size: 14px; }
+
+/* arka plan seçici (hem ekranda hem Ayarlar'da) */
+.bg-chooser { display: flex; flex-direction: column; gap: 4px; }
+.bg-opt { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; font-size: 14px; }
+.bg-opt input { width: 20px; height: 20px; accent-color: var(--accent); flex: 0 0 auto; }
+.bg-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 2px 0 0 30px; }
+.bg-actions .chip { padding: 7px 12px; min-height: 36px; border-radius: 18px; border: 1px solid var(--line);
+  background: transparent; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+.bg-actions .chip:disabled { opacity: 0.4; }
+.bg-note { display: block; padding-left: 30px; font-size: 12px; color: var(--text-dim); }
+.bg-note.warn { color: var(--warn); }
+
+@media (prefers-reduced-motion: reduce) {
+  .lf-track, .lf-line { transition: none; }
+  .lf-flow i { animation: none; }
+}
+.lyrics-full.has-media .lf-scrim { background: rgba(4, 6, 10, 0.7); }
+.lyrics-full.has-media .lf-line { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85), 0 2px 18px rgba(0, 0, 0, 0.75); }
