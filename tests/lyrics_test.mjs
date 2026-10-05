@@ -7,6 +7,7 @@ import {
   MAX_TEXT_LINES, MAX_TEXT_CHARS, CACHE_PREFIX, CACHE_LIMIT,
   HIGHLIGHT_LEAD_SECONDS, highlightTime, isRunning, isStale, normalizeDoc, findLine, scrollTarget, lineLoop, linesToText, checkText,
   estimateLyrics, sectionView, LYRICS_MESSAGES, readCache, writeCache, dropCache, pruneCache,
+  TIMING_REACTION_SECONDS, fixTime, formatClock, mapManual, applyChanged, matchNotices,
 } from "../frontend/js/lyrics.js";
 import { minLoopLength } from "../frontend/js/loop.js";
 
@@ -168,6 +169,50 @@ v = sectionView({ ...base, status: { lyrics: { state: "running", started: NOW - 
 check("yeniden hizalanirken: running (eski metin gosterilebilir)", v.kind === "running");
 v = sectionView({ ...base, status: undefined, hasDoc: true });
 check("durum yok ama cihazda metin: hazir (cevrimdisi acilis)", v.kind === "ready" && v.canEdit);
+
+
+// --- Asama 11 v2: dusuk guven / elle isaretler, elle zaman, eslesme notlari
+const v2 = normalizeDoc({ version: 3, source: "pasted", language: "tr", duration: 100, lines: [
+  { t: 1, e: 2, text: "bir", w: [[1, 2, "bir"]], c: 0 }, { t: 3, e: 4, text: "iki", w: [], m: 1 },
+  { t: 5, e: 6, text: "uc", w: [] }, { t: 7, e: 8, text: "dort", w: [[7, 8, "dort"]], m: 1, c: 0 }] });
+check("normalizeDoc: c:0 (dusuk guven) ve m:1 (elle) korunur", v2.lines[0].c === 0 && v2.lines[1].m === 1
+  && v2.lines[2].c === undefined && v2.lines[2].m === undefined);
+check("fixTime: tepki payi dusulur, 0'in altina inmez", TIMING_REACTION_SECONDS === 0.25 && fixTime(10) === 9.75
+  && fixTime(0.1) === 0 && fixTime(83.456) === 83.21, String(fixTime(83.456)));
+check("formatClock: m:ss", formatClock(0) === "0:00" && formatClock(189.5) === "3:10" && formatClock(272.8) === "4:33");
+const man = mapManual(v2.lines, ["bir", "iki", "uc", "dort"]);
+check("mapManual: elle satirlar ayni metinle tasinir", man.length === 2 && man[0].i === 1 && man[0].t === 3 && man[1].i === 3 && man[1].t === 7, JSON.stringify(man));
+const man2 = mapManual(v2.lines, ["yeni", "bir", "IKI ", "ara", "dort"]);
+check("mapManual: satir eklenince indeks kayar, buyuk/kucuk harf ve bosluk onemsiz",
+  man2.length === 2 && man2[0].i === 2 && man2[1].i === 4, JSON.stringify(man2));
+check("mapManual: metni degisen elle satir birakilir", mapManual(v2.lines, ["bir", "degisti", "uc", "dort"]).length === 1);
+check("mapManual: elle satir yoksa bos", mapManual([L(1, 2), L(3, 4)], ["a", "b"]).length === 0 && mapManual(null, ["a"]).length === 0);
+check("mapManual: ayni metinli iki satir sirayla eslesir",
+  JSON.stringify(mapManual([{ t: 5, e: 6, text: "x", m: 1 }, { t: 9, e: 10, text: "x", m: 1 }], ["x", "y", "x"])) === JSON.stringify([{ i: 0, t: 5 }, { i: 2, t: 9 }]));
+const applied = applyChanged(v2, [{ i: 2, t: 5.5, e: 7.0 }], 99);
+check("applyChanged: satir, surum ve m guncellenir; c kalkar; girdi degismez",
+  applied.lines[2].t === 5.5 && applied.lines[2].e === 7 && applied.lines[2].m === 1 && applied.version === 99
+  && v2.lines[2].t === 5 && v2.version === 3);
+const appliedPrev = applyChanged(v2, [{ i: 1, t: 3.9, e: 5 }], 5);
+check("applyChanged: onceki satirin bitisi yeni basa tasmaz", appliedPrev.lines[0].e <= 3.9 - 0.02 + 1e-9 && appliedPrev.lines[1].c === undefined);
+const lowApplied = applyChanged(v2, [{ i: 0, t: 1.5, e: 2.5 }], 6);
+check("applyChanged: dusuk guvenli satir elle duzeltilince guvenli olur", lowApplied.lines[0].c === undefined && lowApplied.lines[0].m === 1);
+check("applyChanged: gecersiz indeks yok sayilir", applyChanged(v2, [{ i: 99, t: 1, e: 2 }], 1).lines.length === 4);
+
+const matchLyr = (over = {}) => ({ state: "done", source: "pasted", match: { method: "anchored", match_ratio: 0.804,
+  low_confidence_lines: [0, 1, 16], gaps: [[162, 164.8, 4], [189.5, 272.8, 28]], ...over } });
+let mn = matchNotices(matchLyr());
+check("eslesme notu: yuzde ve dusuk guvenli satir sayisi", mn[0].text === "Metnin %80'i sesle eşleşti · 3 satır düşük güvenle yerleştirildi (soluk)" && mn[0].tone === "info", mn[0].text);
+check("eslesme notu: yalniz uzun (>=5 sn) bosluklar, m:ss", mn.length === 2 && /3:10–4:33/.test(mn[1].text) && !/2:42/.test(mn[1].text), JSON.stringify(mn));
+check("eslesme notu: dusuk oran uyari tonu", matchNotices(matchLyr({ match_ratio: 0.4 }))[0].tone === "warn");
+check("eslesme notu: bosluk/dusuk guven yoksa tek kisa not", (() => { const n = matchNotices(matchLyr({ low_confidence_lines: [], gaps: [] })); return n.length === 1 && n[0].text === "Metnin %80'i sesle eşleşti"; })());
+check("eslesme notu: global yedek yol bildirilir", matchNotices({ source: "pasted", match: { method: "global" } })[0].text.includes("tek parça"));
+check("eslesme notu: auto kaynakta ya da bilgi yokken yok", matchNotices({ source: "auto", match: { method: "anchored" } }).length === 0 && matchNotices({ source: "pasted" }).length === 0
+  && matchNotices(undefined).length === 0);
+v = sectionView({ ...base, status: doneStatus({ source: "pasted", match: matchLyr().match }), hasDoc: true });
+check("bolum: eslesme notlari bildirimlere girer, zamani duzelt acik", v.notices.some((n) => /%80/.test(n.text)) && v.canFix);
+v = sectionView({ ...base, status: {}, hasDoc: false });
+check("bolum: soz yokken zamani duzelt yok", !v.canFix);
 
 // --- cihaz onbellegi
 class FakeStorage {

@@ -70,7 +70,7 @@ _lyrics = {"mode": "done", "polls": 0, "stale": False, "left": {}, "state": {}, 
 STEM_DELAY = 0.0
 
 
-def synthetic_lyrics(duration, language, source, lines_text=None, version=1):
+def synthetic_lyrics(duration, language, source, lines_text=None, version=1, manual=None, low=()):
     """Gercek soz degil: esit aralikli yer tutucu satirlar, ortada bir ara muzik boslugu."""
     word = "テスト行" if language == "ja" else "Sentetik satir"
     texts = list(lines_text) if lines_text else [f"{word} {i + 1}" for i in range(24)]
@@ -87,7 +87,14 @@ def synthetic_lyrics(duration, language, source, lines_text=None, version=1):
             ws = start + (end - start) * j / max(len(parts), 1)
             we = start + (end - start) * (j + 1) / max(len(parts), 1)
             words.append([round(ws, 2), round(we, 2), part])
-        lines.append({"t": round(start, 2), "e": round(end, 2), "text": text, "w": words})
+        line = {"t": round(start, 2), "e": round(end, 2), "text": text, "w": words}
+        if i in low:
+            line["c"] = 0
+        if manual and i in manual:
+            shift = manual[i] - line["t"]
+            line.update(t=round(manual[i], 2), e=round(line["e"] + shift, 2), m=1)
+            line.pop("c", None)
+        lines.append(line)
     return {"schema": 1, "version": version, "source": source, "language": language,
             "duration": round(duration, 2), "lines": lines}
 
@@ -229,6 +236,48 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"id": song_id, "group": group, "state": "running"})
             return
 
+        match = re.fullmatch(r"/songs/([^/]+)/lyrics/times", path)
+        if match:
+            if not self._authorized():
+                return
+            song_id = match.group(1)
+            song = self._song(song_id)
+            doc = _lyrics["docs"].get(song_id)
+            lyr = (song or {}).get("status", {}).get("lyrics") or {}
+            if not song or not doc or lyr.get("state") != "done":
+                self._json(409, {"detail": "Duzeltilecek soz yok"})
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except ValueError:
+                self._json(400, {"detail": "Govde JSON olmali"})
+                return
+            if body.get("version") is not None and body["version"] != lyr.get("version"):
+                self._json(409, {"detail": "Sozler baska bir yerden degismis; yenile"})
+                return
+            changed = []
+            for item in sorted(body.get("set") or [], key=lambda it: it.get("i", 0)):
+                i, t = item.get("i"), item.get("t")
+                if not isinstance(i, int) or not 0 <= i < len(doc["lines"]) or not isinstance(t, (int, float)):
+                    self._json(400, {"detail": "gecersiz satir ya da zaman"})
+                    return
+                lines_ = doc["lines"]
+                if (i > 0 and t < lines_[i - 1]["t"] + 0.05) or (i + 1 < len(lines_) and t > lines_[i + 1]["t"] - 0.05):
+                    self._json(400, {"detail": f"siralama bozuluyor (satir {i + 1})"})
+                    return
+                shift = t - lines_[i]["t"]
+                lines_[i].update(t=round(t, 2), e=round(lines_[i]["e"] + shift, 2), m=1)
+                lines_[i].pop("c", None)
+                if i > 0 and lines_[i - 1]["e"] > t - 0.02:
+                    lines_[i - 1]["e"] = round(max(lines_[i - 1]["t"] + 0.05, t - 0.02), 2)
+                changed.append({"i": i, "t": lines_[i]["t"], "e": lines_[i]["e"]})
+            version = int(lyr.get("version", 0)) + 1
+            doc["version"] = version
+            _lyrics["state"][song_id] = dict(lyr, version=version, edited=True)
+            self._json(200, {"id": song_id, "version": version, "changed": changed})
+            return
+
         match = re.fullmatch(r"/songs/([^/]+)/lyrics", path)
         if match:
             if not self._authorized():
@@ -251,12 +300,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"detail": "Gecersiz mod ya da dil"})
                 return
             lines = []
+            manual_raw = (body or {}).get("manual")
             if mode == "pasted":
                 lines = [" ".join(x.split()) for x in str((body or {}).get("text") or "").splitlines()]
                 lines = [x for x in lines if x]
                 if not lines:
                     self._json(400, {"detail": "metin bos"})
                     return
+            elif manual_raw is not None:
+                self._json(400, {"detail": "manual yalniz pasted modunda"})
+                return
             current = song["status"].get("lyrics") or {}
             if current.get("state") == "running":
                 self._json(200, {"id": song_id, "state": "running", "existing": True})
@@ -274,7 +327,9 @@ class Handler(BaseHTTPRequestHandler):
                                          "mode": mode, "language_requested": language,
                                          "previous": previous}
             _lyrics["left"][song_id] = _lyrics["polls"]
-            _lyrics["pending"][song_id] = (mode, language, lines)
+            _lyrics["pending"][song_id] = (mode, language, lines, {
+                int(item["i"]): float(item["t"]) for item in (manual_raw or []) if isinstance(item, dict)})
+            _lyrics.setdefault("log", []).append({"mode": mode, "manual": manual_raw or []})
             self._json(200, {"id": song_id, "state": "running", "mode": mode, "language": language})
             return
 
@@ -506,7 +561,7 @@ class Handler(BaseHTTPRequestHandler):
         if left > 0:
             _lyrics["left"][song_id] = left - 1
             return
-        mode, language, lines = _lyrics["pending"].get(song_id, ("auto", "auto", []))
+        mode, language, lines, manual = _lyrics["pending"].get(song_id, ("auto", "auto", [], {}))
         previous = lyr.get("previous")
         if _lyrics["mode"] == "error":
             _lyrics["state"][song_id] = (
@@ -521,7 +576,9 @@ class Handler(BaseHTTPRequestHandler):
         lang = language if language != "auto" else "tr"
         version = int(time.time() * 1000) % 10**9
         duration = float(song["status"].get("duration") or 120.0)
-        _lyrics["docs"][song_id] = synthetic_lyrics(duration, lang, mode, lines or None, version)
+        # yapistir-hizala taklidi: 3. ve 4. satir "eslesmedi" (dusuk guven); elle satirlar capa
+        low = (2, 3) if mode == "pasted" and len(lines) > 5 else ()
+        _lyrics["docs"][song_id] = synthetic_lyrics(duration, lang, mode, lines or None, version, manual, low)
         stems_version = song["status"].get("stems_version")
         parent = (int(stems_version) - 1) if (_lyrics["stale"] and stems_version) else stems_version
         warning = "text_mismatch" if (_lyrics["mode"] == "warn" and mode == "pasted") else None
@@ -530,6 +587,11 @@ class Handler(BaseHTTPRequestHandler):
             "version": version, "lines": len(_lyrics["docs"][song_id]["lines"]),
             "warning": warning, "parent_stems_version": parent,
         }
+        if mode == "pasted":
+            _lyrics["state"][song_id]["match"] = {
+                "method": "anchored", "match_ratio": 0.8, "anchor_lines": max(len(lines) - len(low), 0),
+                "manual_lines": len(manual), "low_confidence_lines": list(low),
+                "gaps": [[round(duration * 0.5, 1), round(duration * 0.5 + 18, 1), 24]]}
 
     def _finish_sub(self, song_id, song):
         """Calisan sahte alt ayrimlari, bekleme sorgulari bitince sonuclandirir."""

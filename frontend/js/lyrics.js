@@ -28,6 +28,8 @@ export function highlightTime(time) {
 // satırın bitişinden kısa bir pay sonra biter: sessizlikte dönmesin.
 export const GAP_CAP_SECONDS = 6.0;
 export const GAP_TAIL_SECONDS = 1.0;
+// "Zamanı düzelt": kullanıcı satırın başladığını DUYUP dokunur; tepki gecikmesi kadar geriye al.
+export const TIMING_REACTION_SECONDS = 0.25;
 // Sunucudaki 40 dk takılma kuralıyla aynı.
 export const LYRICS_STALE_SECONDS = 2400;
 export const MAX_TEXT_LINES = 400;        // sunucu sınırıyla aynı
@@ -67,7 +69,10 @@ export function normalizeDoc(doc) {
     if (!Number.isFinite(t) || t < 0) continue;
     const text = item.text.trim();
     if (!text) continue;
-    lines.push({ t, e: Number.isFinite(e) && e >= t ? e : t, text, w: Array.isArray(item.w) ? item.w : [] });
+    const line = { t, e: Number.isFinite(e) && e >= t ? e : t, text, w: Array.isArray(item.w) ? item.w : [] };
+    if (item.c === 0) line.c = 0;          // düşük güven: metin sesle eşleşmedi, yeri kestirme
+    if (item.m) line.m = 1;                // elle konan zaman (yeniden hizalamada çapa)
+    lines.push(line);
   }
   if (!lines.length) return null;
   lines.sort((a, b) => a.t - b.t);
@@ -103,6 +108,64 @@ export function findLine(lines, time, hold = HOLD_SECONDS) {
   // Biten satırdan sonra ara müzik: sonraki satır başlayana kadar vurgu kalkar.
   if (time > lines[found].e + hold) return -1;
   return found;
+}
+
+/** Dokunma anındaki şarkı konumundan satırın yeni başlangıcı (tepki payı düşülür, 0'ın altına inmez). */
+export function fixTime(time) {
+  return Math.max(0, Math.round((time - TIMING_REACTION_SECONDS) * 100) / 100);
+}
+
+/** m:ss (bölüm aralıklarını göstermek için). */
+export function formatClock(seconds) {
+  const whole = Math.max(0, Math.round(Number(seconds) || 0));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+function normText(text) {
+  return String(text || "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Düzenlenmiş metinde elle konan zamanları taşır: eski belgedeki elle satırlar (m) yeni metinde AYNI
+ * metinle, eski sıraya göre ilerleyerek bulunur. Satırlar eklenip silinse de eşleşenler çapa kalır.
+ * Dönen: [{i, t}] (i yeni metindeki sıra, t artan).
+ */
+export function mapManual(oldLines, newTexts) {
+  const out = [];
+  let from = 0;
+  let lastTime = -1;
+  for (const line of oldLines || []) {
+    if (!line.m) continue;
+    const wanted = normText(line.text);
+    let found = -1;
+    for (let k = from; k < newTexts.length; k += 1) {
+      if (normText(newTexts[k]) === wanted) { found = k; break; }
+    }
+    if (found < 0 || !(line.t > lastTime)) continue;
+    out.push({ i: found, t: Math.round(line.t * 100) / 100 });
+    from = found + 1;
+    lastTime = line.t;
+  }
+  return out;
+}
+
+/** Sunucunun döndürdüğü değişen satırları (i, t, e) yerel belgeye uygular; yeni belge döner. */
+export function applyChanged(doc, changed, version) {
+  const lines = doc.lines.map((line) => ({ ...line }));
+  for (const item of changed || []) {
+    const line = lines[item.i];
+    if (!line) continue;
+    const delta = item.t - line.t;
+    line.t = item.t;
+    line.e = Number.isFinite(item.e) ? item.e : line.e + delta;
+    line.m = 1;
+    delete line.c;
+    line.w = (line.w || []).map(([a, b, word]) => [a + delta, b + delta, word]);
+    if (item.i > 0 && lines[item.i - 1].e > item.t - 0.02) {
+      lines[item.i - 1].e = Math.max(lines[item.i - 1].t + 0.05, item.t - 0.02);
+    }
+  }
+  return { ...doc, lines, version: Number(version) || doc.version };
 }
 
 /**
@@ -177,6 +240,31 @@ export function estimateLyrics(durationSec) {
   return { seconds, minutes, usd, text: `~${minutes} dk, ~$${usd.toFixed(3).replace(/0$/, "")}` };
 }
 
+/**
+ * Yapıştır-hizala sonucundaki eşleşme bilgisinden (status.lyrics.match) açıklayıcı notlar:
+ * eşleşme yüzdesi, düşük güvenle yerleştirilen satırlar, metinde olmayan bölümler.
+ */
+export function matchNotices(lyr) {
+  const match = lyr && lyr.match;
+  if (!match || lyr.source !== "pasted") return [];
+  if (match.method !== "anchored") {
+    return [{ tone: "info", text: "Sözler tek parça hizalandı (ses eşleşmesi kullanılamadı)" }];
+  }
+  const notices = [];
+  const percent = Math.round(Number(match.match_ratio || 0) * 100);
+  const low = (match.low_confidence_lines || []).length;
+  let text = `Metnin %${percent}'i sesle eşleşti`;
+  if (low) text += ` · ${low} satır düşük güvenle yerleştirildi (soluk)`;
+  notices.push({ tone: percent < 50 ? "warn" : "info", text });
+  const gaps = (match.gaps || []).filter((gap) => gap[1] - gap[0] >= 5);
+  if (gaps.length) {
+    const shown = gaps.slice(0, 3).map((gap) => `${formatClock(gap[0])}–${formatClock(gap[1])}`).join(", ");
+    const more = gaps.length > 3 ? ` +${gaps.length - 3}` : "";
+    notices.push({ tone: "info", text: `Seste olup metinde olmayan bölümler: ${shown}${more} (nakarat tekrarı eksik olabilir)` });
+  }
+  return notices;
+}
+
 const NOTICE = {
   mismatch: "Metin sesle uyuşmuyor olabilir",
   stale: "Sözler eski ayrıştırmadan, yeniden hizala",
@@ -205,7 +293,7 @@ export function sectionView({
   const lyr = lyricsOf(status);
   const base = {
     kind: "none", text: "", notices: [], canExtract: false, canPaste: false,
-    canEdit: false, canRealign: false, disabled: false, hint: offline ? "İnternet yok" : "",
+    canEdit: false, canRealign: false, canFix: false, disabled: false, hint: offline ? "İnternet yok" : "",
     estimate: estimateLyrics(duration).text,
   };
   if (starting || isRunning(lyr, nowSec)) {
@@ -218,6 +306,7 @@ export function sectionView({
   if (state === "done" || (hasDoc && state !== "running")) {
     const notices = [];
     if (lyr && lyr.warning === "text_mismatch") notices.push({ tone: "warn", text: NOTICE.mismatch });
+    notices.push(...matchNotices(lyr));
     const stale = isStale(status);
     if (stale) notices.push({ tone: "warn", text: NOTICE.stale });
     if (lyr && lyr.last_attempt) {
@@ -225,7 +314,7 @@ export function sectionView({
       notices.push({ tone: "info", text: attempt === "no_lyrics" ? NOTICE.noLyrics : NOTICE.retryFailed });
     }
     return {
-      ...base, kind: "ready", notices, canEdit: true, canRealign: stale && hasDoc,
+      ...base, kind: "ready", notices, canEdit: true, canRealign: stale && hasDoc, canFix: hasDoc,
       disabled: offline,
     };
   }

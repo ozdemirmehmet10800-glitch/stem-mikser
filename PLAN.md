@@ -722,6 +722,18 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
      tepe -2,3 dB) üretildi, imzalı linkle token'sız indi; tekrar istek `existing`; geçersiz kazanç 400; token yok 401. Dosyalar `out/export_test/` (kulak testi).
      Testler: tests/test_export_gate.py (84), tests/test_export_api.py (49). Açık: arayüz, Paylaş (Web Share) ve ön ayar adını etiket yapma oturum 2.
 
+   - **YAPIŞTIR-HİZALA v2 (2026-10-05, canlıda; SW v36 arayüz):** Bağımlı'da yapıştırılan metin kendi içinde doğruydu ama nakarat tekrarı eksikti;
+     eski yol metnin TAMAMINI tek `align()`'a verdiği için sonraki 9 satır 66-83 sn erken yerleşti. Yeni yol: otomatik kelimeler (kayıtlı `lyrics_auto.json` ya da yeni
+     çıkarma) ile yapıştırılan kelimelerin bulanık SIRALI eşleştirmesi (Needleman-Wunsch), eşleşen satırlar ÇAPA (kendi penceresinde hizalanır; satırın aykırı eşleşmeleri
+     elenir), eşleşmeyen satır dizileri iki çapa arasındaki pencerede vokal enerjisine göre hizalanıp "düşük güven" (`c: 0`, arayüzde soluk) işaretlenir, eşleşme
+     < %35 ise eski global yola dönülür. `status.lyrics.match`: eşleşme oranı, çapa/düşük güven satırları, METİNDE OLMAYAN BÖLÜMLER (ses var, metin yok).
+     Elle zaman: `POST /songs/{id}/lyrics/times` (CPU, anında; `m: 1`; sürüm kontrolü) ve `manual` parametresi (yeniden hizalamada çapa).
+     **Ölçüm (`modal run backend/app.py::lyrics_regress`, `python tests/lyrics_regress.py`):** Bağımlı 28-36. satırlar 188-244 sn -> 272-313 sn; canlıda yeniden hizalandı
+     (43 sn, ~$0.004). NEM: nakarat tekrarı silinince yeni yol 0,00 sn hata, eski yol 125 sn. **DİKKAT: eski yol NEM'de 14. satırdan sonra zaten bozukmuş** (satırlar 143-260 sn'ye
+     yığılıyor, şarkı 432 sn); yeni yol otomatik kelime zamanlarına göre medyan 0,40 sn (eski 41 sn). Zeus: medyan 0,08 sn (eski 0,14). NEM'in canlı yapıştırılmış
+     sözü eski yolla üretilmişti, yeniden hizalanmalı (kullanıcı onayıyla). Sınırlar: konuşma/rap bölümlerinde Whisper zayıf, o satırlar düşük güven kalır (elle düzelt).
+     Arayüz: eşleşme notları, soluk düşük güvenli satırlar, "Zamanı düzelt" kipi (dokunma = satır başı = konum - 0,25 sn), elle satırlar `•` ile işaretli ve yeniden hizalamada metne göre korunur.
+
 ### Sonra (şimdilik gerek yok)
 **Anında başlatma (önizleme dosyaları).** KOD YOK, plan. **ERTELENDİ
 (2026-09-29):** telefon ölçümünde cihazda kayıtlı şarkılar 1-2 saniyede

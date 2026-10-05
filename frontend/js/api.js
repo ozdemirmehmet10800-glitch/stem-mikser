@@ -202,13 +202,26 @@ export class Api {
   // Şarkı sözleri (Aşama 11). mode "auto" (çıkar) | "pasted" (verilen metni sese hizala);
   // language "auto" | "tr" | "en" | "ja"; replace: mevcut sonucun üstüne yaz (auto için).
   // Dönen `state`: "running" | "no_vocals" | "done" | "no_lyrics" (+ existing: true).
-  async startLyrics(id, { mode = "auto", language = "auto", text = "", replace = false } = {}) {
+  async startLyrics(id, { mode = "auto", language = "auto", text = "", replace = false, manual = [] } = {}) {
     const body = { mode, language, replace };
-    if (mode === "pasted") body.text = text;
+    if (mode === "pasted") {
+      body.text = text;
+      if (manual && manual.length) body.manual = manual;       // elle konan zamanlar çapa kalır
+    }
     return (await this.#request(`/songs/${encodeURIComponent(id)}/lyrics`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+    })).json();
+  }
+
+  // Satır başlangıçlarını ELLE düzeltir (CPU, anında): set = [{i, t}], version = elimizdeki sürüm.
+  // Dönen {version, changed: [{i, t, e}]}. Sıra bozulursa 400, başka yerden değişmişse 409.
+  async setLyricTimes(id, { version, set }) {
+    return (await this.#request(`/songs/${encodeURIComponent(id)}/lyrics/times`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ version, set }),
     })).json();
   }
 

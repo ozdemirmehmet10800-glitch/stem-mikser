@@ -24,6 +24,7 @@ import {
 import {
   LANG_CHOICES, lyricsOf, sectionView, findLine, highlightTime, scrollTarget, lineLoop, linesToText,
   checkText as checkLyricsText, normalizeDoc as normalizeLyricsDoc, isRunning as lyricsIsRunning,
+  mapManual, fixTime, applyChanged,
   readCache as readLyricsCache, writeCache as writeLyricsCache, dropCache as dropLyricsCache,
 } from "./lyrics.js";
 import { MediaBridge } from "./media.js";
@@ -2294,6 +2295,8 @@ let lyricsIndex = -2;             // son boyanan satır (-2: hiç boyanmadı)
 let lyricsFollow = true;          // otomatik kaydırma
 let lyricsScrollGuard = 0;        // programatik kaydırmanın ürettiği scroll olaylarını yut
 let lyricsEditing = false;
+let lyricsFixing = false;         // "Zamanı düzelt" kipi: dokunma = bu satır ŞİMDİ başlıyor
+let lyricsFixBusy = false;
 let lyricsLoadGen = 0;            // eski yüklemelerin cevabı yeni şarkıyı ezmesin
 const reducedMotion = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
 
@@ -2359,12 +2362,19 @@ function refreshLyricsUi() {
   show("lyrics-paste", view.canPaste);
   show("lyrics-edit", view.canEdit);
   show("lyrics-realign", view.canRealign);
-  for (const id of ["lyrics-extract", "lyrics-lang", "lyrics-paste", "lyrics-edit", "lyrics-realign"]) {
+  show("lyrics-fix", view.canFix);
+  for (const id of ["lyrics-extract", "lyrics-lang", "lyrics-paste", "lyrics-edit", "lyrics-realign", "lyrics-fix"]) {
     el(id).disabled = off;
   }
+  if (!view.canFix) lyricsFixing = false;
+  el("lyrics-fix").setAttribute("aria-pressed", String(lyricsFixing));
+  el("lyrics-list").classList.toggle("fixing", lyricsFixing);
   const notices = el("lyrics-notices");
   notices.textContent = "";
-  for (const item of view.notices) {
+  const shown = lyricsFixing
+    ? [...view.notices, { tone: "info", text: "Zamanı düzelt açık: çalarken bir satır başlayınca ona dokun, başlangıcı o an olur" }]
+    : view.notices;
+  for (const item of shown) {
     const span = document.createElement("span");
     span.className = `notice ${item.tone === "info" ? "info" : ""}`.trim();
     span.textContent = item.text;
@@ -2392,7 +2402,7 @@ function renderLyricsList() {
   const fragment = document.createDocumentFragment();
   lyricsDoc.lines.forEach((line, index) => {
     const item = document.createElement("li");
-    item.className = "lyric-line";
+    item.className = "lyric-line" + (line.c === 0 ? " low" : "") + (line.m ? " manual" : "");
     item.dataset.i = String(index);
     item.textContent = line.text;
     fragment.append(item);
@@ -2454,10 +2464,60 @@ function lyricsResumeFollow() {
   if (target >= 0) scrollLyricsTo(target);
 }
 
+// "Zamanı düzelt": satırın başlangıcı = dokunduğun anki şarkı konumu - tepki payı. Sunucu kaydeder
+// (CPU, anında), satır `m` ile işaretlenir ve sonraki yeniden hizalamada ÇAPA olarak korunur.
+async function fixLyricTime(index) {
+  if (!lyricsDoc || lyricsFixBusy || !currentSong) return;
+  if (!requireOnline(el("player-message"), "Zamanı kaydetmek")) return;
+  const songId = currentSong.id;
+  const time = fixTime(engine.visualTime);
+  lyricsFixBusy = true;
+  const item = el("lyrics-list").children[index];
+  if (item) item.classList.add("pressing");
+  try {
+    const result = await api.setLyricTimes(songId, { version: lyricsDoc.version, set: [{ i: index, t: time }] });
+    if (!currentSong || currentSong.id !== songId || !lyricsDoc) return;
+    lyricsDoc = applyChanged(lyricsDoc, result.changed, result.version);
+    const lyr = lyricsStatus();
+    if (lyr) {
+      currentSong = { ...currentSong, status: { ...currentSong.status,
+        lyrics: { ...lyr, version: result.version, edited: true } } };
+      writeMeta(songId, currentSong);
+    }
+    const storage = lyricsStorage();
+    if (storage) writeLyricsCache(storage, songId, lyricsDoc, result.version);
+    const row = el("lyrics-list").children[index];
+    if (row) {
+      row.classList.remove("low");
+      row.classList.add("manual");
+    }
+    lyricsIndex = -2;
+    lyricsTick(engine.visualTime);
+    loopNotice(`${index + 1}. satır ${formatPoint(time)}'de başlıyor.`);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      showMessage(el("player-message"), "Sözler başka bir yerden değişmiş, yenileniyor.", "warn");
+      await loadLyricsDoc();
+    } else if (error instanceof ApiError && error.status === 400) {
+      showMessage(el("player-message"), `Bu zaman olmaz: ${error.message}`, "warn");
+    } else {
+      showMessage(el("player-message"), describeError(error));
+    }
+  } finally {
+    lyricsFixBusy = false;
+    const row = el("lyrics-list").children[index];
+    if (row) row.classList.remove("pressing");
+  }
+}
+
 async function onLyricLineTap(index) {
   if (!lyricsDoc || !(engine.duration > 0)) return;
   const line = lyricsDoc.lines[index];
   if (!line) return;
+  if (lyricsFixing) {
+    await fixLyricTime(index);
+    return;
+  }
   lyricsFollow = true;
   el("lyrics-follow").hidden = true;
   await engine.seek(Math.min(line.t, engine.duration));
@@ -2536,6 +2596,7 @@ function resetLyrics() {
   lyricsDoc = null;
   lyricsStarting = false;
   lyricsEditing = false;
+  lyricsFixing = false;
   renderLyricsList();
   refreshLyricsUi();
 }
@@ -2686,14 +2747,16 @@ async function saveLyricsEditor() {
     return;
   }
   const language = el("lyrics-edit-lang").value || "auto";
-  const started = await startLyricsJob({ mode: "pasted", language, text: lines.join("\n") });
+  const manual = lyricsDoc ? mapManual(lyricsDoc.lines, lines) : [];       // elle zamanlar çapa kalır
+  const started = await startLyricsJob({ mode: "pasted", language, text: lines.join("\n"), manual });
   if (started) requestBack("lyrics-editor");
 }
 
 async function realignLyrics() {
   if (!lyricsDoc) return;
   if (!window.confirm("Sözler mevcut metinle sese yeniden hizalanacak. Devam edilsin mi?")) return;
-  await startLyricsJob({ mode: "pasted", language: lyricsDoc.language || "auto", text: linesToText(lyricsDoc.lines) });
+  await startLyricsJob({ mode: "pasted", language: lyricsDoc.language || "auto", text: linesToText(lyricsDoc.lines),
+    manual: mapManual(lyricsDoc.lines, lyricsDoc.lines.map((line) => line.text)) });
 }
 
 buildLyricsLangOptions();
@@ -2716,6 +2779,10 @@ on("lyrics-extract", "click", () => {
 on("lyrics-paste", "click", () => openLyricsEditor(""));
 on("lyrics-edit", "click", () => openLyricsEditor(lyricsDoc ? linesToText(lyricsDoc.lines) : ""));
 on("lyrics-realign", "click", realignLyrics);
+on("lyrics-fix", "click", () => {
+  lyricsFixing = !lyricsFixing;
+  refreshLyricsUi();
+});
 on("lyrics-cancel", "click", () => requestBack("lyrics-editor"));
 on("lyrics-save", "click", saveLyricsEditor);
 on("lyrics-text", "input", updateLyricsCount);
