@@ -22,16 +22,24 @@
 import { findLine, highlightTime, scrollTarget } from "./lyrics.js";
 import { BeatTracker, wantsFlow, wantsPulse } from "./beatpulse.js";
 
-// Ortadaki satırın üstünde ve altında görünen satır sayısı. TEK AYAR: CSS opaklık/ölçek
-// kademesi bu sayıya göre hesaplanır (--lf-window). Ekran kısaysa sığmayanlar zaten kesilir.
-export const WINDOW = 3;
+// Ortadaki satırın üstünde ve altında görünen satır sayısı (1-5, ayar: settings.lyricsRows).
+// CSS opaklık/ölçek kademesi bu sayıya göre hesaplanır (--lf-span). Ekran kısaysa sığmayanlar
+// zaten kesilir.
+export const ROWS_MIN = 1;
+export const ROWS_MAX = 5;
+export const ROWS_DEFAULT = 3;
+
+export function normalizeRows(value) {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) && n >= ROWS_MIN && n <= ROWS_MAX ? n : ROWS_DEFAULT;
+}
 const POSITION_CLASSES = ["cur", "next", "dist"];
 const PULSE_MS = 420;
 
 export class LyricsScreen {
   constructor({
     ui, createEl, doc = globalThis.document, win = globalThis.window,
-    reducedMotion = () => false, wakeLock = null, keepAwake = () => false,
+    rows = ROWS_DEFAULT, reducedMotion = () => false, wakeLock = null, keepAwake = () => false,
     onSeek = () => {}, onTogglePlay = () => {}, onRequestClose = () => {}, onClosed = () => {}, onSettings = () => {},
   }) {
     this.ui = ui;
@@ -66,7 +74,8 @@ export class LyricsScreen {
     this.padded = 0;
     this.lastTime = 0;
 
-    ui.root.style.setProperty("--lf-span", String(Math.max(WINDOW - 1, 1)));
+    this.rows = normalizeRows(rows);
+    ui.root.style.setProperty("--lf-span", String(Math.max(this.rows - 1, 1)));
     // Kalıcı dinleyiciler (ui düğümleri ömür boyu aynı): BİR kez.
     ui.track.addEventListener("click", this.#onTrackClick);
     ui.playBtn.addEventListener("click", this.#onPlay);
@@ -151,6 +160,21 @@ export class LyricsScreen {
     if (!this.pulseOn) this.#cancelAnims();
     this.tracker.reset();
     this.ui.root.dataset.bg = mode;
+  }
+
+  /** Görünen satır sayısı (1-5): ekran açıkken de hemen uygulanır. */
+  setRows(value) {
+    const next = normalizeRows(value);
+    if (next === this.rows) return;
+    if (this.isOpen && this.center >= 0) {
+      const items = this.ui.track.children;
+      for (let k = this.center - this.rows; k <= this.center + this.rows; k += 1) {
+        if (items[k]) items[k].classList.remove(...POSITION_CLASSES);
+      }
+    }
+    this.rows = next;
+    this.ui.root.style.setProperty("--lf-span", String(Math.max(next - 1, 1)));
+    if (this.isOpen && !this.paused) this.tick(this.lastTime, true);
   }
 
   setBeats(beats) {
@@ -280,12 +304,12 @@ export class LyricsScreen {
     const items = this.ui.track.children;
     const previous = this.center;
     if (previous >= 0) {
-      for (let k = previous - WINDOW; k <= previous + WINDOW; k += 1) {
+      for (let k = previous - this.rows; k <= previous + this.rows; k += 1) {
         if (items[k]) items[k].classList.remove(...POSITION_CLASSES);
       }
     }
     if (center >= 0) {
-      for (let k = center - WINDOW; k <= center + WINDOW; k += 1) {
+      for (let k = center - this.rows; k <= center + this.rows; k += 1) {
         const item = items[k];
         if (!item) continue;
         item.classList.remove(...POSITION_CLASSES);
@@ -294,7 +318,7 @@ export class LyricsScreen {
           item.classList.add(index >= 0 ? "cur" : "next");
         } else {
           item.classList.add("dist");
-          item.style.setProperty("--k", String(distance));     // 1..WINDOW: uzaklaştıkça solar
+          item.style.setProperty("--k", String(distance));     // 1..rows: uzaklaştıkça solar
         }
       }
     }

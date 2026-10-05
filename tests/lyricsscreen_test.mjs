@@ -3,7 +3,7 @@
 //
 //     node tests\lyricsscreen_test.mjs
 
-import { LyricsScreen, WINDOW } from "../frontend/js/lyricsscreen.js";
+import { LyricsScreen, ROWS_DEFAULT, ROWS_MIN, ROWS_MAX, normalizeRows } from "../frontend/js/lyricsscreen.js";
 import { pickBeats } from "../frontend/js/beatpulse.js";
 
 let failed = 0;
@@ -55,7 +55,7 @@ check("o anki satır cur", cur === 6, `cur ${cur}`);
 check("üstte ve altta 3'er satır: uzaklık --k = 1..3", [5, 7].every((i) => env.ui.track.children[i].has("dist") && env.ui.track.children[i].style["--k"] === "1")
   && [3, 9].every((i) => env.ui.track.children[i].has("dist") && env.ui.track.children[i].style["--k"] === "3")
   && env.ui.track.children[4].style["--k"] === "2" && env.ui.track.children[8].style["--k"] === "2");
-check("kademe tek sabitten: --lf-span = WINDOW - 1", env.ui.root.style["--lf-span"] === String(WINDOW - 1));
+check("kademe ayardan: --lf-span = satır - 1", env.ui.root.style["--lf-span"] === String(ROWS_DEFAULT - 1));
 check("pencere dışı satırda sınıf yok", [0, 1, 2, 10, 11, 19].every((i) => ![...env.ui.track.children[i]._classes].some((c) => ["cur", "dist", "next"].includes(c))));
 check("düşük güvenli satır işaretli (low)", env.ui.track.children[7].has("low") && !env.ui.track.children[6].has("low"));
 check("satır sahnenin ortasına kaydırıldı (scrollTo: merkez - sahne merkezi)", env.ui.stage.scrollTop === 25, String(env.ui.stage.scrollTop));
@@ -238,7 +238,40 @@ check("bekleyen requestAnimationFrame 0", live.frames.size === 0, String(live.fr
 check("her özel ortamın URL'i iptal edildi", revokedAll === madeMedia, `${revokedAll}/${madeMedia}`);
 check("satır ve ortam düğümleri kalmadı", env.ui.track.children.length === 0 && env.ui.media.children.length === 0);
 check("wake lock istek/bırakma dengeli (son durum: bırakılmış)", calls.wakeRel >= 1 && calls.wakeReq >= calls.wakeRel);
-check("pencere genişliği sabit (WINDOW)", WINDOW === 3);
+check("varsayılan 3, aralık 1-5", ROWS_DEFAULT === 3 && ROWS_MIN === 1 && ROWS_MAX === 5);
+
+// --- "Görünen satır" ayarı
+check("normalizeRows: 1-5 kalır, dışı/bozuk varsayılan", [1, 2, 3, 4, 5].every((n) => normalizeRows(n) === n && normalizeRows(String(n)) === n)
+  && [0, 6, -1, NaN, null, undefined, "x", 2.6].map(normalizeRows).join() === "3,3,3,3,3,3,3,3");
+env = makeEnv();
+({ screen, calls } = makeScreen(env));
+screen.open({ lines: lines(), mode: "plain", time: 30, rows: 3 });
+const items = () => env.ui.track.children;
+const distCount = () => items().filter((c) => c.has("dist")).length;
+check("3 satır: üstte 3 + altta 3 'dist', ortada tek cur", distCount() === 6 && items().filter((c) => c.has("cur")).length === 1);
+screen.setRows(1);
+check("ekran AÇIKKEN 1'e düşürme hemen uygulanır: yalnız 1+1 satır", distCount() === 2 && items()[5].has("dist") && items()[7].has("dist")
+  && items()[4].has("dist") === false && env.ui.root.style["--lf-span"] === "1");
+check("1 satır: --k 1 (en yakın = 0,5 opaklık, kademe bölünmesi 1'e sabit)", items()[5].style["--k"] === "1" && items()[7].style["--k"] === "1");
+check("o anki satır ve konumu değişmedi", items()[6].has("cur") && env.ui.stage.scrollTop === 25);
+screen.setRows(5);
+check("5'e çıkarma hemen uygulanır: 5+5 satır, span 4", distCount() === 10 && items()[1].style["--k"] === "5" && items()[11].style["--k"] === "5"
+  && items()[0].has("dist") === false && env.ui.root.style["--lf-span"] === "4");
+screen.setRows(2);
+check("5'ten 2'ye: artan dış satırların sınıfı temizlenir", distCount() === 4 && ["cur", "dist", "next"].every((c) => !items()[2].has(c) && !items()[10].has(c)));
+screen.setRows(99);
+check("geçersiz değer varsayılana (3) döner", distCount() === 6);
+const scrollsBeforeRows = env.ui.stage.scrolls.length;
+screen.setRows(3);
+check("aynı değer: iş yok", env.ui.stage.scrolls.length === scrollsBeforeRows && distCount() === 6);
+screen.close();
+screen.setRows(4);
+check("kapalıyken setRows patlamaz, sonraki açılış yeni değeri kullanır", (screen.open({ lines: lines(), mode: "plain", time: 30 }), distCount()) === 8);
+screen.close();
+env = makeEnv();
+const custom = new LyricsScreen({ ui: env.ui, createEl: (tag) => new FakeEl(tag), doc: env.doc, win: env.win, rows: 5 });
+check("kurucu rows ayarı", env.ui.root.style["--lf-span"] === "4" && custom.rows === 5);
+env.win.flushFrames();
 
 if (failed) {
   console.error(`\n${failed} test başarısız`);

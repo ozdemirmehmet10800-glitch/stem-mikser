@@ -1093,6 +1093,8 @@ input[type="range"]::-moz-range-thumb {
 .bg-chooser { display: flex; flex-direction: column; gap: 4px; }
 .bg-opt { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; font-size: 14px; }
 .bg-opt input { width: 20px; height: 20px; accent-color: var(--accent); flex: 0 0 auto; }
+.bg-opt select { margin-left: auto; min-height: 36px; padding: 4px 10px; background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit; }
 .bg-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 2px 0 0 30px; }
 .bg-actions .chip { padding: 7px 12px; min-height: 36px; border-radius: 18px; border: 1px solid var(--line);
   background: transparent; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }

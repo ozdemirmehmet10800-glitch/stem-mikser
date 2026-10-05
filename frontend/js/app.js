@@ -31,7 +31,7 @@ import {
   mapManual, fixTime, applyChanged,
   readCache as readLyricsCache, writeCache as writeLyricsCache, dropCache as dropLyricsCache,
 } from "./lyrics.js";
-import { LyricsScreen } from "./lyricsscreen.js";
+import { LyricsScreen, ROWS_MIN, ROWS_MAX, normalizeRows } from "./lyricsscreen.js";
 import {
   BG_MODES, BG_LABELS, normalizeBg, wantsPulse, onsetsFromBuffer, pickBeats, readKicks, writeKicks, dropKicks,
   classifyBackground,
@@ -2165,6 +2165,7 @@ function openLyricsScreen() {
   const mode = normalizeBg(settings.lyricsBg);
   lyricsScreen.open({
     lines: lyricsDoc.lines, lang: lyricsDoc.language, title: currentSong.title || "", mode,
+    rows: normalizeRows(settings.lyricsRows),
     beats: currentBeats(), playing: engine.playing, time: engine.visualTime,
   });
   pushLayer("lyrics-full");
@@ -2183,6 +2184,33 @@ async function seekFromScreen(index) {
 // ---- arka plan seçici (ekrandaki ⚙ paneli ve Ayarlar aynı kodu kullanır)
 
 const bgChoosers = [];
+const rowSelects = [];
+
+// "Görünen satır": üstte ve altta kaç satır (1-5). Ekran açıkken hemen uygulanır.
+function buildRowsControl(container) {
+  const label = document.createElement("label");
+  label.className = "bg-opt";
+  const text = document.createElement("span");
+  text.textContent = "Görünen satır (üstte ve altta)";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Görünen satır sayısı");
+  for (let n = ROWS_MIN; n <= ROWS_MAX; n += 1) {
+    const option = document.createElement("option");
+    option.value = String(n);
+    option.textContent = String(n);
+    select.append(option);
+  }
+  select.addEventListener("change", () => setLyricsRows(select.value));
+  label.append(text, select);
+  container.append(label);
+  rowSelects.push(select);
+}
+
+function setLyricsRows(value) {
+  settings = saveSettings({ lyricsRows: normalizeRows(value) });
+  refreshBgChoosers();
+  if (lyricsScreen && lyricsScreen.isOpen) lyricsScreen.setRows(settings.lyricsRows);
+}
 
 function bgMb(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(bytes > 10 * 1024 * 1024 ? 0 : 1)} MB`;
@@ -2225,6 +2253,7 @@ function buildBgChooser(container, name) {
 
 function refreshBgChoosers() {
   const mode = normalizeBg(settings.lyricsBg);
+  for (const select of rowSelects) select.value = String(normalizeRows(settings.lyricsRows));
   for (const chooser of bgChoosers) {
     for (const [value, input] of chooser.radios) input.checked = value === mode;
     chooser.remove.disabled = !bgInfo;
@@ -2299,7 +2328,7 @@ lyricsScreen = new LyricsScreen({
     closeBtn: el("lf-close"), playBtn: el("lf-play"), settingsBtn: el("lf-settings"),
     followBtn: el("lf-follow"),
   },
-  doc: document, win: window,
+  doc: document, win: window, rows: normalizeRows(settings.lyricsRows),
   wakeLock, keepAwake: () => engine.playing,
   reducedMotion: () => Boolean(reducedMotion && reducedMotion.matches),
   onSeek: seekFromScreen,
@@ -2318,6 +2347,8 @@ lyricsScreen = new LyricsScreen({
 });
 buildBgChooser(el("bg-chooser-screen"), "bg-mode-screen");
 buildBgChooser(el("bg-chooser-settings"), "bg-mode-settings");
+buildRowsControl(el("bg-chooser-screen"));
+buildRowsControl(el("bg-chooser-settings"));
 refreshBgChoosers();
 getBackground().then((record) => {
   if (record) {

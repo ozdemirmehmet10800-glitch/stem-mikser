@@ -2,6 +2,7 @@
 // Kodda hiçbir sır yok; token yalnızca bu ekrandan giriliyor.
 
 import { normalizeBg, BG_DEFAULT } from "./beatpulse.js";
+import { normalizeRows, ROWS_DEFAULT } from "./lyricsscreen.js";
 
 const KEY = "stem-mikser.settings";
 
@@ -49,6 +50,7 @@ const DEFAULTS = {
   url: "", token: "", stretcher: "signalsmith", formants: false,
   mobileAudio: AUDIO_HIGH, decodeParallel: 3,
   lyricsBg: BG_DEFAULT,      // tam ekran sözlerin arka planı (tüm şarkılar için tek ayar)
+  lyricsRows: ROWS_DEFAULT,  // tam ekranda üstte ve altta görünen satır (1-5)
 };
 
 export function normalizeParallel(value) {
@@ -79,6 +81,7 @@ export function loadSettings() {
       mobileAudio: normalizeAudioMode(parsed.mobileAudio),
       decodeParallel: normalizeParallel(parsed.decodeParallel),
       lyricsBg: normalizeBg(parsed.lyricsBg),
+      lyricsRows: normalizeRows(parsed.lyricsRows),
     };
   } catch {
     return { ...DEFAULTS };
@@ -96,6 +99,7 @@ export function saveSettings(next) {
     mobileAudio: normalizeAudioMode(merged.mobileAudio),
     decodeParallel: normalizeParallel(merged.decodeParallel),
     lyricsBg: normalizeBg(merged.lyricsBg),
+    lyricsRows: normalizeRows(merged.lyricsRows),
   };
   localStorage.setItem(KEY, JSON.stringify(clean));
   return clean;
