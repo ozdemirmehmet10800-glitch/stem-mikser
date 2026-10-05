@@ -8,6 +8,7 @@ Adaylar (hepsi aynı `Systran/faster-whisper-large-v3` ağırlığı, CTranslate
   raw          faster-whisper, VARSAYILAN ayarlar (taban çizgisi)
   guard        condition_on_previous_text=False + silero VAD + no_speech/sıkıştırma
                eşikleri + hallucination_silence_threshold
+  novad(_gate) guard'ın VAD'siz hali (NEM slowed+reverb'de VAD sesi atıyor)
   guard_gate   guard, ama ses ÖNCE vokal enerjisiyle kapılanmış (sessiz yerler 0)
   stable       stable-ts (faster-whisper arka ucu), vad=True
   stable_gate  stable, kapılanmış ses
@@ -62,7 +63,7 @@ SONGS = {
     "ado": ("うっせぇわ", "ja", "ado.txt"),
     "finalduet": ("Final Duet", None, None),
 }
-VARIANTS = ("raw", "guard", "guard_gate", "stable", "stable_gate")
+VARIANTS = ("raw", "guard", "guard_gate", "novad", "novad_gate", "stable", "stable_gate")
 
 _NVIDIA = "/usr/local/lib/python3.11/site-packages/nvidia"
 lyrics_image = (
@@ -387,11 +388,13 @@ def transcribe_song(key: str, variants: list, inputs: list, ref_text: str = "") 
             t1 = time.time()
             entry = {}
             try:
-                if variant in ("raw", "guard", "guard_gate"):
+                if variant in ("raw", "guard", "guard_gate", "novad", "novad_gate"):
                     kwargs = dict(language=language, word_timestamps=True, beam_size=5)
                     if variant != "raw":
                         kwargs.update(
-                            condition_on_previous_text=False, vad_filter=True,
+                            condition_on_previous_text=False,
+                            # novad*: silero VAD kapalı (reverb'li vokalde sesi konuşma saymıyor)
+                            vad_filter=not variant.startswith("novad"),
                             vad_parameters=dict(min_silence_duration_ms=500),
                             no_speech_threshold=0.6, compression_ratio_threshold=2.4,
                             log_prob_threshold=-1.0, hallucination_silence_threshold=2.0)
