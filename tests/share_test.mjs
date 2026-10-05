@@ -4,7 +4,7 @@
 
 import {
   SHARE_CACHE, SHARE_MAX_BYTES, SHARE_MAX_AGE_MS, MESSAGES, formatSize, formatDuration, isAudio, launchKind, keyUrl,
-  readPending, clearPending, classify, durationWarning,
+  readPending, clearPending, classify, durationWarning, cardView,
 } from "../frontend/js/share.js";
 import { fakeCaches } from "./sw_harness.mjs";
 
@@ -56,6 +56,42 @@ check("durationWarning: 10 dk içinde boş, üstünde uyarır, bilinmiyorsa boş
 // --- launchKind
 check("launchKind", launchKind("?paylasim=1") === "file" && launchKind("?paylasim=bos") === "empty" && launchKind("?paylasim=hata") === "error"
   && launchKind("") === null && launchKind(undefined) === null && launchKind("?baska=1") === null);
+
+// --- onay kartı görünümü: paylaşım YOKKEN kart görünmez, düğme pasif (hata: boş kart görünüyordu)
+const file = new File(["12345"], "a.mp3", { type: "audio/mpeg" });
+const none = cardView({});
+check("paylaşım yok (hiç argüman): kart GİZLİ, Yükle pasif, ad/meta boş", none.hidden === true && none.goDisabled === true
+  && none.name === "" && none.meta === "" && none.note === "");
+check("paylaşım yok (pending null): kart GİZLİ, Yükle ve Vazgeç pasif", (() => {
+  const v = cardView({ pending: null, offline: false, configured: true });
+  return v.hidden && v.goDisabled && v.cancelDisabled && v.qualityDisabled;
+})());
+check("dosyasız kayıt ({name, size} ama file yok): kart GİZLİ, Yükle pasif", (() => {
+  const v = cardView({ pending: { name: "x.mp3", size: 5, note: "" } });
+  return v.hidden && v.goDisabled;
+})());
+check("her durumda kart yoksa Yükle pasif (çevrimiçi/ayarlı/meşgul değil)", [true, false].every((offline) => [true, false].every((configured) => {
+  const v = cardView({ pending: null, offline, configured, busy: false });
+  return v.hidden && v.goDisabled;
+})));
+const ready = cardView({ pending: { file, name: "a.mp3", size: 5, note: "2 dosya atlandı (yalnız ilki alındı)." }, seconds: 187 });
+check("geçerli kayıt: kart görünür; ad, boyut ve süre dolu; not; Yükle AÇIK", !ready.hidden && ready.name === "a.mp3"
+  && ready.meta === "1 KB · 3:07" && ready.note === "2 dosya atlandı (yalnız ilki alındı)." && !ready.goDisabled
+  && !ready.cancelDisabled && ready.goLabel === "Yükle ve ayır");
+check("süre bilinmiyorsa meta yalnız boyut", cardView({ pending: { file, name: "a.mp3", size: 2048 } }).meta === "2 KB");
+check("süre 10 dk üstü: not uyarı içerir", /10 dakikadan uzun/.test(cardView({ pending: { file, name: "a", size: 1, note: "" }, seconds: 700 }).note));
+check("çevrimdışı: Yükle pasif, neden yazar", (() => {
+  const v = cardView({ pending: { file, name: "a", size: 1 }, offline: true });
+  return !v.hidden && v.goDisabled && /İnternet yok/.test(v.hint);
+})());
+check("ayar yok: Yükle pasif, neden yazar", (() => {
+  const v = cardView({ pending: { file, name: "a", size: 1 }, configured: false });
+  return !v.hidden && v.goDisabled && /Ayarlar/.test(v.hint);
+})());
+check("yükleniyor: Yükle/Vazgeç/Kalite pasif, düğme 'Yükleniyor…'", (() => {
+  const v = cardView({ pending: { file, name: "a", size: 1 }, busy: true });
+  return v.goDisabled && v.cancelDisabled && v.qualityDisabled && v.goLabel === "Yükleniyor…";
+})());
 
 // --- cache yardımcıları
 async function put(caches, { state = "ok", name = "a.mp3", size = 5, type = "audio/mpeg", skipped = 0, time = Date.now(), body = "12345" } = {}) {

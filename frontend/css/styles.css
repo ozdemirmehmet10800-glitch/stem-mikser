@@ -340,6 +340,7 @@ html, body {
 }
 .lyrics-notices { display: flex; flex-wrap: wrap; gap: 6px; }
 .lyrics-notices:empty { display: none; }
+.lyrics-notices[hidden] { display: none; }
 .lyrics-notices .notice {
   padding: 3px 9px; border-radius: 12px; font-size: 12px; margin-top: 4px;
   background: rgba(245, 158, 11, 0.16); color: #f5b84a;
@@ -660,6 +661,9 @@ input[type="range"]::-moz-range-thumb {
 .upload-status { font-size: 13px; color: var(--text-dim); margin-bottom: 10px; }
 
 /* Paylaşılan dosya onay kartı (Web Share Target) */
+/* `display` bildiren sınıf, tarayıcının [hidden] { display: none } kuralını EZER: sınıf başına [hidden] kuralı şart
+   (tests/hidden_css_test.mjs bunu denetler). Hata: paylaşım yokken boş kart görünüyordu. */
+.share-card[hidden] { display: none; }
 .share-card {
   background: var(--panel);
   border: 1px solid var(--accent-dim);

@@ -56,7 +56,7 @@ import { NavStack, CLOSE, BLOCKED } from "./navstack.js";
 import { diag, summarize, eventsText } from "./diag.js";
 import {
   SHARE_PARAM, MESSAGES as SHARE_MESSAGES, launchKind, readPending, clearPending, classify, formatSize,
-  formatDuration, durationWarning,
+  formatDuration, durationWarning, cardView,
 } from "./share.js";
 
 const POLL_MS = 3000;
@@ -698,30 +698,39 @@ async function handleUpload(file) {
 let sharePending = null;      // {file, name, size, note, seconds}
 let shareBusy = false;
 
+// Kalite seçicisi: kitaplıktaki seçimin kopyası (aynı seçenekler, aynı seçili değer). Kart açılmadan da dolu kalır.
+function fillShareQuality() {
+  const select = el("share-quality");
+  const source = el("upload-quality");
+  if (!select || !source) return;
+  select.replaceChildren(...[...source.options].map((option) => {
+    const copy = document.createElement("option");
+    copy.value = option.value;
+    copy.textContent = option.textContent;
+    return copy;
+  }));
+  select.value = source.value;
+}
+
 function renderShareCard() {
   const card = el("share-card");
   if (!card) return;
-  if (!sharePending) {
-    card.hidden = true;
-    return;
-  }
-  card.hidden = false;
-  el("share-name").textContent = sharePending.name;
-  el("share-meta").textContent = [formatSize(sharePending.size), formatDuration(sharePending.seconds)]
-    .filter(Boolean).join(" · ");
-  const notes = [sharePending.note, durationWarning(sharePending.seconds)].filter(Boolean);
+  // Görünüm saf işlevden (js/share.js cardView): geçerli paylaşım kaydı yoksa kart GİZLİ ve düğme pasif.
+  const view = cardView({
+    pending: sharePending, seconds: sharePending && sharePending.seconds, offline: isOffline(),
+    configured: isConfigured(settings), busy: shareBusy,
+  });
+  card.hidden = view.hidden;
+  el("share-name").textContent = view.name;
+  el("share-meta").textContent = view.meta;
   const noteNode = el("share-note");
-  noteNode.hidden = !notes.length;
-  noteNode.textContent = notes.join(" ");
-  const offline = isOffline();
-  const configured = isConfigured(settings);
-  el("share-go").disabled = shareBusy || offline || !configured;
-  el("share-cancel").disabled = shareBusy;
-  el("share-quality").disabled = shareBusy;
-  el("share-go").textContent = shareBusy ? "Yükleniyor…" : "Yükle ve ayır";
-  el("share-hint").textContent = !configured ? "Önce Ayarlar'dan API adresini ve token'ı gir."
-    : offline ? "İnternet yok; bağlanınca yükleyebilirsin."
-    : 'Ayırma (GPU) yalnız "Yükle ve ayır"a basınca başlar.';
+  noteNode.hidden = !view.note;
+  noteNode.textContent = view.note;
+  el("share-go").disabled = view.goDisabled;
+  el("share-cancel").disabled = view.cancelDisabled;
+  el("share-quality").disabled = view.qualityDisabled;
+  el("share-go").textContent = view.goLabel;
+  el("share-hint").textContent = view.hint;
 }
 
 // Süre: <audio> üst verisinden, en iyi çaba (okunamazsa kart süresiz kalır; sunucu 10 dk sınırını zaten uygular).
@@ -750,14 +759,7 @@ function probeDuration(file) {
 
 async function showShareCard(pending, note) {
   sharePending = { file: pending.file, name: pending.name, size: pending.size, note, seconds: null };
-  const select = el("share-quality");
-  select.replaceChildren(...[...el("upload-quality").options].map((option) => {
-    const copy = document.createElement("option");
-    copy.value = option.value;
-    copy.textContent = option.textContent;
-    return copy;
-  }));
-  select.value = el("upload-quality").value;
+  fillShareQuality();
   renderShareCard();
   const seconds = await probeDuration(pending.file);
   if (sharePending && sharePending.file === pending.file) {
@@ -778,7 +780,8 @@ async function dropShare() {
 }
 
 async function confirmShare() {
-  if (!sharePending || shareBusy) return;
+  // Savunma: dosya yoksa (kart zaten gizli/pasif olmalı) hiçbir istek gitmesin.
+  if (!sharePending || !sharePending.file || shareBusy) return;
   shareBusy = true;
   renderShareCard();
   // handleUpload kaliteyi #upload-quality'den ilk satırlarda (await'ten önce) okuyor: kartın seçimini oraya geçici yaz,
@@ -4633,4 +4636,6 @@ if (isConfigured(settings)) {
   );
 }
 // Paylaş menüsünden gelen dosya (varsa) onay kartı olur; ayarlar yoksa ayar ekranında bilgi verilir.
+fillShareQuality();
+renderShareCard();
 handleShareLaunch();

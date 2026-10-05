@@ -120,3 +120,29 @@ export function durationWarning(seconds) {
   if (!Number.isFinite(s) || s <= SERVER_MAX_SECONDS) return "";
   return `Süre ${formatDuration(s)}; sunucu ${SERVER_MAX_SECONDS / 60} dakikadan uzun şarkıyı reddeder.`;
 }
+
+/**
+ * Onay kartının görünümü (saf; app.js yalnız uygular). `pending`: {file, name, size, note} ya da null.
+ * Geçerli bir paylaşım kaydı (dosya) YOKSA kart GİZLİ ve "Yükle ve ayır" pasif: boş kart hiç görünmez, dosyasız istek
+ * hiç gitmez. Dönen: {hidden, name, meta, note, goDisabled, cancelDisabled, qualityDisabled, goLabel, hint}.
+ */
+export function cardView({ pending, seconds = null, offline = false, configured = true, busy = false } = {}) {
+  if (!pending || !pending.file) {
+    return { hidden: true, name: "", meta: "", note: "", goDisabled: true, cancelDisabled: true, qualityDisabled: true,
+      goLabel: "Yükle ve ayır", hint: "" };
+  }
+  const notes = [pending.note, durationWarning(seconds)].filter(Boolean);
+  return {
+    hidden: false,
+    name: pending.name,
+    meta: [formatSize(pending.size), formatDuration(seconds)].filter(Boolean).join(" · "),
+    note: notes.join(" "),
+    goDisabled: busy || offline || !configured,
+    cancelDisabled: busy,
+    qualityDisabled: busy,
+    goLabel: busy ? "Yükleniyor…" : "Yükle ve ayır",
+    hint: !configured ? "Önce Ayarlar'dan API adresini ve token'ı gir."
+      : offline ? "İnternet yok; bağlanınca yükleyebilirsin."
+      : 'Ayırma (GPU) yalnız "Yükle ve ayır"a basınca başlar.',
+  };
+}

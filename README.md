@@ -232,7 +232,10 @@ Tarayıcı verisi yoksa `export_validate` yalnız sunucu satırlarını koşar (
 node tests\share_test.mjs
 node tests\sw_share_test.mjs
 node tests\sw_activate_test.mjs
+node tests\hidden_css_test.mjs
 ```
+
+`hidden_css_test` her `hidden` öznitelikli öğenin `display` kuralıyla ezilmediğini (öğe başına `[hidden]` kuralı) denetler.
 
 `tests\sw_routing_test.html` (depo kökünde `python -m http.server 8002`) SW'nin API/ses/GET dışı isteklere karışmadığını gerçek
 `Request` nesneleriyle sınar. Gerçek paylaşım akışı yalnız telefonda denenir (kurulu PWA gerekir; GitHub Pages POST kabul etmez,
