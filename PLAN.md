@@ -655,6 +655,34 @@ dokunan her değişiklikten sonra deploy'dan ÖNCE:
        **Henüz dinlenmedi; sonuç yazılınca karar (stem mi karışım mı) verilecek.**
 
 
+9. [ ] **Aşama 11 - şarkı sözleri: OTURUM 1 (deney) ve OTURUM 2 (üretim backend'i) YAPILDI (2026-10-05); arayüz oturum 3.**
+   Kararlar: tek dil (tr/en/ja; otomatik algılama + elle seçim), karışık dil YOK; girdi SW vokal stem'i
+   (lead elendi: Zeus'ta fark yok, Ado'da içerik kaybı); "yapıştır ve hizala" ilk sürümde; zaman
+   doğruluğu için ayrı araç YOK (arayüz gelince telefonda gözle). Gerçek sözler ve ham çıktılar
+   `backend/lyrics_ref/`, `backend/lyrics_out/` (gitignore'lı, ASLA commit edilmez); testlerde gerçek söz yok.
+   - **Doğrulanan sürümler/lisanslar (internet):** faster-whisper 1.2.1 MIT, ctranslate2 4.6.0 MIT (CUDA 12 + cuDNN 9),
+     Systran/faster-whisper-large-v3 MIT, stable-ts 2.19.1 MIT (**depo 2026-05-30'da arşivlendi, sürüm pinli**),
+     WhisperX 3.8.6 BSD-2 (torch ~2.8, pyannote>=4: imajımızla çakışır; hizalama modelleri tr CC-BY-4.0, ja Apache-2.0;
+     kullanılmadı). Ayrı `lyrics_image`, `separate_image`/Hi-Fi'ye dokunulmadı (hifi_smoke gerekmedi).
+   - **Seçilen yol: stable-ts + faster-whisper large-v3, VAD YOK (`vad=False`), `condition_on_previous_text=False`,
+     enerji maskesi + kısa/tekrar süzgeci.** Ölçüm (söz hata oranı, düşük iyi; yalnız Zeus ve NEM gerçek sözle ölçüldü):
+     NEM slowed+reverb: stable_novad 0.117 (maskeyle 0.094), novad 0.112, stable(VAD'li) 0.117, raw 0.224,
+     guard(VAD'li) **0.973** (VAD reverb'li vokali atıyor). Zeus: guard 0.236, hepsi diğerleri 0.316-0.404.
+     Gerekçe: VAD'siz, WER'de stable ile eşit, stable ailesinin en hızlısı, zaman damgası novad'dan iyi (NEM başlangıç medyanı
+     0.25 sn, novad 0.74), ve hizalama (`align`) zaten stable-ts. **Sınırlar:** 2 şarkıyla ölçüldü; Usseewa (Minachu) yanlış
+     sözle çıktığı için GEÇERSİZ sayıldı; zaman doğruluğu metriği zayıf (n=1-8 örnek), telefonda gözle doğrulanacak.
+   - **Uydurma:** Final Duet'te raw 4 satır uydurdu; CPU "vokal yok" kapısı (-50 dBFS) GPU'yu hiç açmıyor.
+   - **"Metin sesle uyuşmuyor" eşiği:** sessiz satır oranı ZAYIF işaret (uyuşmayan çiftlerde 0 ve %5); güçlü işaret ortalama
+     kelime olasılığı (uyuşan 0.49-0.77, uyuşmayan 0.05-0.15). Uyarı: olasılık < 0.30 YA DA (sessiz satır >= 2 ve oran >= %3).
+   - **API:** `POST /songs/{id}/lyrics` {mode auto|pasted, language auto|tr|en|ja, text, replace}; `GET .../lyrics`
+     (`stale` = "eski ayrıştırmadan"); `status.lyrics`; `/songs`: `lyrics_state/version/source/stale`. auto mevcut sonucu
+     (özellikle yapıştırılmışı) `replace` olmadan ezmez; pasted her zaman koşar; hata olursa önceki tamam kayıt geri konur.
+     Ana şarkı yeniden işlenince sözler SİLİNMEZ. Şema `lyrics.json` schema 1: satır {t, e, text, w:[[bas,bit,kelime]]}.
+   - **Maliyet/süre (T4):** şarkı başı ~$0.003 (Zeus 20.8 sn, NEM pasted 17.2 sn), ~10-25x gerçek zaman.
+   - **CANLI (deploy 2026-10-05, token'lı):** Zeus auto -> done, 48 satır, tr algılandı (0.986), kelime olasılığı 0.948;
+     NEM pasted -> done, 39 satır (referansla birebir), uyarı yok; Final Duet auto ve pasted -> `no_vocals` (-118.66 dBFS), GPU yok;
+     auth yok 401. Testler: tests/test_lyrics_gate.py (57), tests/test_lyrics_api.py (53).
+
 ### Sonra (şimdilik gerek yok)
 **Anında başlatma (önizleme dosyaları).** KOD YOK, plan. **ERTELENDİ
 (2026-09-29):** telefon ölçümünde cihazda kayıtlı şarkılar 1-2 saniyede
