@@ -80,6 +80,19 @@
   <tbody></tbody>
 </table>
 
+<h2 style="font-size:16px">0b. Dalga (tepe) hesabı (Söz ve görsel paketi 6)</h2>
+<p class="lede">
+  4 dakikalık, 6 stemli bir şarkının tepe verisi (cihazın gerçek örnek hızıyla, tek kanal). <strong>Parçalı</strong> = uygulamadaki yol
+  (4 ms'lik dilimler, arada tarayıcıya dönülür); <strong>tek seferde</strong> = karşılaştırma için tüm işi bloklayarak. Kare aralığı:
+  hesap sürerken <code>requestAnimationFrame</code> aralıkları. Kabul: parçalı yolda en uzun blok ~4 ms, kare aralığı tabana yakın.
+  Hesap şarkı açılışından SONRA başlar, yani açılış süresine eklenmez (uygulamada <em>Ayarlar &rarr; Son açılış</em> ile öncesi/sonrası aynı çıkar).
+</p>
+<div class="controls"><button class="btn btn-primary" id="run-peaks">Dalga hesabı ölçümü</button></div>
+<table id="peaks-results">
+  <thead><tr><th>Durum</th><th class="num">Toplam (ms)</th><th class="num">En uzun blok (ms)</th><th class="num">Kare aralığı p95 (ms)</th><th class="num">En büyük kare aralığı (ms)</th></tr></thead>
+  <tbody></tbody>
+</table>
+
 <h2 style="font-size:16px">1. Nesnel ölçüm — gerçek zamandan hızlı mı?</h2>
 <p class="lede">
   <code>OfflineAudioContext</code> ile render edilip duvar saatiyle

@@ -40,6 +40,11 @@ export class Mixer {
     this.onMenuChange = null;
     // Kanal adına/simgesine dokunma: kanal ayarı sayfası (pan, EQ, yankı gönderimi; Aşama 15). app.js verir.
     this.onFx = null;
+    // Dalga şeritleri (Söz ve görsel paketi 6): her satırın altına makeLane(ad) -> öğe eklenir; render() başında
+    // onBeforeRender çağrılır (eski şeritler atılsın); refresh() her zaman onRefresh'i çağırır (genel şerit güncellensin).
+    this.makeLane = null;
+    this.onBeforeRender = null;
+    this.onRefresh = null;
     // Menü dışına dokununca kapansın.
     document.addEventListener("pointerdown", (event) => {
       if (this.openMenu && !this.openMenu.contains(event.target)) this.closeMenu();
@@ -167,6 +172,7 @@ export class Mixer {
    * satırın altında girintili gelir.
    */
   render(stemNames, groups = new Map()) {
+    if (this.onBeforeRender) this.onBeforeRender();
     this.container.innerHTML = "";
     this.rows.clear();
     this.groupCtls.clear();
@@ -246,6 +252,8 @@ export class Mixer {
       // Alt kanalın indirme menüsü yok (indirme ana kanaldan).
       row.append(label, fader.element, db, solo, mute,
                  isChild ? document.createElement("span") : this.#buildDownload(name));
+      const lane = this.makeLane ? this.makeLane(name) : null;
+      if (lane) row.append(lane);
       this.container.append(row);
       this.rows.set(name, { row, fader, db, solo, mute });
       // Alt parça denetimi ana satırın hemen altına; alt satırlar ondan SONRA
@@ -286,6 +294,7 @@ export class Mixer {
       // Pan / EQ / yankı gönderimi nötr değilse isimde küçük nokta.
       parts.row.classList.toggle("has-fx", !isNeutralFx(channel));
     }
+    if (this.onRefresh) this.onRefresh();
     if (notify && this.onChange) this.onChange();
   }
 }

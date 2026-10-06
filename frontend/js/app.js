@@ -15,7 +15,7 @@ import {
 } from "./loop.js";
 import {
   PRESETS, applyPreset, cleanStates, snapshot, planRestore, readMix, writeMix,
-  removeMix, writeLoop, isDefaultMix,
+  removeMix, writeLoop, isDefaultMix, effectiveGain,
 } from "./mixmemory.js";
 import { ChordStrip, formatTime } from "./chords.js";
 import {
@@ -46,6 +46,11 @@ import { getBackground, putBackground, clearBackground } from "./bgstore.js";
 import { MediaBridge } from "./media.js";
 import { badgeOf, upgradeOf, describeMethod, upgradeConfirmText } from "./quality.js";
 import { versionLabel } from "./swversion.js";
+import {
+  PEAK_RATE, expectedBins, PeakJob, PeakSet, channelsOf, overviewHeights, laneHeights, encodePeaks, decodePeaks,
+} from "./peaks.js";
+import { PeaksCache } from "./peakscache.js";
+import { Timeline } from "./timeline.js";
 import {
   prepareChords, displayLabel, mapSheet, buildGrid, renderMain, renderGap, renderGrid, soundingAt,
 } from "./chordsheet.js";
@@ -721,6 +726,7 @@ function renderLibrary(songs) {
 // Açık şarkı silindiyse: çalmayı durdur, kütüphaneye dön.
 function closeCurrentSong() {
   currentSong = null;
+  resetPeaks();
   exportReset();
   refreshExportAvailability();
   stopSubPolling();
@@ -774,6 +780,7 @@ async function deleteSelected() {
     let freed = { removed: 0, bytes: 0 };
     if (gone.length) {
       freed = await stemCache.removeSongs(gone);
+      peaksCache.removeSongs(gone);       // dalga verisi de gitsin
       dropMeta(gone);            // cihazdaki durum/akor kopyası da gitsin
       collection.removeSongs(gone);   // favori/etiket kayıtları ve liste öğeleri de HEMEN gitsin
       if (mixStorage()) removeMix(mixStorage(), gone);
@@ -1480,6 +1487,7 @@ async function openSong(song, opts = {}) {
     ensureSubPolling();
     initLyrics();
     resumePrefetch();   // hızlı yolda indirme yapılmadı, hemen devam
+    scheduleOverview();   // aynı şarkı: dalga bellekte, yalnız yeniden boyutlanmış olabilir
     timer.done("hizli acilis (bellekte)", {
       source: "bellek", concurrency: 0,
       duration: Number(song.duration) || 0,
@@ -1520,6 +1528,7 @@ async function openSong(song, opts = {}) {
   subStarting.clear();
   subBusy = false;
   mixer.groupSpecs.clear();
+  resetPeaks();             // önceki şarkının dalgası hemen gitsin
   resetLyrics();
   exportReset();
   closeFxDom();
@@ -1683,6 +1692,7 @@ async function openSong(song, opts = {}) {
       decodeMs: loadStats ? loadStats.decodeMs : null,
       bytes: loadStats ? loadStats.bytes : null,
     });
+    schedulePeaks(song.id, cacheKeyTag);   // açılış bitti; dalga arka planda, dilim dilim
     updateListBar();
     return true;
   } catch (error) {
@@ -2073,6 +2083,7 @@ function startLoop() {
     if (lyricsScreen) lyricsScreen.tick(time);
     if (!seeking) {
       el("seek").value = String(Math.round(time * 10));
+      wavePlayed(time);
       el("time-current").textContent = formatTime(time);
       el("time-remaining").textContent = `-${formatTime(engine.duration - time)}`;
     }
@@ -3164,6 +3175,7 @@ function rebuildMixer() {
   mixer.syncFromEngine();
   mixSongId = keep;
   refreshSubUi();
+  queueSubPeaks();          // açılan alt parçaların dalgası arka planda
 }
 
 async function expandSub(group) {
@@ -5338,6 +5350,7 @@ on("seek", "input", () => {
   el("time-remaining").textContent = `-${formatTime(engine.duration - time)}`;
   strip.update(time);
   lyricsTick(time);
+  wavePlayed(time);
 });
 
 on("seek", "change", async () => {
@@ -5718,6 +5731,7 @@ on("clear-stems", "click", async () => {
   const node = el("stem-cache-state");
   node.textContent = "Siliniyor…";
   await stemCache.clear();
+  peaksCache.clear();
   await refreshStemCacheState();
 });
 
@@ -5785,6 +5799,213 @@ ${eventsText(diag)}`;
 });
 
 mixer = new Mixer(el("channels"), engine, scheduleMixSave, downloadStem);
+// ---------------------------------------------------------------- dalga şeritleri (Söz ve görsel paketi 6)
+// Mantık peaks.js (tepe verisi, saf) ve timeline.js (zaman ekseni bileşeni) içinde; burada yalnız bağlantı. KURALLAR:
+//  - Tepe hesabı şarkı açılışını / liste geçişini UZATMAZ: açılış bittikten PEAK_START_DELAY_MS sonra, çözülmüş tamponlardan,
+//    PEAK_SLICE_MS'lik dilimlerle (arada denetim tarayıcıya döner) arka planda yürür; hazır olunca dalga yumuşakça belirir.
+//  - Sonuç cihaz önbelleğine yazılır (peakscache.js, anahtar = şarkı + stems_version.pipeline): sonraki açılışta hesap YOK.
+//  - Canvas yalnız veri / boyut / mikser durumu değişince çizilir (rAF'ta birleştirilmiş), kare başına DEĞİL; çalma konumu transform.
+//  - Genel şerit duyulan karışımı gösterir (kanal kapatınca düşer); kanal şeritleri "Dalga" düğmesiyle (varsayılan kapalı).
+
+const PEAK_START_DELAY_MS = 400;
+const PEAK_SLICE_MS = 4;
+const WAVES_KEY = "stem-mikser.waves";
+
+const peaksCache = new PeaksCache();
+const overview = new Timeline({
+  root: el("seek-wrap"), canvas: el("seek-wave"), getDuration: () => engine.duration, color: "#7d8899",
+});
+const waveLanes = new Map();       // kanal adı -> Timeline (kanal şeridi)
+let peakSet = null;
+let peakGen = 0;                   // her şarkıda artar: eski hesaplar kendiliğinden vazgeçer
+let peakChain = Promise.resolve(); // hesaplar sırayla
+let peakReady = false;
+let overviewQueued = false;
+let lanesDirty = false;
+let wavesOn = readWavesPref();
+
+function readWavesPref() {
+  try { return localStorage.getItem(WAVES_KEY) === "1"; } catch { return false; }
+}
+
+function nextSlice() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function queueFrame(callback) {
+  let done = false;
+  const run = () => { if (!done) { done = true; callback(); } };
+  requestAnimationFrame(run);
+  setTimeout(run, 120);            // arka planda rAF durabilir
+}
+
+function resetPeaks() {
+  peakGen += 1;
+  peakSet = null;
+  peakReady = false;
+  overview.clear();
+  for (const lane of waveLanes.values()) lane.clear();
+}
+
+function schedulePeaks(songId, tag) {
+  resetPeaks();
+  const gen = peakGen;
+  setTimeout(() => {
+    peakChain = peakChain.then(() => runPeaks(gen, songId, tag)).catch((error) => console.info("[dalga]", error && error.message));
+  }, PEAK_START_DELAY_MS);
+}
+
+// Ana kanallar (alt parçalar değil): genel şerit ve ortak ölçek bunlara göre sabitlenir, alt parça açılınca şerit sıçramaz.
+function mainChannelNames() {
+  return [...engine.channels].filter(([, channel]) => !channel.parent).map(([name]) => name);
+}
+
+async function runPeaks(gen, songId, tag) {
+  if (gen !== peakGen || !currentSong || currentSong.id !== songId) return;
+  const bins = expectedBins(engine.duration);
+  if (!bins) return;
+  let set = null;
+  const cached = await peaksCache.get(songId, tag);
+  if (gen !== peakGen) return;
+  if (cached) {
+    const decoded = decodePeaks(cached);
+    if (decoded && decoded.rate === PEAK_RATE && Math.abs(decoded.bins - bins) <= 1) set = decoded;
+  }
+  if (!set) set = new PeakSet(bins);
+  peakSet = set;
+  const started = performance.now();
+  const fromCache = set.names().length;
+  const computed = await fillPeaks(gen);
+  if (gen !== peakGen) return;
+  console.info(`[dalga] ${fromCache} kanal önbellekten, ${computed} kanal hesaplandı (${Math.round(performance.now() - started)} ms, arka planda)`);
+  if (computed || !set.mixRef || !set.laneRef) set.fixReferences(mainChannelNames().filter((name) => set.has(name)));
+  peakReady = true;
+  lanesDirty = true;
+  scheduleOverview();
+  if (computed) peaksCache.put(songId, tag, encodePeaks(set, tag));
+}
+
+// Henüz tepe verisi olmayan kanalların hesabı (alt parçalar açılınca da buradan geçer). Dönen: kaç kanal hesaplandı.
+async function fillPeaks(gen) {
+  let computed = 0;
+  for (const [name, channel] of [...engine.channels]) {
+    if (gen !== peakGen) return computed;
+    const buffer = channel.buffer;
+    if (!buffer || !peakSet || peakSet.has(name)) continue;
+    const job = new PeakJob(channelsOf(buffer), buffer.sampleRate, peakSet.bins, peakSet.rate);
+    let aborted = false;
+    while (!job.step(PEAK_SLICE_MS)) {
+      await nextSlice();
+      const live = engine.channels.get(name);
+      if (gen !== peakGen || !live || live.buffer !== buffer) { aborted = true; break; }   // şarkı / kanal yapısı değişti
+    }
+    if (aborted) continue;
+    peakSet.set(name, job.out);
+    computed += 1;
+    lanesDirty = true;
+  }
+  return computed;
+}
+
+// Alt parçalar açıldı: onların tepe verisi (cihaz önbelleğinde varsa hesap yok) arka planda tamamlanır.
+function queueSubPeaks() {
+  if (!peakSet || !currentSong) return;
+  const gen = peakGen;
+  const songId = currentSong.id;
+  const tag = currentStemTag;
+  peakChain = peakChain.then(async () => {
+    if (gen !== peakGen || !peakSet) return;
+    const computed = await fillPeaks(gen);
+    if (gen !== peakGen || !computed) return;
+    scheduleOverview();
+    peaksCache.put(songId, tag, encodePeaks(peakSet, tag));
+  }).catch(() => {});
+}
+
+function refreshOverview() {
+  overviewQueued = false;
+  if (!peakSet || !peakReady) return;
+  const entries = [];
+  for (const [name, channel] of engine.channels) {
+    if (channel.children && channel.children.length) continue;       // açık grup başlığı: sesi alt kanallardan geliyor
+    if (!peakSet.has(name)) continue;
+    entries.push({ name, gain: effectiveGain(engine.channels, name) });
+  }
+  overview.setHeights(overviewHeights(peakSet, entries), peakSet.rate);
+}
+
+function drawWaveLanes() {
+  lanesDirty = false;
+  if (!wavesOn || !peakSet || !peakReady) return;
+  for (const [name, lane] of waveLanes) {
+    lane.resize();
+    const heights = laneHeights(peakSet, name);
+    if (heights) lane.setHeights(heights, peakSet.rate);
+    else lane.clear();
+  }
+}
+
+// Mikser durumu (fader / solo / mute) ya da veri değişti: bir sonraki karede BİR kez çiz.
+function scheduleOverview() {
+  if (overviewQueued) return;
+  overviewQueued = true;
+  queueFrame(() => {
+    if (overview.resize()) overview.draw();
+    refreshOverview();
+    if (lanesDirty) drawWaveLanes();
+  });
+}
+
+function wavePlayed(time) {
+  overview.setPlayed(time);
+  if (wavesOn) for (const lane of waveLanes.values()) lane.setPlayed(time);
+}
+
+async function seekFromWave(time) {
+  if (!(engine.duration > 0)) return;
+  await engine.seek(Math.min(Math.max(time, 0), engine.duration));
+  metronome.resync();
+}
+
+function makeWaveLane(name) {
+  const lane = document.createElement("div");
+  lane.className = "lane";
+  lane.dataset.name = name;
+  const canvas = document.createElement("canvas");
+  canvas.className = "tl-wave";
+  canvas.setAttribute("aria-hidden", "true");
+  lane.append(canvas);
+  const timeline = new Timeline({ root: lane, canvas, getDuration: () => engine.duration, pad: 0, color: "#8a95a6" });
+  waveLanes.set(name, timeline);
+  lanesDirty = true;
+  lane.addEventListener("click", (event) => {
+    seekFromWave(timeline.xToTime(event.clientX - lane.getBoundingClientRect().left));
+  });
+  return lane;
+}
+
+function setWaves(on) {
+  wavesOn = Boolean(on);
+  try { localStorage.setItem(WAVES_KEY, wavesOn ? "1" : "0"); } catch { /* tercih bu oturumda kalır */ }
+  el("channels").classList.toggle("waves", wavesOn);
+  el("waves-toggle").setAttribute("aria-pressed", String(wavesOn));
+  if (wavesOn) {
+    lanesDirty = true;
+    scheduleOverview();
+  }
+}
+
+mixer.makeLane = makeWaveLane;
+mixer.onBeforeRender = () => waveLanes.clear();
+mixer.onRefresh = scheduleOverview;
+on("waves-toggle", "click", () => setWaves(!wavesOn));
+setWaves(wavesOn);
+if (typeof ResizeObserver !== "undefined") {
+  new ResizeObserver(() => { lanesDirty = true; scheduleOverview(); }).observe(el("seek-wrap"));
+} else {
+  window.addEventListener("resize", () => { lanesDirty = true; scheduleOverview(); });
+}
+
 buildFxSheet();
 buildPresetButtons();
 buildLoopButtons();

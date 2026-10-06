@@ -14,6 +14,7 @@ import { SoundTouchNode } from "../vendor/soundtouch-worklet/index.js";
 import { loadSettings, AUDIO_SAVE } from "./settings.js";
 import { MOBILE_SAMPLE_RATE, isMobile, nativeSampleRate } from "./engine.js";
 import { EQ_BANDS, impulseFor } from "./fx.js";
+import { PeakJob, expectedBins } from "./peaks.js";
 
 const el = (id) => document.getElementById(id);
 const CHANNEL_COUNTS = [1, 2, 3, 4, 6];
@@ -250,6 +251,83 @@ async function runFxBench() {
     say(`Ölçüm hatası: ${error && error.message ? error.message : error}`, "error");
   } finally {
     el("run-fx").disabled = false;
+  }
+}
+
+
+// ---------------------------------------------------------------- dalga (tepe) hesabı
+
+function percentile(values, q) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.floor(q * (sorted.length - 1)))];
+}
+
+// Ölçüm sürerken rAF aralıklarını toplar; stop() aralık listesini verir.
+function watchFrames() {
+  const gaps = [];
+  let last = performance.now();
+  let alive = true;
+  const tick = (now) => {
+    if (!alive) return;
+    gaps.push(now - last);
+    last = now;
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  return () => { alive = false; return gaps.slice(2); };
+}
+
+async function runPeaksBench() {
+  const picked = await resolveSampleRate();
+  const body = el("peaks-results").querySelector("tbody");
+  body.innerHTML = "";
+  el("run-peaks").disabled = true;
+  say(`Dalga hesabı ölçülüyor (${picked.rate} Hz, 4 dk x 6 stem)… telefon başka iş yapmasın.`, "warn");
+  const seconds = 240;
+  const stems = 6;
+  const data = makeSignal(seconds, 1, picked.rate)[0];     // altı stem aynı diziyi kullanır: bellek ~46 MB
+  const bins = expectedBins(seconds);
+  const addRow = (label, total, longest, gaps) => {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>${label}</td><td class="num">${total.toFixed(0)}</td><td class="num">${longest.toFixed(1)}</td>` +
+      `<td class="num">${percentile(gaps, 0.95).toFixed(1)}</td><td class="num">${Math.max(0, ...gaps).toFixed(1)}</td>`;
+    body.append(row);
+    log(`dalga: ${label}: toplam ${total.toFixed(0)} ms, en uzun blok ${longest.toFixed(1)} ms, kare p95 ${percentile(gaps, 0.95).toFixed(1)} ms`);
+  };
+  try {
+    // 1) taban: hesap yok
+    let stop = watchFrames();
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    addRow("taban (hesap yok)", 0, 0, stop());
+
+    // 2) parçalı (uygulamadaki yol)
+    stop = watchFrames();
+    let started = performance.now();
+    let longest = 0;
+    for (let s = 0; s < stems; s += 1) {
+      const job = new PeakJob([data], picked.rate, bins);
+      while (!job.step(4)) await new Promise((resolve) => setTimeout(resolve, 0));
+      longest = Math.max(longest, job.maxSliceMs);
+    }
+    addRow("parçalı (4 ms dilim, arka plan)", performance.now() - started, longest, stop());
+
+    // 3) tek seferde (karşılaştırma)
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    stop = watchFrames();
+    started = performance.now();
+    for (let s = 0; s < stems; s += 1) {
+      const job = new PeakJob([data], picked.rate, bins);
+      job.step(1e9);
+    }
+    const blocked = performance.now() - started;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    addRow("tek seferde (ana iş parçacığı bloklanır)", blocked, blocked, stop());
+    say("Dalga hesabı ölçümü bitti. Parçalı satırda en uzun blok küçük ve kare aralığı tabana yakınsa hesap çalmayı / arayüzü aksatmaz.", "ok");
+  } catch (error) {
+    say(`Ölçüm hatası: ${error && error.message ? error.message : error}`, "error");
+  } finally {
+    el("run-peaks").disabled = false;
   }
 }
 
@@ -724,6 +802,7 @@ el("test-tone").addEventListener("click", () => {
 });
 el("run-offline").addEventListener("click", runOffline);
 el("run-fx").addEventListener("click", runFxBench);
+el("run-peaks").addEventListener("click", runPeaksBench);
 el("run-single").addEventListener("click", runSingleNode);
 el("stop-single").addEventListener("click", stopSingleNode);
 el("run-realtime").addEventListener("click", runRealtime);

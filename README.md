@@ -250,6 +250,9 @@ node tests\quality_test.mjs
 node tests\songrow_css_test.mjs
 node tests\swversion_test.mjs
 node tests\chordsheet_test.mjs
+node tests\peaks_test.mjs
+node tests\timeline_test.mjs
+node tests\waves_wiring_test.mjs
 ```
 
 Listeler aynı belgede (`stem-mikser.collection`, `lists`), yedeğe dahil. Şarkı bitişi artık `onended` ile de algılanır (ekran

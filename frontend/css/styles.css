@@ -664,6 +664,36 @@ input[type="range"]::-moz-range-thumb {
 .seek-wrap { position: relative; flex: 1; min-width: 0; }
 .seek { width: 100%; display: block; margin: 0; }
 
+/* ---------- dalga şeritleri / zaman ekseni (Söz ve görsel paketi 6) ----------
+   Genel şerit seek çubuğunun ARKASINDA: yer baştan ayrılır (dalga gelince düzen sıçramasın). Range girişi tüm alanı kaplar ve
+   tıklama / sürükleme / klavye / erişilebilirlik onda kalır; dalga yalnız görsel. Başparmak ince bir çalma çizgisi (genişliği 13 px
+   KALIR: konum hesabı, A-B tutamakları ve dalga aynı geometriyi kullanıyor, bkz. timeline.js). */
+.seek-wrap { height: 44px; background: var(--bg-2); border-radius: 8px; }
+.seek-wrap .seek { position: absolute; inset: 0; height: 44px; z-index: 5; background: transparent; }
+.seek-wrap .seek::-webkit-slider-runnable-track { height: 44px; background: transparent; border-radius: 0; }
+.seek-wrap .seek::-moz-range-track { height: 44px; background: transparent; border-radius: 0; }
+.seek-wrap .seek::-webkit-slider-thumb {
+  width: 13px; height: 40px; margin-top: 2px; border-radius: 0;
+  background: linear-gradient(90deg, transparent 5px, var(--accent) 5px, var(--accent) 8px, transparent 8px);
+}
+.seek-wrap .seek::-moz-range-thumb {
+  width: 13px; height: 40px; border: 0; border-radius: 0;
+  background: linear-gradient(90deg, transparent 5px, var(--accent) 5px, var(--accent) 8px, transparent 8px);
+}
+.seek-wrap .loop-region { top: 0; bottom: 0; height: auto; margin-top: 0; border-radius: 0; z-index: 3; }
+.tl-wave { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; transition: opacity .3s; pointer-events: none; z-index: 1; }
+.ready > .tl-wave { opacity: 1; }
+.tl-layer { position: absolute; top: 0; bottom: 0; left: 0; right: 0; pointer-events: none; }
+.tl-played { transform-origin: 0 50%; transform: scaleX(0); background: rgba(34, 211, 238, 0.14); }
+@media (prefers-reduced-motion: reduce) { .tl-wave { transition: none; } }
+
+/* kanal şeritleri: her kanal satırının altında, "Dalga" düğmesi açınca */
+.channel .lane { display: none; grid-column: 1 / -1; position: relative; height: 28px; margin: 0 2px; background: var(--bg-2); border-radius: 6px; cursor: pointer; opacity: 0.3; }
+.channels.waves .channel .lane { display: block; }
+.channels.waves .channel { row-gap: 4px; }
+.channel.audible .lane { opacity: 1; }
+.channel.group .lane { opacity: 0.25; }
+
 /* A-B tutamaçları: A'nın gövdesi noktasının SOLUNDA, B'ninki SAĞINDA; yakın
    olsalar da üst üste binmez. 40x44 dokunma alanı, parmakla rahat. */
 .loop-handle {
@@ -674,7 +704,7 @@ input[type="range"]::-moz-range-thumb {
   margin-top: -22px;
   touch-action: none;
   cursor: grab;
-  z-index: 2;
+  z-index: 9;                        /* seek girişinin (5) ve işaretçi katmanının (8) üstünde */
 }
 .loop-handle[hidden] { display: none; }
 .loop-handle::before {             /* dikey çizgi, tam nokta */

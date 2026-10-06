@@ -221,6 +221,7 @@
       <div class="mix-presets" id="mix-presets" role="group" aria-label="Mikser ön ayarları"></div>
       <button type="button" class="chip" id="mix-reset">Sıfırla</button>
       <button type="button" class="chip" id="room-open" aria-label="Yankı odası">Yankı</button>
+      <button type="button" class="chip" id="waves-toggle" aria-pressed="false" title="Her kanalın altında ses dalgasını göster">Dalga</button>
       <button type="button" class="chip chip-primary" id="export-open" disabled>Dışa aktar</button>
     </div>
     <div class="mix-notice" id="mix-notice" hidden>
@@ -264,6 +265,7 @@
       <div class="seek-row">
         <span class="time" id="time-current">0:00</span>
         <div class="seek-wrap" id="seek-wrap">
+          <canvas class="tl-wave" id="seek-wave" aria-hidden="true"></canvas>
           <input type="range" class="seek" id="seek" min="0" max="1000" value="0" step="1"
                  aria-label="Şarkı konumu">
           <div class="loop-region" id="loop-region" hidden></div>
