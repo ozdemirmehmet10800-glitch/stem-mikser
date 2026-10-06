@@ -26,11 +26,16 @@
   pre { background: var(--panel); padding: 12px; border-radius: var(--radius-sm);
         overflow-x: auto; font-size: 12px; color: var(--text-dim); }
   .back { display: inline-block; margin-bottom: 10px; color: var(--accent); }
+  .meter-wrap { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; }
+  .meter { flex: 1; height: 14px; background: var(--panel); border-radius: 7px; overflow: hidden; }
+  .meter i { display: block; height: 100%; width: 0; background: var(--ok); transition: width 60ms linear; }
+  .meter i.hot { background: var(--warn); }
 </style>
 </head>
 <body>
 
 <a class="back" href="./">&larr; uygulamaya dön</a>
+<br><a class="back" href="#mic-test">&darr; Mikrofon denemesi (0c)</a>
 <h1>Esnetme ölçümü</h1>
 <p class="lede">
   Aşama 8'in ilk adımı: bu telefon 6 kanalı aynı anda gerçek zamanlı
@@ -67,6 +72,40 @@
 </div>
 
 <div id="message" class="message" hidden></div>
+
+<h2 id="mic-test" style="font-size:16px">0c. Mikrofon denemesi (Mikrofon paketi, 0. adım: Bluetooth kulaklık fizibilitesi)</h2>
+<p class="lede">
+  Soru: mikrofon açılınca Bluetooth kulaklık konuşma profiline (HFP/SCO) geçip <strong>müziği bozuyor mu</strong>?
+  Sıra: (1) Müziği başlat, kulaklıkta iyi çaldığını duy (stereo, parlak tizler: cızırtılı "hi-hat" vuruşları).
+  (2) Cihazları listele. (3) Mikrofonu aç (önce <em>varsayılan</em>, sonra <em>dahili</em>): müzik sönükleşti mi, mono/dar bantlı mı oldu, ses
+  seviyesi düştü mü? (4) Mikrofonu kapat: müzik eski kalitesine döndü mü?
+  <br><strong>Mikrofon sesi kaydedilmez, saklanmaz, gönderilmez, loga yazılmaz:</strong> yalnız anlık seviye çubuğu gösterilir; sayfa gizlenince mikrofon kapanır.
+</p>
+<div class="controls">
+  <button class="btn btn-primary" id="mic-music-start">1. Müziği başlat</button>
+  <button class="btn" id="mic-music-stop" disabled>Müziği durdur</button>
+</div>
+<div class="controls">
+  <button class="btn" id="mic-list">2. Cihazları listele</button>
+  <button class="btn btn-primary" id="mic-open-default">3a. Mikrofonu aç (varsayılan)</button>
+  <button class="btn btn-primary" id="mic-open-builtin">3b. Mikrofonu aç (dahili)</button>
+  <button class="btn" id="mic-close" disabled>4. Mikrofonu kapat</button>
+</div>
+<div class="meter-wrap"><div class="meter"><i id="mic-level"></i></div><span id="mic-level-text" class="num">mikrofon kapalı</span></div>
+<table id="mic-state">
+  <tbody>
+    <tr><th>Müzik</th><td id="mic-s-music">kapalı</td></tr>
+    <tr><th>AudioContext</th><td id="mic-s-ctx">—</td></tr>
+    <tr><th>Mikrofon</th><td id="mic-s-track">kapalı</td></tr>
+    <tr><th>Açılan aygıt</th><td id="mic-s-device">—</td></tr>
+    <tr><th>İstenen / uygulanan</th><td id="mic-s-applied">—</td></tr>
+    <tr><th>Desteklenen kısıtlar</th><td id="mic-s-supported">—</td></tr>
+  </tbody>
+</table>
+<table id="mic-devices">
+  <thead><tr><th>Tür</th><th>Etiket</th><th>Kimlik</th><th>Bluetooth?</th></tr></thead>
+  <tbody><tr><td colspan="4">(henüz listelenmedi; etiketler mikrofon izninden sonra görünür)</td></tr></tbody>
+</table>
 
 <h2 style="font-size:16px">0. Kanal şeridi + yankı CPU ölçümü (Aşama 15)</h2>
 <p class="lede">
@@ -171,6 +210,7 @@
 <h2 style="font-size:16px; margin-top:26px">Ortam</h2>
 <pre id="env">…</pre>
 
-<script type="module" src="js/bench.js"></script>
+<!-- ?v=: service worker bench.js'i "önce cache" sunar; sorgu eki eski kopyanın yeni sayfayla karışmasını önler -->
+<script type="module" src="js/bench.js?v=mic1"></script>
 </body>
 </html>

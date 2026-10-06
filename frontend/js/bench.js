@@ -797,6 +797,262 @@ function showEnvironment() {
   ].join("\n");
 }
 
+
+// ---------------------------------------------------------------- mikrofon denemesi (Mikrofon paketi, 0. adım)
+// AMAÇ: Bluetooth kulaklıkta mikrofon açılınca müzik bozuluyor mu (HFP/SCO'ya geçiş)? Antrenör kodu YOK.
+// GİZLİLİK: mikrofon örnekleri yalnız anlık seviye (RMS) için bir AnalyserNode'dan okunur; kaydedilmez, saklanmaz, gönderilmez,
+// loga yazılmaz (log'a yalnız aygıt etiketi/ayar bilgisi gider, ses değeri DEĞİL). Sayfa gizlenince mikrofon kapanır.
+// MIC-BAŞLANGIÇ
+const MIC_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 };
+const BLUETOOTH_LABEL = /bluetooth|\bbt\b|hands-?free|headset|buds|airpods|soundcore|space ?q|q45|earbud|headphone|kulakl/i;
+const BUILTIN_LABEL = /built-?in|internal|dahili|phone|telefon|microphone|mikrofon/i;
+
+const mic = { ctx: null, music: null, stream: null, source: null, analyser: null, sink: null, timer: 0 };
+
+function micEnsureContext() {
+  if (!mic.ctx || mic.ctx.state === "closed") {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    mic.ctx = new Ctor({ latencyHint: "interactive" });
+  }
+  return mic.ctx;
+}
+
+function micCtxInfo() {
+  const ctx = mic.ctx;
+  if (!ctx) return "—";
+  const out = Number.isFinite(ctx.outputLatency) ? `${(ctx.outputLatency * 1000).toFixed(0)} ms` : "yok";
+  return `${ctx.state} · ${ctx.sampleRate} Hz · outputLatency ${out} · baseLatency ${(ctx.baseLatency * 1000).toFixed(0)} ms`;
+}
+
+function micRefreshState() {
+  el("mic-s-ctx").textContent = micCtxInfo();
+  el("mic-s-music").textContent = mic.music ? "çalıyor (parlak tizli, stereo)" : "kapalı";
+  const supported = navigator.mediaDevices && navigator.mediaDevices.getSupportedConstraints
+    ? navigator.mediaDevices.getSupportedConstraints() : {};
+  el("mic-s-supported").textContent =
+    ["echoCancellation", "noiseSuppression", "autoGainControl", "channelCount", "deviceId"]
+      .map((key) => `${key}: ${supported[key] ? "var" : "YOK"}`).join(" · ");
+}
+
+// Müzik: stereo akor (sol/sağ ayrı sesler) + 6 kHz üstü "hi-hat" gürültü vuruşları. Dar bantlı / mono bir hat (HFP) bunları belirgin söndürür.
+function micMusicStart() {
+  if (mic.music) return;
+  const ctx = micEnsureContext();
+  const master = ctx.createGain();
+  master.gain.value = 0.16;
+  const tone = ctx.createBiquadFilter();
+  tone.type = "lowpass";
+  tone.frequency.value = 9000;
+  tone.connect(master);
+  master.connect(ctx.destination);
+  const oscillators = [];
+  [[110, -0.8], [164.81, 0.8], [220, -0.5], [277.18, 0.5], [329.63, -0.2], [440, 0.2]].forEach(([freq, pan], index) => {
+    const osc = ctx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.value = freq;
+    osc.detune.value = index % 2 ? 4 : -4;
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = pan;
+    const gain = ctx.createGain();
+    gain.gain.value = 0.18;
+    osc.connect(gain).connect(panner).connect(tone);
+    osc.start();
+    oscillators.push(osc);
+  });
+  const noise = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.06), ctx.sampleRate);
+  const data = noise.getChannelData(0);
+  for (let i = 0; i < data.length; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+  let next = ctx.currentTime + 0.1;
+  const schedule = () => {
+    while (next < ctx.currentTime + 0.6) {
+      const hat = ctx.createBufferSource();
+      hat.buffer = noise;
+      const high = ctx.createBiquadFilter();
+      high.type = "highpass";
+      high.frequency.value = 6500;
+      const gain = ctx.createGain();
+      gain.gain.value = 0.9;
+      hat.connect(high).connect(gain).connect(master);
+      hat.start(next);
+      next += 0.25;
+    }
+  };
+  schedule();
+  const timer = setInterval(schedule, 150);
+  mic.music = { oscillators, master, timer };
+  el("mic-music-start").disabled = true;
+  el("mic-music-stop").disabled = false;
+  log("mikrofon denemesi: müzik başladı");
+  micRefreshState();
+}
+
+function micMusicStop() {
+  if (!mic.music) return;
+  clearInterval(mic.music.timer);
+  for (const osc of mic.music.oscillators) {
+    try { osc.stop(); } catch { /* zaten durmuş */ }
+  }
+  try { mic.music.master.disconnect(); } catch { /* bağlı değildi */ }
+  mic.music = null;
+  el("mic-music-start").disabled = false;
+  el("mic-music-stop").disabled = true;
+  log("mikrofon denemesi: müzik durdu");
+  micRefreshState();
+}
+
+async function micListDevices() {
+  const body = el("mic-devices").querySelector("tbody");
+  body.innerHTML = "";
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+    body.innerHTML = '<tr><td colspan="4">enumerateDevices yok</td></tr>';
+    return [];
+  }
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  for (const device of devices) {
+    const row = document.createElement("tr");
+    const label = device.label || "(etiket yok: izin gerekli)";
+    const bluetooth = device.label ? (BLUETOOTH_LABEL.test(device.label) ? "evet (etiketten)" : "hayır görünüyor") : "?";
+    for (const text of [device.kind, label, (device.deviceId || "").slice(0, 8) || "—", bluetooth]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      row.append(cell);
+    }
+    body.append(row);
+  }
+  const inputs = devices.filter((d) => d.kind === "audioinput");
+  log(`mikrofon denemesi: ${devices.length} aygıt, ${inputs.length} mikrofon: ${inputs.map((d) => d.label || "(etiketsiz)").join(" | ")}`);
+  return devices;
+}
+
+// Dahili mikrofon tahmini: Bluetooth görünmeyen, tercihen "built-in/dahili/telefon" etiketli mikrofon.
+async function micFindBuiltin() {
+  const devices = (await micListDevices()).filter((d) => d.kind === "audioinput");
+  if (!devices.length || devices.every((d) => !d.label)) return { id: null, reason: "Etiketler boş: önce 3a (varsayılan) ile izin ver, sonra 3b'yi dene." };
+  const others = devices.filter((d) => !BLUETOOTH_LABEL.test(d.label) && d.deviceId !== "default" && d.deviceId !== "communications");
+  const pick = others.find((d) => BUILTIN_LABEL.test(d.label)) || others[0];
+  if (!pick) return { id: null, reason: "Bluetooth olmayan ayrı bir mikrofon görünmüyor (yalnız varsayılan/kulaklık)." };
+  return { id: pick.deviceId, label: pick.label };
+}
+
+function micMeterStart() {
+  const ctx = mic.ctx;
+  mic.analyser = ctx.createAnalyser();
+  mic.analyser.fftSize = 1024;
+  mic.source.connect(mic.analyser);
+  // Chrome yalnız hedefe bağlı düğümleri işleyebilir: analizör sessiz (kazanç 0) bir yoldan hedefe bağlanır (hoparlöre HİÇ ses gitmez).
+  mic.sink = ctx.createGain();
+  mic.sink.gain.value = 0;
+  mic.analyser.connect(mic.sink);
+  mic.sink.connect(ctx.destination);
+  const buffer = new Float32Array(mic.analyser.fftSize);
+  const bar = el("mic-level");
+  const text = el("mic-level-text");
+  mic.timer = setInterval(() => {
+    mic.analyser.getFloatTimeDomainData(buffer);
+    let sum = 0;
+    for (let i = 0; i < buffer.length; i += 1) sum += buffer[i] * buffer[i];
+    const rms = Math.sqrt(sum / buffer.length);
+    const db = rms > 0 ? 20 * Math.log10(rms) : -120;
+    const fraction = Math.min(Math.max((db + 70) / 70, 0), 1);
+    bar.style.width = `${(fraction * 100).toFixed(0)}%`;
+    bar.classList.toggle("hot", db > -12);
+    text.textContent = `${db <= -100 ? "sessiz" : `${db.toFixed(0)} dBFS`}`;
+    // örnekler burada biter: dizi her turda üzerine yazılır, hiçbir yere kopyalanmaz / gönderilmez / yazılmaz
+  }, 60);
+}
+
+async function micOpen(kind) {
+  if (mic.stream) {
+    say("Mikrofon zaten açık; önce kapat.", "warn");
+    return;
+  }
+  const ctx = micEnsureContext();
+  await ctx.resume();
+  const before = micCtxInfo();
+  const audio = { ...MIC_AUDIO };
+  let wanted = "varsayılan aygıt";
+  if (kind === "builtin") {
+    const found = await micFindBuiltin();
+    if (!found.id) {
+      say(found.reason, "warn");
+      log(`mikrofon denemesi: dahili mikrofon yok: ${found.reason}`);
+      return;
+    }
+    audio.deviceId = { exact: found.id };
+    wanted = `dahili tahmini: ${found.label}`;
+  }
+  log(`mikrofon denemesi: açılıyor (${wanted}); öncesi: ${before}`);
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio });
+  } catch (error) {
+    say(`Mikrofon açılamadı: ${error && error.name}: ${error && error.message}`, "error");
+    log(`mikrofon denemesi: HATA ${error && error.name}`);
+    return;
+  }
+  mic.stream = stream;
+  mic.source = ctx.createMediaStreamSource(stream);
+  micMeterStart();
+  const track = stream.getAudioTracks()[0];
+  const settings = track.getSettings ? track.getSettings() : {};
+  el("mic-s-track").textContent = `açık (${track.readyState}${track.muted ? ", muted" : ""})`;
+  el("mic-s-device").textContent = `${track.label || "(etiket yok)"} · ${(settings.deviceId || "").slice(0, 8)} · ${settings.sampleRate || "?"} Hz · ${settings.channelCount || "?"} kanal` +
+    (BLUETOOTH_LABEL.test(track.label || "") ? " · BLUETOOTH GÖRÜNÜYOR" : "");
+  el("mic-s-applied").textContent = ["echoCancellation", "noiseSuppression", "autoGainControl"]
+    .map((key) => `${key}: istenen false → ${settings[key] === undefined ? "bilinmiyor" : settings[key]}${settings[key] === false ? " ✓" : settings[key] === undefined ? "" : " ✗"}`)
+    .join(" · ");
+  el("mic-close").disabled = false;
+  el("mic-open-default").disabled = true;
+  el("mic-open-builtin").disabled = true;
+  await micListDevices();                         // etiketler artık görünür
+  log(`mikrofon denemesi: açıldı: ${track.label} | ayarlar ${JSON.stringify({ echo: settings.echoCancellation, ns: settings.noiseSuppression, agc: settings.autoGainControl, rate: settings.sampleRate, ch: settings.channelCount })} | sonrası: ${micCtxInfo()}`);
+  micRefreshState();
+  say("Mikrofon açık. Müzik kalitesi değişti mi? (sönükleşme, mono, tizlerin gitmesi, ses düşmesi) Şimdi dinle, sonra 4'ü ile kapat.", "warn");
+}
+
+function micClose(reason = "") {
+  if (mic.timer) clearInterval(mic.timer);
+  mic.timer = 0;
+  if (mic.stream) {
+    for (const track of mic.stream.getTracks()) track.stop();
+  }
+  try { if (mic.source) mic.source.disconnect(); } catch { /* bağlı değildi */ }
+  try { if (mic.analyser) mic.analyser.disconnect(); } catch { /* bağlı değildi */ }
+  try { if (mic.sink) mic.sink.disconnect(); } catch { /* bağlı değildi */ }
+  const wasOpen = Boolean(mic.stream);
+  mic.stream = null;
+  mic.source = null;
+  mic.analyser = null;
+  mic.sink = null;
+  el("mic-level").style.width = "0";
+  el("mic-level-text").textContent = "mikrofon kapalı";
+  el("mic-s-track").textContent = "kapalı";
+  el("mic-close").disabled = true;
+  el("mic-open-default").disabled = false;
+  el("mic-open-builtin").disabled = false;
+  if (wasOpen) {
+    log(`mikrofon denemesi: kapatıldı${reason ? ` (${reason})` : ""}; sonrası: ${micCtxInfo()}`);
+    say("Mikrofon kapandı. Müzik eski kalitesine döndü mü? (birkaç saniye sürebilir)", "ok");
+  }
+  micRefreshState();
+}
+// MIC-BİTİŞ
+
+el("mic-music-start").addEventListener("click", () => { try { micMusicStart(); } catch (e) { log(`müzik hatası: ${e.message}`); } });
+el("mic-music-stop").addEventListener("click", micMusicStop);
+el("mic-list").addEventListener("click", () => { micListDevices().catch((e) => log(`liste hatası: ${e.message}`)); });
+el("mic-open-default").addEventListener("click", () => { micOpen("default").catch((e) => log(`mikrofon hatası: ${e.message}`)); });
+el("mic-open-builtin").addEventListener("click", () => { micOpen("builtin").catch((e) => log(`mikrofon hatası: ${e.message}`)); });
+el("mic-close").addEventListener("click", () => micClose());
+document.addEventListener("visibilitychange", () => { if (document.hidden) micClose("sayfa gizlendi"); });
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+  navigator.mediaDevices.addEventListener("devicechange", () => {
+    log("mikrofon denemesi: aygıt listesi değişti (kulaklık takıldı/çıkarıldı?)");
+    micListDevices().catch(() => {});
+  });
+}
+micRefreshState();
+
 el("test-tone").addEventListener("click", () => {
   testTone().catch((e) => log(`test tonu hatası: ${e.message}`));
 });

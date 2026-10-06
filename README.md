@@ -253,6 +253,7 @@ node tests\chordsheet_test.mjs
 node tests\peaks_test.mjs
 node tests\timeline_test.mjs
 node tests\waves_wiring_test.mjs
+node tests\mic_bench_test.mjs
 ```
 
 Listeler aynı belgede (`stem-mikser.collection`, `lists`), yedeğe dahil. Şarkı bitişi artık `onended` ile de algılanır (ekran
