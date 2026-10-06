@@ -191,11 +191,13 @@
           <button type="button" class="chip" id="lyrics-add-reading" hidden>Okunuşu ekle</button>
           <button type="button" class="chip" id="lyrics-tr-toggle" aria-pressed="true" hidden>Çeviri</button>
           <button type="button" class="chip" id="lyrics-ro-toggle" aria-pressed="true" hidden>Okunuş</button>
+          <button type="button" class="chip" id="chords-toggle" aria-pressed="false" hidden>Akorlar</button>
           <button type="button" class="chip" id="lyrics-full-open" hidden>Tam ekran</button>
         </div>
       </div>
       <div class="lyrics-notices" id="lyrics-notices"></div>
       <div class="lyrics-notices" id="lyrics-tr-notice" hidden></div>
+      <small class="chords-note" id="chords-note" hidden></small>
       <div class="lyrics-editor" id="lyrics-editor" hidden>
         <textarea id="lyrics-text" rows="8" spellcheck="false" autocomplete="off"
                   aria-label="Şarkı sözleri metni"
@@ -209,6 +211,7 @@
       </div>
       <div class="lyrics-body" id="lyrics-body" hidden>
         <ul class="lyrics-list" id="lyrics-list" aria-live="off"></ul>
+        <div class="chord-grid" id="chord-grid" hidden aria-label="Akor ızgarası"></div>
         <button type="button" class="chip lyrics-follow" id="lyrics-follow" hidden>Şimdiye dön</button>
       </div>
     </section>

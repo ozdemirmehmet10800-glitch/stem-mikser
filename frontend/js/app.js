@@ -46,6 +46,9 @@ import { getBackground, putBackground, clearBackground } from "./bgstore.js";
 import { MediaBridge } from "./media.js";
 import { badgeOf, upgradeOf, describeMethod, upgradeConfirmText } from "./quality.js";
 import { versionLabel } from "./swversion.js";
+import {
+  prepareChords, displayLabel, mapSheet, buildGrid, renderMain, renderGap, renderGrid, soundingAt,
+} from "./chordsheet.js";
 import { WakeLock } from "./wakelock.js";
 import { StemCache, cacheTag } from "./stemcache.js";
 import { Metronome, SUBDIVISIONS } from "./metronome.js";
@@ -1633,6 +1636,7 @@ async function openSong(song, opts = {}) {
     configureTuneRanges();
     await engine.resetTempoAndPitch();
     strip.setTranspose(0, originalKey);
+    applyChordLabels();
     if (el("tempo-toggle")) el("tempo-toggle").disabled = false;
     refreshTuneUi();  // player-meta'yı da yazıyor
 
@@ -1889,6 +1893,7 @@ async function applyStretch(measure) {
     appliedSemis = shown;
     strip.setTranspose(shown, originalKey);
   }
+  applyChordLabels();         // kayma ya da "≈" değişmiş olabilir (plak gibi kipinde oran değişince)
 
   const ctx = engine.ctx;
   if (!ctx) return;  // şarkı açılmadan buraya gelinmiyor, yine de korunalı
@@ -2064,6 +2069,7 @@ function startLoop() {
     const time = engine.visualTime;
     strip.update(time);
     lyricsTick(time);
+    if (chordSheetOn) chordSheetTick(time);
     if (lyricsScreen) lyricsScreen.tick(time);
     if (!seeking) {
       el("seek").value = String(Math.round(time * 10));
@@ -3464,6 +3470,7 @@ const PRESS_SLOP_PX = 10;
 const SCROLL_GUARD_MS = 1200;
 
 let lyricsDoc = null;             // normalizeDoc çıktısı (cihazdaki ya da sunucudan gelen)
+const LYRICS_LOADING_TEXT = "Sözler yükleniyor…";
 let lyricsEmptyText = "Bu şarkıda söz yok";   // liste modunda tam ekran sözler açıkken sözsüz şarkıda gösterilen metin
 let lyricsStarting = false;       // istek gidiyor
 let lyricsPollTimer = 0;
@@ -3563,12 +3570,18 @@ function refreshLyricsUi() {
   const collapsed = lyricsCollapsed();
   el("lyrics-toggle").setAttribute("aria-expanded", String(!collapsed));
   el("lyrics-editor").hidden = !editing;
-  el("lyrics-body").hidden = collapsed || editing || !lyricsDoc;
+  const gridMode = chordGridMode();
+  el("lyrics-body").hidden = collapsed || editing || (!lyricsDoc && !gridMode);
+  el("lyrics-list").hidden = gridMode;
+  el("chord-grid").hidden = !gridMode;
+  show("chords-toggle", Boolean(songChordData()));
+  el("chords-toggle").setAttribute("aria-pressed", String(chordSheetOn));
   el("lyrics-follow").hidden = lyricsFollow || el("lyrics-body").hidden;
 }
 
 function renderLyricsList() {
   renderLyricsPanel();
+  rebuildChordSheet();
   // Tam ekran sözler: belge YOKSA da eşlenir (çalma listesinde yeni şarkıya geçince "Sözler yükleniyor…" / "Bu şarkıda söz yok";
   // panel kısmındaki erken dönüş buraya hiç ulaştırmıyordu, ekran eski şarkının sözlerinde kalıyordu).
   syncScreenLines(lyricsScreen, lyricsDoc, lyricsDoc ? currentSubs() : [], playlistCtx ? lyricsEmptyText : null);
@@ -3605,6 +3618,162 @@ function renderLyricsPanel() {
   list.append(fragment);
   list.scrollTop = 0;
   refreshLyricSubs(false);
+}
+
+// ---- akorlu söz sayfası (Söz ve görsel paketi, 5. madde). Mantık chordsheet.js'te (saf, node testli); burada yalnız DOM'a yerleştirme.
+// Söz panelindeki satırlar (lyrics-list) AYNI kalır: akorlar satırın ana metnine (.lyric-main) kelime birimleri olarak girer, giriş / ara /
+// çıkış satırları ilgili satır öğesinin SONUNA eklenir (CSS order ile görünür sırada; böylece children[0..2] = ana/okunuş/çeviri dizinleri bozulmaz).
+// Sözü olmayan şarkıda aynı akorlar ölçü ızgarası (chord-grid) olarak gösterilir. Tam ekran sözlerde akor YOK (2. adım).
+
+const CHORDSHEET_KEY = "stem-mikser.chordsheet";
+let chordSheetOn = readChordSheetPref();
+let sheetChords = [];              // gösterim akorları (prepareChords)
+let sheetChips = new Map();        // akor indeksi -> o akoru yazan düğümler
+let sheetNow = -2;                 // çalan akor (-1: yok, -2: hiç boyanmadı)
+let sheetLabelKey = "";            // son yazılan "kayma|ton": değişmediyse metinlere dokunulmaz
+let sheetRendered = false;         // satırlara akor işlendi mi (kapatınca düz metne dönmek için)
+let sheetUserScrollUntil = 0;      // ızgarada kullanıcı kaydırdıysa otomatik kaydırma bu zamana kadar susar
+const sheetExpanded = new Set();   // "+N" ile açılmış sözsüz bölümler
+
+function readChordSheetPref() {
+  try { return localStorage.getItem(CHORDSHEET_KEY) === "1"; } catch { return false; }
+}
+
+function writeChordSheetPref(on) {
+  try { localStorage.setItem(CHORDSHEET_KEY, on ? "1" : "0"); } catch { /* tercih bu oturumda kalır */ }
+}
+
+function songChordData() {
+  const data = currentSong && currentSong.chords;
+  return data && Array.isArray(data.chords) && data.chords.length ? data : null;
+}
+
+// Sözü olmayan (ve sözleri yüklenmesi bitmiş) şarkıda akor ızgarası.
+function chordGridMode() {
+  return chordSheetOn && Boolean(songChordData()) && !lyricsDoc && lyricsEmptyText !== LYRICS_LOADING_TEXT;
+}
+
+function chordText(ci) {
+  const data = songChordData();
+  return displayLabel(sheetChords[ci].label, shownSemis(), (data && data.key) || originalKey);
+}
+
+function registerChips(placed) {
+  for (const { el: node, ci } of placed) {
+    if (!sheetChips.has(ci)) sheetChips.set(ci, []);
+    sheetChips.get(ci).push(node);
+  }
+}
+
+function rebuildChordSheet() {
+  const list = el("lyrics-list");
+  const grid = el("chord-grid");
+  if (!list || !grid) return;
+  const data = songChordData();
+  const on = chordSheetOn && Boolean(data);
+  sheetChips = new Map();
+  sheetNow = -2;
+  sheetLabelKey = "";
+  list.classList.toggle("chords", on);
+  sheetChords = on ? prepareChords(data) : [];
+  if (!on && !sheetRendered && !grid.firstChild) return;            // kapalı ve zaten düz: yapacak iş yok
+  const duration = engine.duration || Number(currentSong && currentSong.duration) || 0;
+  const map = on && lyricsDoc ? mapSheet({ lines: lyricsDoc.lines, chords: sheetChords, duration }) : null;
+  const create = (tag) => document.createElement(tag);
+  if (lyricsDoc) {
+    const items = list.children;
+    lyricsDoc.lines.forEach((line, i) => {
+      const item = items[i];
+      if (!item) return;
+      while (item.children.length > 3) item.lastElementChild.remove();      // önceki sözsüz bölüm satırları
+      const sheetLine = map ? map.lines[i] : null;
+      registerChips(renderMain({
+        create, main: item.children[0], line, anchors: sheetLine ? sheetLine.anchors : [], language: lyricsDoc.language, label: chordText,
+      }));
+      for (const [gap, key] of sheetLine ? [[sheetLine.pre, `pre${i}`], [sheetLine.post, `post${i}`]] : []) {
+        if (!gap) continue;
+        const drawn = renderGap({
+          create, gap, chords: sheetChords, label: chordText, expanded: sheetExpanded.has(key),
+          onExpand: () => { sheetExpanded.add(key); rebuildChordSheet(); },
+        });
+        item.append(drawn.row);
+        registerChips(drawn.placed);
+      }
+    });
+  }
+  grid.textContent = "";
+  if (on && chordGridMode()) {
+    const rows = buildGrid({ chords: sheetChords, downbeats: data.downbeats || [], duration });
+    const drawn = renderGrid({ create, rows, chords: sheetChords, label: chordText });
+    grid.append(drawn.el);
+    registerChips(drawn.placed);
+  }
+  sheetRendered = on;
+  applyChordLabels(true);
+  chordSheetTick(engine.visualTime, true);
+}
+
+// Ton değişince (mikser ton kaydırıcısı / "Plak gibi") akor metinleri yeniden yazılır; sayfa yeniden KURULMAZ.
+function applyChordLabels(force = false) {
+  const note = el("chords-note");
+  const approx = vinylMode && keyShift(currentRate()).approx;
+  if (note) {
+    const show = chordSheetOn && Boolean(songChordData());
+    note.hidden = !show;
+    if (show) note.textContent = `Akorlar otomatik, yaklaşık${shownSemis() ? " · ton kaydırıldı" : ""}${approx ? " · ≈ en yakın yarım ses" : ""}`;
+  }
+  if (!sheetChips.size) return;
+  const data = songChordData();
+  const signature = `${shownSemis()}|${(data && data.key) || originalKey}`;
+  if (!force && signature === sheetLabelKey) return;
+  sheetLabelKey = signature;
+  for (const [ci, nodes] of sheetChips) {
+    const text = chordText(ci);
+    for (const node of nodes) if (node.textContent !== text) node.textContent = text;
+  }
+}
+
+// Her karede çağrılır: çalan akor değişmedikçe DOM'a dokunmaz.
+function chordSheetTick(time, force = false) {
+  if (!sheetChords.length) return;
+  const known = sheetNow >= 0 ? sheetChords[sheetNow] : null;
+  if (!force && known && time >= known.start && time < known.end) return;
+  const now = soundingAt(sheetChords, time);
+  if (!force && now === sheetNow) return;
+  for (const node of sheetChips.get(sheetNow) || []) node.classList.remove("now");
+  for (const node of sheetChips.get(now) || []) node.classList.add("now");
+  sheetNow = now;
+  if (now >= 0 && chordGridMode() && performance.now() > sheetUserScrollUntil) {
+    const node = (sheetChips.get(now) || [])[0];
+    const row = node && node.closest ? node.closest(".grid-row") : null;
+    const grid = el("chord-grid");
+    if (row && grid.clientHeight > 0) {
+      const top = Math.max(0, row.offsetTop - (grid.clientHeight - row.offsetHeight) / 2);
+      if (Math.abs(grid.scrollTop - top) >= 2) grid.scrollTo({ top, behavior: lyricsReducedMotion() ? "auto" : "smooth" });
+    }
+  }
+}
+
+async function onChordTap(time) {
+  if (time == null || !Number.isFinite(time) || !(engine.duration > 0)) return;
+  await engine.seek(Math.min(time, engine.duration));
+  metronome.resync();
+}
+
+function toggleChordSheet() {
+  chordSheetOn = !chordSheetOn;
+  writeChordSheetPref(chordSheetOn);
+  rebuildChordSheet();
+  refreshLyricsUi();
+}
+
+on("chords-toggle", "click", toggleChordSheet);
+on("chord-grid", "click", (event) => {
+  const target = event.target.closest ? event.target.closest("[data-t]") : null;
+  if (target) onChordTap(Number(target.dataset.t));
+});
+for (const type of ["wheel", "touchmove"]) {
+  el("chord-grid").addEventListener(type, () => { sheetUserScrollUntil = performance.now() + 4000; }, { passive: true });
 }
 
 // ---- söz çevirisi (Aşama 14): alt satırlar, "Çevir/Güncelle", tercihler. Mantık translation.js'te.
@@ -3888,6 +4057,7 @@ async function fixLyricTime(index) {
     const result = await api.setLyricTimes(songId, { version: lyricsDoc.version, set: [{ i: index, t: time }] });
     if (!currentSong || currentSong.id !== songId || !lyricsDoc) return;
     lyricsDoc = applyChanged(lyricsDoc, result.changed, result.version);
+    rebuildChordSheet();                                  // satır zamanı değişti: akorlar yeniden yerleşsin
     const lyr = lyricsStatus();
     if (lyr) {
       currentSong = { ...currentSong, status: { ...currentSong.status,
@@ -3967,6 +4137,12 @@ function bindLyricsList() {
     if (!item || (event.pointerType === "mouse" && event.button !== 0)) return;
     cancel();
     const index = Number(item.dataset.i);
+    // Sözsüz bölüm satırı (Giriş / Ara / Çıkış): dokunma o akorun zamanına gider, uzun basma (satır döngüsü) YOK.
+    if (event.target.closest(".chord-gap")) {
+      const chip = event.target.closest(".cc[data-t]");
+      press = { index, item, x: event.clientX, y: event.clientY, fired: false, timer: 0, gap: true, t: chip ? Number(chip.dataset.t) : null };
+      return;
+    }
     press = { index, item, x: event.clientX, y: event.clientY, fired: false, timer: 0 };
     item.classList.add("pressing");
     press.timer = setTimeout(() => {
@@ -3982,9 +4158,10 @@ function bindLyricsList() {
   });
   list.addEventListener("pointerup", () => {
     if (!press) return;
-    const { fired, index } = press;
+    const { fired, index, gap, t } = press;
     cancel();
-    if (!fired) onLyricLineTap(index);
+    if (gap) onChordTap(t);
+    else if (!fired) onLyricLineTap(index);
   });
   list.addEventListener("pointercancel", cancel);      // kaydırma başlayınca tarayıcı iptal eder
   list.addEventListener("contextmenu", (event) => event.preventDefault());   // uzun basma menüsü
@@ -4008,7 +4185,7 @@ function resetLyrics() {
   lyricsStarting = false;
   lyricsEditing = false;
   lyricsFixing = false;
-  lyricsEmptyText = "Sözler yükleniyor…";       // yeni şarkının sözü gelene dek (liste modu); gelmezse aşağıda "söz yok"
+  lyricsEmptyText = LYRICS_LOADING_TEXT;       // yeni şarkının sözü gelene dek (liste modu); gelmezse aşağıda "söz yok"
   renderLyricsList();
   refreshLyricsUi();
 }

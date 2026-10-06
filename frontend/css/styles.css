@@ -1277,6 +1277,41 @@ input[type="range"]::-moz-range-thumb {
 .lyric-line.manual::after { content: none; }
 .lyric-sub { display: block; font-size: 0.8em; line-height: 1.3; font-weight: 400; color: var(--text-faint); opacity: 0.9; }
 .lyric-sub[hidden] { display: none; }
+
+/* ---------- akorlu söz sayfası (Kitaplık/Söz paketi 5) ---------- */
+.chords-note { display: block; margin-top: 4px; color: var(--text-faint); font-size: 12px; }
+.chords-note[hidden] { display: none; }
+.lyrics-list.chords .lyric-line { display: flex; flex-direction: column; align-items: center; opacity: 0.8; line-height: 1.25; padding-top: 0.55rem; }
+.lyrics-list.chords .lyric-line.near { opacity: 0.9; }
+.lyrics-list.chords .lyric-line.active, .lyrics-list.chords .lyric-line.low.active { opacity: 1; }
+.lyrics-list.chords .lyric-main { display: block; max-width: 100%; }
+.lyrics-list.chords .lyric-sub { text-align: center; }
+.cw { display: inline-flex; flex-direction: column; align-items: flex-start; vertical-align: bottom; }
+.ccs { display: flex; gap: 0.35em; padding-right: 0.3em; min-height: 1.25em; font-size: 0.78em; line-height: 1.25; font-weight: 700; white-space: nowrap; }
+.wd { text-align: left; }
+.chord-line { display: block; font-size: 0.78em; line-height: 1.5; font-weight: 700; }
+.cc { color: var(--accent); font-weight: 700; border-radius: 5px; }
+.cc.carry { opacity: 0.55; font-weight: 600; }
+.cc.now { color: #06202a; background: var(--accent); box-shadow: 0 0 0 2px var(--accent); opacity: 1; }
+.chord-gap { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px 12px; padding: 6px 0; font-size: 0.85em; }
+.chord-gap.intro, .chord-gap.ara { order: -1; }
+.chord-gap.outro { order: 9; }
+.chord-gap-title { color: var(--text-faint); font-size: 0.8em; }
+button.cc.more {
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text-dim);
+  border-radius: 10px; min-height: 32px; min-width: 44px; padding: 0 10px; font: inherit; cursor: pointer;
+}
+.chord-grid {
+  height: clamp(8rem, 26vh, 15rem); overflow-y: auto; overscroll-behavior: contain;
+  background: var(--bg-2); border-radius: var(--radius); padding: 8px; touch-action: pan-y; scrollbar-width: thin;
+}
+.chord-grid[hidden] { display: none; }
+.grid-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 4px; }
+.grid-bar {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px 10px;
+  min-height: 44px; padding: 6px 4px; background: var(--panel); border-radius: 8px; cursor: pointer;
+}
+.grid-bar .cc { font-size: 15px; cursor: pointer; }
 .lyric-ro { font-style: italic; letter-spacing: 0.01em; }
 .lyric-line.active .lyric-sub { color: var(--text-dim); font-weight: 400; }
 
