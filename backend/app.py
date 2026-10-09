@@ -466,6 +466,9 @@ def _delete_block_reason(status):
     if _tr_is_running(status):
         return ("Soz cevirisi surerken silinemez. "
                 "Bitmesini bekleyip tekrar dene.")
+    if _melody_is_running(status):
+        return ("Hedef melodi hazirlanirken silinemez. "
+                "Bitmesini bekleyip tekrar dene.")
     return None
 
 
@@ -5302,6 +5305,375 @@ def _check_api_imports():
     print("API import zinciri tamam")
 
 
+# --------------------------------------------------------------------------
+# Şarkı söyleme antrenörü (Mikrofon paketi 9), 1. oturum: HEDEF MELODİ (CPU)
+#
+# Ana vokalin perdesi şarkı başına BİR kez çıkarılır ve `melody.bin` olarak saklanır; telefon bunu indirip önbelleğe alır.
+# Mikrofon sesi sunucuya HİÇBİR koşulda gitmez: bu bölüm yalnız şarkının kendi vokal stem'ini işler.
+#
+# Yöntem v1: pYIN (librosa, ISC), CPU. Kaynak: alt parçalar ayrılmış ve güvenilirse (`status.sub.reliability == "ok"`) ANA vokal
+# (lead.flac), değilse SW vokal stem'i (vocals.flac). YÖNTEM VERİYE YAZILIR (başlıkta `method`, `params`, `source`): ileride RMVPE /
+# torchcrepe gibi başka bir yöntem aynı biçimle gelebilir, telefon değişmez. separate_image / Hi-Fi yoluna DOKUNULMAZ (analyze_image).
+#
+# melody.bin biçimi (little-endian):
+#   "MEL1" | u32 başlık uzunluğu | başlık JSON (UTF-8) | n adet int16
+#   int16 = MIDI notası x 100 (A4 = 6900); 0 = sessiz / perde yok. Kare süresi = başlık.hop_s (512 / 22050 sn, ~23,2 ms).
+#   başlık: {v, method, source, sr, hop, hop_s, frame, n, unit, fmin, fmax, duration, params, post, stats, lib}
+# --------------------------------------------------------------------------
+MELODY_FORMAT = 1
+MELODY_MAGIC = b"MEL1"
+MELODY_METHOD = "pyin"
+MELODY_SR = 22050
+MELODY_FRAME = 2048
+MELODY_HOP = 512
+MELODY_FMIN_HZ = 65.406          # C2
+MELODY_FMAX_HZ = 1046.502        # C6
+MELODY_SILENT_DBFS = SUB_SILENT_DBFS   # "vokal yok" kapısıyla AYNI sayı (-50 dBFS)
+MELODY_FRAME_GATE_DBFS = -50.0   # kare RMS'i bunun altındaysa perde yok sayılır (ayrıştırma artığı / nefes)
+MELODY_MIN_RUN = 4               # bundan kısa sesli parçalar (~93 ms) atılır
+MELODY_OCTAVE_WINDOW = 15        # oktav / aykırı düzeltmesi için bakılan komşu kare sayısı (her yönde)
+MELODY_RUNNING_STALE_SECONDS = 2400
+MELODY_SOURCES = ("auto", "vocals", "lead")
+MELODY_PYIN_PARAMS = {"switch_prob": 0.01, "max_transition_rate": 35.92, "resolution": 0.1, "beta_parameters": [2, 18],
+                      "boltzmann_parameter": 2, "no_trough_prob": 0.01}
+MELODY_CPU = 2.0                  # ayrılan çekirdek (maliyet tahmini için)
+MELODY_CPU_CORE_SECOND_USD = 0.0000131    # Modal CPU fiyatı (çekirdek-saniye) - TAHMİN; güncel fiyat Modal'dan kontrol edilmeli
+
+
+def _melody_is_running(status) -> bool:
+    mel = (status or {}).get("melody") or {}
+    if mel.get("state") != "running":
+        return False
+    return (time.time() - float(mel.get("started") or 0)) < MELODY_RUNNING_STALE_SECONDS
+
+
+def _melody_stale(status) -> bool:
+    """Hedef melodi başka bir ayrıştırmadan mı? (Ana şarkı sonradan yeniden işlendi.)"""
+    mel = (status or {}).get("melody") or {}
+    if mel.get("state") != "done":
+        return False
+    return mel.get("parent_stems_version") != (status or {}).get("stems_version")
+
+
+def _melody_pick_source(status, requested: str = "auto"):
+    """Hangi stem'den çıkarılacak? Dönen: (kaynak, neden); kaynak None ise istek yapılamaz (neden = açıklama).
+
+    auto: alt parçalar HAZIR ve GÜVENİLİR (reliability == ok) ise ana vokal (lead), değilse SW vokal stem'i.
+    """
+    sub = (status or {}).get("sub") or {}
+    lead_ready = sub.get("state") == "done"
+    lead_ok = lead_ready and sub.get("reliability") == "ok"
+    if requested == "vocals":
+        return "vocals", "istendi"
+    if requested == "lead":
+        if not lead_ready:
+            return None, "Ana vokal (alt parcalar) henuz ayrilmamis"
+        return "lead", "istendi"
+    if lead_ok:
+        return "lead", "alt parcalar guvenilir (ana vokal kullaniliyor)"
+    return "vocals", "alt parca yok ya da guvenilir degil (SW vokal stem'i)"
+
+
+def _melody_source_path(song_id: str, source: str) -> pathlib.Path:
+    master = _song_dir(song_id) / "master"
+    return master / "sub" / "lead.flac" if source == "lead" else master / "vocals.flac"
+
+
+def _melody_runs(mask):
+    """Boolean maskedeki ardışık True parçaları: [(başlangıç, bitiş_hariç), ...]."""
+    runs = []
+    start = None
+    for index, flag in enumerate(mask):
+        if flag and start is None:
+            start = index
+        elif not flag and start is not None:
+            runs.append((start, index))
+            start = None
+    if start is not None:
+        runs.append((start, len(mask)))
+    return runs
+
+
+def _melody_postprocess(f0, voiced, rms_dbfs, gate_dbfs: float = MELODY_FRAME_GATE_DBFS) -> tuple:
+    """pYIN çıktısını temizler. Dönen: (int16 kareler [MIDI x 100, 0 = sessiz], istatistik sözlüğü).
+
+    Adımlar: (1) pYIN sesli bayrağı + sonlu perde + kare seviyesi kapısı; (2) kısa sesli parçalar atılır; (3) komşu karelerin
+    ortancasından ~bir oktav (>= 8 yarım ses) sapan kare, oktav katı kaydırılınca komşulara oturuyorsa KAYDIRILIR, oturmuyorsa
+    atılır (aykırı); (4) 3 karelik ortanca süzgeç (yalnız sesli komşular arasında); (5) kısa parçalar yeniden atılır.
+    Sürekli (pencereden uzun) oktav hataları bu yolla düzelmez: istatistikteki `jumps12` artık sıçramaları sayar.
+    """
+    import numpy as np
+
+    f0 = np.asarray(f0, dtype=np.float64)
+    n = len(f0)
+    ok = np.asarray(voiced, dtype=bool) & np.isfinite(f0) & (f0 > 0) & (np.asarray(rms_dbfs, dtype=np.float64) >= gate_dbfs)
+    midi = np.full(n, np.nan)
+    midi[ok] = 69.0 + 12.0 * np.log2(f0[ok] / 440.0)
+    raw_voiced = int(ok.sum())
+
+    def drop_short(mask):
+        dropped = 0
+        for start, end in _melody_runs(mask):
+            if end - start < MELODY_MIN_RUN:
+                mask[start:end] = False
+                dropped += end - start
+        return dropped
+
+    short_dropped = drop_short(ok)
+    original = midi.copy()
+    fixes = 0
+    outliers = 0
+    for index in np.flatnonzero(ok):
+        low, high = max(index - MELODY_OCTAVE_WINDOW, 0), min(index + MELODY_OCTAVE_WINDOW + 1, n)
+        window = ok[low:high].copy()
+        window[index - low] = False                       # kendisi referansa girmez
+        neighbours = original[low:high][window]
+        if len(neighbours) < 3:
+            continue
+        reference = float(np.median(neighbours))
+        delta = original[index] - reference
+        if abs(delta) < 8.0:
+            continue
+        shifted = original[index] - 12.0 * round(delta / 12.0)
+        if abs(shifted - reference) <= 4.0:
+            midi[index] = shifted
+            fixes += 1
+        else:
+            ok[index] = False
+            outliers += 1
+    smoothed = midi.copy()
+    for index in np.flatnonzero(ok):
+        if 0 < index < n - 1 and ok[index - 1] and ok[index + 1]:
+            smoothed[index] = float(np.median(midi[index - 1:index + 2]))
+    midi = smoothed
+    short_dropped += drop_short(ok)
+
+    cents = np.zeros(n, dtype=np.int16)
+    cents[ok] = np.clip(np.round(midi[ok] * 100.0), 1, 12700).astype(np.int16)
+    voiced_count = int(ok.sum())
+    jumps = 0
+    both = ok[1:] & ok[:-1]
+    if both.any():
+        jumps = int((np.abs(midi[1:][both] - midi[:-1][both]) >= 11.0).sum())
+    stats = {
+        "frames": n, "voiced": voiced_count, "voiced_ratio": round(voiced_count / n, 4) if n else 0.0,
+        "raw_voiced": raw_voiced, "short_dropped": int(short_dropped), "octave_fixes": int(fixes), "outliers_dropped": int(outliers),
+        "jumps12": jumps,
+    }
+    if voiced_count:
+        values = midi[ok]
+        stats["midi_p05"] = round(float(np.percentile(values, 5)), 2)
+        stats["midi_p50"] = round(float(np.percentile(values, 50)), 2)
+        stats["midi_p95"] = round(float(np.percentile(values, 95)), 2)
+    return cents, stats
+
+
+def _melody_encode(cents, header: dict) -> bytes:
+    import struct
+
+    import numpy as np
+
+    head = json.dumps(header, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return MELODY_MAGIC + struct.pack("<I", len(head)) + head + np.asarray(cents, dtype="<i2").tobytes()
+
+
+def _melody_decode(blob: bytes) -> tuple:
+    """melody.bin -> (başlık sözlüğü, int16 dizisi). Bozuksa ValueError."""
+    import struct
+
+    import numpy as np
+
+    if len(blob) < 8 or blob[:4] != MELODY_MAGIC:
+        raise ValueError("melody.bin: sihirli bayt yanlis")
+    (head_len,) = struct.unpack("<I", blob[4:8])
+    if head_len <= 0 or 8 + head_len > len(blob):
+        raise ValueError("melody.bin: baslik uzunlugu bozuk")
+    header = json.loads(blob[8:8 + head_len].decode("utf-8"))
+    body = blob[8 + head_len:]
+    if header.get("v") != MELODY_FORMAT or len(body) != 2 * int(header.get("n", -1)):
+        raise ValueError("melody.bin: surum ya da veri uzunlugu uyusmuyor")
+    return header, np.frombuffer(body, dtype="<i2")
+
+
+def _melody_restore(song_id: str, previous, message: str) -> None:
+    """Hata olursa ÖNCEKİ tamam kaydı geri koyar (yoksa state=error)."""
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if previous and previous.get("state") == "done":
+        _write_status(song_id, melody=dict(previous, last_attempt={"state": "error", "message": message[:300], "finished_at": stamp}))
+    else:
+        _write_status(song_id, melody={"state": "error", "message": message[:300], "finished_at": stamp})
+
+
+def _extract_melody_impl(song_id: str, requested: str, previous) -> dict:
+    import librosa
+    import numpy as np
+    import soundfile as sf
+
+    started = time.time()
+    song_dir = _song_dir(song_id)
+    status = json.loads((song_dir / "status.json").read_text(encoding="utf-8"))
+    source, why = _melody_pick_source(status, requested)
+    if source is None:
+        raise ValueError(why)
+    path = _melody_source_path(song_id, source)
+    if not path.is_file():
+        if requested == "auto" and source == "lead":
+            source, why = "vocals", "lead dosyasi yok (SW vokal stem'i)"
+            path = _melody_source_path(song_id, source)
+        if not path.is_file():
+            raise FileNotFoundError(f"{path.name} yok; once ayristirma gerekiyor")
+    if (status.get("melody") or {}).get("state") != "running":      # toplu üretim (API'den geçmedi): çalışıyor işareti
+        keep = previous if previous and previous.get("state") == "done" else None
+        _write_status(song_id, melody={"state": "running", "started": int(started), "source": source, "previous": keep})
+
+    step = time.time()
+    audio, rate = sf.read(str(path), dtype="float32", always_2d=True)
+    y = audio.mean(axis=1)
+    duration = round(len(y) / float(rate), 3)
+    if int(rate) != MELODY_SR:
+        y = librosa.resample(y, orig_sr=int(rate), target_sr=MELODY_SR)
+    y = np.ascontiguousarray(y, dtype=np.float32)
+    decode_seconds = round(time.time() - step, 2)
+
+    rms = librosa.feature.rms(y=y, frame_length=MELODY_FRAME, hop_length=MELODY_HOP)[0]
+    rms_dbfs = 20.0 * np.log10(np.maximum(rms, 1e-9))
+    overall = float(20.0 * np.log10(max(float(np.sqrt(np.mean(np.square(y, dtype=np.float64)))), 1e-9)))
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if overall < MELODY_SILENT_DBFS:
+        record = {"state": "no_vocals", "rms_dbfs": round(overall, 2), "source": source,
+                  "parent_stems_version": status.get("stems_version"), "finished_at": stamp}
+        if not (previous and previous.get("state") == "done"):
+            _write_status(song_id, melody=record)
+        else:
+            _write_status(song_id, melody=previous)
+        return {"id": song_id, "state": "no_vocals", "rms_dbfs": round(overall, 2)}
+
+    step = time.time()
+    f0, voiced, _prob = librosa.pyin(
+        y, fmin=MELODY_FMIN_HZ, fmax=MELODY_FMAX_HZ, sr=MELODY_SR, frame_length=MELODY_FRAME, hop_length=MELODY_HOP,
+        switch_prob=MELODY_PYIN_PARAMS["switch_prob"], max_transition_rate=MELODY_PYIN_PARAMS["max_transition_rate"],
+        resolution=MELODY_PYIN_PARAMS["resolution"], beta_parameters=tuple(MELODY_PYIN_PARAMS["beta_parameters"]),
+        boltzmann_parameter=MELODY_PYIN_PARAMS["boltzmann_parameter"], no_trough_prob=MELODY_PYIN_PARAMS["no_trough_prob"], fill_na=np.nan,
+    )
+    pyin_seconds = round(time.time() - step, 2)
+    count = min(len(f0), len(rms_dbfs))
+    step = time.time()
+    cents, stats = _melody_postprocess(f0[:count], voiced[:count], rms_dbfs[:count])
+    post_seconds = round(time.time() - step, 2)
+
+    header = {
+        "v": MELODY_FORMAT, "method": MELODY_METHOD, "source": source, "sr": MELODY_SR, "hop": MELODY_HOP,
+        "hop_s": round(MELODY_HOP / MELODY_SR, 8), "frame": MELODY_FRAME, "n": int(len(cents)), "unit": "midi_x100", "unvoiced": 0,
+        "fmin": MELODY_FMIN_HZ, "fmax": MELODY_FMAX_HZ, "duration": duration,
+        "params": dict(MELODY_PYIN_PARAMS, frame_gate_dbfs=MELODY_FRAME_GATE_DBFS),
+        "post": {"min_run": MELODY_MIN_RUN, "octave_window": MELODY_OCTAVE_WINDOW, "median3": True},
+        "stats": stats, "lib": {"librosa": librosa.__version__},
+    }
+    blob = _melody_encode(cents, header)
+    version = max(int(time.time()), int((previous or {}).get("version") or 0) + 1)
+    target = song_dir / "melody.bin"
+    tmp = target.with_name("melody.bin.tmp")
+    tmp.write_bytes(blob)
+    os.replace(tmp, target)                                   # önce dosya (atomik), SONRA status
+
+    total = round(time.time() - started, 2)
+    record = {
+        "state": "done", "version": version, "method": MELODY_METHOD, "source": source, "source_reason": why,
+        "parent_stems_version": status.get("stems_version"), "parent_pipeline": status.get("pipeline"),
+        "frames": stats["frames"], "voiced_ratio": stats["voiced_ratio"], "bytes": len(blob), "rms_dbfs": round(overall, 2),
+        "seconds": {"decode": decode_seconds, "pyin": pyin_seconds, "post": post_seconds, "total": total},
+        "finished_at": stamp,
+    }
+    _write_status(song_id, melody=record)
+    print(f"[melody] {song_id[:8]} {source}: {stats['voiced']}/{stats['frames']} sesli, oktav duzeltme {stats['octave_fixes']}, "
+          f"pyin {pyin_seconds} sn, toplam {total} sn, {len(blob)} bayt")
+    return {"id": song_id, "state": "done", "source": source, "version": version, "bytes": len(blob), "stats": stats,
+            "seconds": record["seconds"], "duration": duration,
+            "cost_usd_estimate": round(total * MELODY_CPU * MELODY_CPU_CORE_SECOND_USD, 5)}
+
+
+@app.function(
+    image=analyze_image,        # librosa + numpy + soundfile; separate_image / Hi-Fi / sub_image'a DOKUNULMAZ
+    volumes={DATA_DIR: volume},
+    timeout=900,
+    cpu=MELODY_CPU,
+    memory=2048,
+    max_containers=3,           # min_containers YOK: boştayken maliyet sıfır; toplu üretimde en çok 3 şarkı birlikte
+)
+def extract_melody(song_id: str, source: str = "auto") -> dict:
+    """Ana vokalin perdesini (pYIN) çıkarıp melody.bin + status.melody yazar. Hata olursa ÖNCEKİ tamam kayıt geri konur."""
+    volume.reload()
+    previous = None
+    with contextlib.suppress(Exception):
+        previous = (json.loads((_song_dir(song_id) / "status.json").read_text(encoding="utf-8")).get("melody") or {}).get("previous")
+        if previous is None:
+            current = json.loads((_song_dir(song_id) / "status.json").read_text(encoding="utf-8")).get("melody") or {}
+            previous = current if current.get("state") == "done" else None
+    try:
+        return _extract_melody_impl(song_id, source, previous)
+    except Exception as error:
+        with contextlib.suppress(Exception):
+            volume.reload()
+            _melody_restore(song_id, previous, f"{type(error).__name__}: {error}")
+        raise
+
+
+@app.function(image=light_image, volumes={DATA_DIR: volume}, timeout=300)
+def melody_list() -> list:
+    """Toplu üretim için: bitmiş şarkılar ve melodi durumları."""
+    volume.reload()
+    root = pathlib.Path(DATA_DIR) / "songs"
+    found = []
+    for entry in sorted(root.iterdir()) if root.is_dir() else []:
+        status_path = entry / "status.json"
+        if not status_path.is_file():
+            continue
+        try:
+            data = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if data.get("state") != "done" or data.get("source_song"):
+            continue
+        mel = data.get("melody") or {}
+        found.append({"id": str(data.get("id", entry.name)), "title": str(data.get("title") or entry.name[:12]),
+                      "duration": data.get("duration"), "melody_state": mel.get("state"),
+                      "sub_state": (data.get("sub") or {}).get("state"), "sub_reliability": (data.get("sub") or {}).get("reliability")})
+    return found
+
+
+@app.local_entrypoint()
+def melody_backfill(ids: str = "", source: str = "auto", replace: bool = False):
+    """Kitaplıktaki bitmiş şarkıların hedef melodisini üretir (en çok 3 paralel).
+
+        modal run backend/app.py::melody_backfill
+        modal run backend/app.py::melody_backfill --ids <kimlik>,<kimlik> --source vocals --replace
+
+    Varsayılan: melodisi olmayan / hatalı şarkılar; `--replace` hepsini yeniden üretir.
+    """
+    wanted = {item.strip() for item in ids.split(",") if item.strip()}
+    songs = melody_list.remote()
+    todo = [song for song in songs
+            if (not wanted or song["id"] in wanted) and (replace or wanted or song["melody_state"] not in ("done", "no_vocals", "running"))]
+    print(f"{len(songs)} sarki, {len(todo)} uretilecek")
+    started = time.time()
+    results = list(extract_melody.starmap([(song["id"], source) for song in todo], return_exceptions=True))
+    wall = round(time.time() - started, 1)
+    total_cost = 0.0
+    print(f"{'baslik':36} {'kaynak':7} {'sure':>6} {'decode':>7} {'pyin':>6} {'toplam':>7} {'sesli%':>7} {'oktav':>5} {'sicrama':>7} {'$~':>8}")
+    for song, result in zip(todo, results):
+        if isinstance(result, Exception):
+            print(f"{song['title'][:36]:36} HATA: {type(result).__name__}: {str(result)[:80]}")
+            continue
+        if result.get("state") != "done":
+            print(f"{song['title'][:36]:36} {result.get('state')}")
+            continue
+        s, sec = result["stats"], result["seconds"]
+        total_cost += result["cost_usd_estimate"]
+        print(f"{song['title'][:36]:36} {result['source']:7} {result['duration']:6.1f} {sec['decode']:7.1f} {sec['pyin']:6.1f} {sec['total']:7.1f} "
+              f"{100 * s['voiced_ratio']:6.1f}% {s['octave_fixes']:5} {s['jumps12']:7} {result['cost_usd_estimate']:8.5f}")
+    print(f"toplam duvar saati {wall} sn, tahmini maliyet ~${total_cost:.4f} ({MELODY_CPU} cekirdek x {MELODY_CPU_CORE_SECOND_USD} $/cekirdek-sn)")
+
+
 api_image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("ffmpeg")
@@ -7888,6 +8260,10 @@ def api():
                         "lyrics_stale": _lyr_stale(data),
                         "translation_state": (data.get("translation") or {}).get("state"),
                         "translation_version": (data.get("translation") or {}).get("version"),
+                        "melody_state": (data.get("melody") or {}).get("state"),
+                        "melody_version": (data.get("melody") or {}).get("version"),
+                        "melody_source": (data.get("melody") or {}).get("source"),
+                        "melody_stale": _melody_stale(data),
                     }
                 )
             return found
@@ -8153,6 +8529,79 @@ def api():
              "version": lyr.get("version"), "warning": lyr.get("warning"),
              "lyrics": json.loads(raw.decode("utf-8"))},
             headers={"Cache-Control": "private, max-age=0, must-revalidate"})
+
+    # ---------------- hedef melodi (Mikrofon paketi 9, 1. oturum) ----------------------
+
+    @web.post("/songs/{song_id}/melody")
+    async def start_melody(song_id: str, request: Request, _=auth):
+        """Ana vokalin hedef melodisini çıkarır (CPU, pYIN). Gövde (isteğe bağlı):
+        {"replace": false, "source": "auto" | "vocals" | "lead"}. Tamam sonuç varsa koşmaz (`existing`); `replace: true` yeniden üretir
+        (ör. ana şarkı yeniden işlendiyse ya da alt parçalar sonradan ayrıldıysa). "Vokal yok" kapısı CPU'da, iş açılmadan elenir.
+        Durum: `status.melody` (GET /songs/{id}); veri: GET /songs/{id}/melody."""
+        replace = False
+        source = "auto"
+        with contextlib.suppress(ValueError, TypeError):
+            body = await request.json()
+            if isinstance(body, dict):
+                replace = body.get("replace") is True
+                source = body.get("source", "auto")
+        if source not in MELODY_SOURCES:
+            raise HTTPException(status_code=400, detail="Gecersiz kaynak")
+        await gate.refresh(force=True)
+        status = await require_status(song_id)
+        if status.get("state") != "done" or not status.get("stems"):
+            raise HTTPException(status_code=409, detail="Sarki henuz hazir degil")
+        if _melody_is_running(status):
+            return {"id": song_id, "state": "running", "existing": True}
+        previous = status.get("melody") or {}
+        if previous.get("state") in ("done", "no_vocals") and not replace:
+            return {"id": song_id, "state": previous["state"], "existing": True, "source": previous.get("source"),
+                    "stale": _melody_stale(status)}
+        chosen, why = _melody_pick_source(status, source)
+        if chosen is None:
+            raise HTTPException(status_code=409, detail=why)
+        lead_path = _melody_source_path(song_id, "lead")
+        if chosen == "lead" and not await asyncio.to_thread(lead_path.exists):
+            if source == "lead":
+                raise HTTPException(status_code=409, detail="Ana vokal dosyasi yok")
+            chosen, why = "vocals", "lead dosyasi yok (SW vokal stem'i)"
+        stem_path = _song_dir(song_id) / "master" / "vocals.flac"
+        if not await asyncio.to_thread(stem_path.exists):
+            raise HTTPException(status_code=409, detail="vocals stem'i yok")
+        async with gate.reading():
+            level = await asyncio.to_thread(_sub_vocal_level, stem_path)
+        level = round(level, 2)
+        if level < MELODY_SILENT_DBFS:
+            if previous.get("state") != "done":
+                await asyncio.to_thread(_write_status, song_id, melody={
+                    "state": "no_vocals", "rms_dbfs": level, "parent_stems_version": status.get("stems_version"),
+                    "thresholds": {"silent_dbfs": MELODY_SILENT_DBFS},
+                    "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+            return {"id": song_id, "state": "no_vocals", "rms_dbfs": level}
+        keep = dict(previous) if previous.get("state") == "done" else None
+        if keep:
+            keep.pop("previous", None)
+        await asyncio.to_thread(_write_status, song_id, melody={
+            "state": "running", "started": int(time.time()), "source": chosen, "rms_dbfs": level, "previous": keep})
+        call = extract_melody.spawn(song_id, chosen)
+        return {"id": song_id, "state": "running", "source": chosen, "source_reason": why, "call_id": str(call.object_id),
+                "rms_dbfs": level}
+
+    @web.get("/songs/{song_id}/melody")
+    async def get_melody(song_id: str, _=auth):
+        """melody.bin (biçim: MELODY_FORMAT yorumu). Melodi yoksa 404. Başlıkta yöntem / kaynak / sürüm var; `stale` durumu
+        `status.melody` + `stems_version` ile istemcide hesaplanır (tüm üstveri dosyanın içinde)."""
+        await gate.refresh()
+        await require_status(song_id)
+        path = _song_dir(song_id) / "melody.bin"
+        if not await asyncio.to_thread(path.exists):
+            await gate.refresh(force=True)
+            if not await asyncio.to_thread(path.exists):
+                raise HTTPException(status_code=404, detail="Hedef melodi yok")
+        async with gate.reading():
+            body = await asyncio.to_thread(_read_slice, path)
+        return Response(content=body, media_type="application/octet-stream",
+                        headers={"Cache-Control": "private, max-age=0, must-revalidate"})
 
     # ---------------- söz çevirisi (Aşama 14) -----------------------------------
 
@@ -8459,6 +8908,9 @@ def api():
         if _tr_is_running(status):
             raise HTTPException(status_code=409,
                                 detail="Soz cevirisi surerken yeniden islenemez")
+        if _melody_is_running(status):
+            raise HTTPException(status_code=409,
+                                detail="Hedef melodi hazirlanirken yeniden islenemez")
         chosen = quality if quality in QUALITIES else DEFAULT_QUALITY
         call = separate.spawn(song_id, chosen, True)
         return {"id": song_id, "call_id": str(call.object_id),

@@ -286,6 +286,16 @@ Canlı deneme (token dosyadan okunur, yazdırılmaz; gerçek sözler yalnız git
 `.\.venv\Scripts\python.exe tests\translate_live.py list` ve `... run <şarkı adı parçası> [--replace] [--show N]`.
 Mock sunucuda: `tests\mock_server.py --lyrics-lang ja --translate-mode done|busy|error|refused --translate-polls 2`.
 
+**Hedef melodi (Mikrofon paketi 9, sunucu; Modal'a bağlanmaz, sentetik ses, gerçek pYIN yerelde koşar):**
+
+```powershell
+.\.venv\Scripts\python.exe tests\test_melody_gate.py
+.\.venv\Scripts\python.exe tests\test_melody_api.py
+```
+
+Toplu üretim (kitaplıkta melodisi olmayan şarkılar; `--ids a,b`, `--source auto|vocals|lead`, `--replace`):
+`.\.venv\Scripts\modal.exe run backend\app.py::melody_backfill`. Mock sunucuda: `tests\mock_server.py --melody-mode done|no_vocals|error --melody-polls 2`.
+
 **Akor mantığının yerel testi (Modal'a bağlanmaz, ücretsiz, saniyeler):**
 
 ```powershell

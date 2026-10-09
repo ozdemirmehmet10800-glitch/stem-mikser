@@ -84,6 +84,37 @@ _translate = {"mode": "done", "polls": 0, "items": {}, "state": {}, "left": {}, 
 STEM_DELAY = 0.0
 
 
+
+# Hedef melodi (Mikrofon paketi 9) taklidi: --melody-mode done|no_vocals|error, --melody-polls N (POST sonrasi N durum sorgusu
+# boyunca "running"). SENTETIK melodi: sabit bir gam uzerinde notalar + aralarda sessizlik (gercek vokal YOK); biçim backend/app.py
+# ile ayni (MEL1 | u32 | JSON | int16 MIDI x 100, 0 = sessiz).
+_melody = {"mode": "done", "polls": 0, "left": {}, "state": {}, "blobs": {}}
+MELODY_HOP = 512
+MELODY_SR = 22050
+
+
+def synthetic_melody(duration, source="vocals", version=1):
+    import struct
+    hop_s = MELODY_HOP / MELODY_SR
+    n = int(duration / hop_s) + 1
+    scale = [57, 59, 60, 62, 64, 62, 60, 59, 57, 55, 57, 60, 64, 67, 64, 60]       # A minor, sentetik
+    frames = [0] * n
+    index = 0
+    start = 3.0
+    while start < duration - 2.0:
+        length = 0.4 + 0.15 * (index % 4)
+        note = scale[index % len(scale)]
+        for k in range(int(start / hop_s), min(int((start + length) / hop_s), n)):
+            vibrato = int(18 * __import__("math").sin(k * 0.45)) if k - int(start / hop_s) > 6 else 0
+            frames[k] = note * 100 + vibrato
+        start += length + (0.15 if index % 5 else 0.9)
+        index += 1
+    head = json.dumps({"v": 1, "method": "pyin", "source": source, "sr": MELODY_SR, "hop": MELODY_HOP, "hop_s": round(hop_s, 8),
+                       "frame": 2048, "n": n, "unit": "midi_x100", "unvoiced": 0, "fmin": 65.406, "fmax": 1046.502,
+                       "duration": round(duration, 3), "synthetic": True}, separators=(",", ":")).encode("utf-8")
+    return b"MEL1" + struct.pack("<I", len(head)) + head + struct.pack("<%dh" % n, *frames)
+
+
 def synthetic_lyrics(duration, language, source, lines_text=None, version=1, manual=None, low=()):
     """Gercek soz degil: esit aralikli yer tutucu satirlar, ortada bir ara muzik boslugu."""
     word = "テスト行" if language == "ja" else "Sentetik satir"
@@ -158,6 +189,8 @@ def find_songs():
                 status[key] = _sub["state"][(entry.name, group)]
         if entry.name in _lyrics["state"]:
             status["lyrics"] = _lyrics["state"][entry.name]
+        if entry.name in _melody["state"]:
+            status["melody"] = _melody["state"][entry.name]
         if entry.name in _translate["state"]:
             status["translation"] = _translate["state"][entry.name]
         status["stems"] = [s for s in STEM_ORDER if s in stems] + \
@@ -228,6 +261,13 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authorized():
                 return
             self._start_export(match.group(1))
+            return
+
+        match = re.fullmatch(r"/songs/([^/]+)/melody", path)
+        if match:
+            if not self._authorized():
+                return
+            self._start_melody(match.group(1))
             return
 
         match = re.fullmatch(r"/songs/([^/]+)/translate", path)
@@ -508,6 +548,13 @@ class Handler(BaseHTTPRequestHandler):
                         (song["status"].get("lyrics") or {}).get("state") == "done"
                         and (song["status"].get("lyrics") or {}).get("parent_stems_version")
                         != song["status"].get("stems_version")),
+                    "melody_state": (song["status"].get("melody") or {}).get("state"),
+                    "melody_version": (song["status"].get("melody") or {}).get("version"),
+                    "melody_source": (song["status"].get("melody") or {}).get("source"),
+                    "melody_stale": (
+                        (song["status"].get("melody") or {}).get("state") == "done"
+                        and (song["status"].get("melody") or {}).get("parent_stems_version")
+                        != song["status"].get("stems_version")),
                 }
                 for index, song in enumerate(find_songs())
             ]
@@ -592,6 +639,23 @@ class Handler(BaseHTTPRequestHandler):
                 "Content-Disposition": f'attachment; filename="{ascii_name}"'})
             return
 
+        match = re.fullmatch(r"/songs/([^/]+)/melody", path)
+        if match:
+            if not self._authorized():
+                return
+            blob = _melody["blobs"].get(match.group(1))
+            if not blob:
+                self._json(404, {"detail": "Hedef melodi yok"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(blob)))
+            self.send_header("Cache-Control", "private, max-age=0, must-revalidate")
+            self._cors()
+            self.end_headers()
+            self.wfile.write(blob)
+            return
+
         match = re.fullmatch(r"/songs/([^/]+)/lyrics", path)
         if match:
             if not self._authorized():
@@ -619,6 +683,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(404, {"detail": "Sarki bulunamadi"})
                 return
             self._finish_lyrics(match.group(1), song)
+            song = self._song(match.group(1)) or song
+            self._finish_melody(match.group(1), song)
             song = self._song(match.group(1)) or song
             self._finish_sub(match.group(1), song)
             self._finish_translate(match.group(1), song)
@@ -682,6 +748,61 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"detail": "yok"})
 
     # ---------------- dosya servisi ----------------
+
+    def _start_melody(self, song_id):
+        song = self._song(song_id)
+        if not song:
+            self._json(404, {"detail": "Sarki bulunamadi"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except (ValueError, TypeError):
+            body = {}
+        replace = isinstance(body, dict) and body.get("replace") is True
+        source = body.get("source", "auto") if isinstance(body, dict) else "auto"
+        if source not in ("auto", "vocals", "lead"):
+            self._json(400, {"detail": "Gecersiz kaynak"})
+            return
+        current = song["status"].get("melody") or {}
+        if current.get("state") == "running":
+            self._json(200, {"id": song_id, "state": "running", "existing": True})
+            return
+        if current.get("state") in ("done", "no_vocals") and not replace:
+            self._json(200, {"id": song_id, "state": current["state"], "existing": True, "source": current.get("source")})
+            return
+        if _melody["mode"] == "no_vocals":
+            _melody["state"][song_id] = {"state": "no_vocals", "rms_dbfs": -118.66}
+            self._json(200, {"id": song_id, "state": "no_vocals", "rms_dbfs": -118.66})
+            return
+        chosen = "vocals" if source == "auto" else source
+        previous = current if current.get("state") == "done" else None
+        _melody["state"][song_id] = {"state": "running", "started": int(time.time()), "source": chosen, "previous": previous}
+        _melody["left"][song_id] = _melody["polls"]
+        self._json(200, {"id": song_id, "state": "running", "source": chosen})
+
+    def _finish_melody(self, song_id, song):
+        """Calisan sahte melodi isini, bekleme sorgulari bitince sonuclandirir."""
+        mel = song["status"].get("melody") or {}
+        if mel.get("state") != "running":
+            return
+        left = _melody["left"].get(song_id, 0)
+        if left > 0:
+            _melody["left"][song_id] = left - 1
+            return
+        previous = mel.get("previous")
+        if _melody["mode"] == "error":
+            _melody["state"][song_id] = (dict(previous, last_attempt={"state": "error", "message": "sahte hata"})
+                                         if previous else {"state": "error", "message": "sahte hata"})
+            return
+        version = int(time.time() * 1000) % 10**9
+        duration = float(song["status"].get("duration") or 120.0)
+        source = mel.get("source") or "vocals"
+        _melody["blobs"][song_id] = synthetic_melody(duration, source, version)
+        _melody["state"][song_id] = {
+            "state": "done", "version": version, "method": "pyin", "source": source, "frames": int(duration / (MELODY_HOP / MELODY_SR)) + 1,
+            "voiced_ratio": 0.5, "bytes": len(_melody["blobs"][song_id]), "parent_stems_version": song["status"].get("stems_version"),
+            "seconds": {"decode": 0.1, "pyin": 0.1, "post": 0.0, "total": 0.2}}
 
     def _finish_lyrics(self, song_id, song):
         """Calisan sahte soz isini, bekleme sorgulari bitince sonuclandirir."""
@@ -983,6 +1104,10 @@ def main():
                         help="POST /translate sonrasi kac durum sorgusu 'running' kalsin")
     parser.add_argument("--translate-en-pron", action="store_true",
                         help="Ingilizce ceviriyle birlikte telaffuz da uretilsin")
+    parser.add_argument("--melody-mode", default="done", choices=["done", "no_vocals", "error"],
+                        help="hedef melodi taklidi (Mikrofon paketi 9)")
+    parser.add_argument("--melody-polls", type=int, default=0,
+                        help="melodi POST sonrasi bu kadar durum sorgusu boyunca running kalsin")
     parser.add_argument("--lyrics-lang", default="tr", choices=["tr", "en", "ja"],
                         help="otomatik soz cikarmada dil (cevirinin denenebilmesi icin)")
     parser.add_argument("--stem-delay", type=float, default=0.0,
@@ -996,6 +1121,8 @@ def main():
     _lyrics["polls"] = args.lyrics_polls
     _lyrics["stale"] = args.lyrics_stale
     _lyrics["auto_lang"] = args.lyrics_lang
+    _melody["mode"] = args.melody_mode
+    _melody["polls"] = args.melody_polls
     _translate["mode"] = args.translate_mode
     _translate["polls"] = args.translate_polls
     _translate["en_pron"] = args.translate_en_pron
