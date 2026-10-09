@@ -235,14 +235,11 @@
       <div class="trainer-controls">
         <button type="button" class="chip chip-primary" id="trainer-mic">Mikrofonu aç</button>
         <button type="button" class="chip" id="trainer-calibrate" disabled title="2 sn sessiz kal: ortam gürültü tabanı ölçülür (şarkı çalıyorsa kulaklıktan sızan müzik de tabana girer)">Kalibre et</button>
-        <button type="button" class="chip" id="trainer-align" disabled title="Son ~15 sn'de söylediğin perdeyi hedefle karşılaştırır, en iyi gecikmeyi uygular (şarkıyla birlikte söyledikten sonra bas)">Gecikmeyi otomatik ayarla</button>
-        <button type="button" class="chip" id="trainer-leak" disabled>Sızıntı testi</button>
-      </div>
-      <div class="trainer-controls" role="group" aria-label="Karışım">
+        <button type="button" class="chip" id="trainer-align" disabled title="Son ~15 sn'de söylediğin perdeyi hedefle karşılaştırır, en iyi gecikmeyi uygular (şarkıyla birlikte söyledikten sonra bas)">Otomatik gecikme</button>
         <button type="button" class="chip" id="tr-karaoke" aria-pressed="false">Karaoke (vokal kapalı)</button>
         <button type="button" class="chip" id="tr-duck" aria-pressed="false">Vokali kıs</button>
       </div>
-      <div class="trainer-note" id="trainer-info"></div>
+      <div class="trainer-note tr-msg" id="trainer-msg" role="status" hidden></div>
       <div class="tr-state" id="tr-state" role="status" hidden></div>
       <div class="tr-roll-wrap" id="tr-roll-wrap">
         <canvas class="tr-roll" id="tr-roll" aria-label="Piyano rulosu: hedef notalar ve senin perden"></canvas>
@@ -258,16 +255,23 @@
         <div class="tr-row"><span id="tr-target">Hedef: —</span><span id="tr-diff" class="tr-diff"></span></div>
         <div class="tr-row"><span id="tr-score">İsabet: —</span></div>
         <div class="tr-meter" aria-hidden="true"><i id="tr-level"></i><u id="tr-thr"></u></div>
-        <div class="tr-dim" id="tr-gate">Eşik: —</div>
       </div>
-      <label class="trainer-field">Hassasiyet <input type="range" id="tr-sens" min="0" max="100" step="1" value="50" aria-describedby="tr-sens-hint">
-        <span id="tr-sens-val">50</span></label>
-      <div class="tr-dim" id="tr-sens-hint">Ortam sesi tepki veriyorsa sola (eşik yükselir); sesin algılanmıyorsa sağa kaydır.</div>
-      <label class="trainer-field">Gecikme (toplam) <input type="range" id="tr-latency" min="-100" max="800" step="10" value="300" aria-describedby="tr-latency-hint">
-        <span id="tr-latency-val">300 ms</span></label>
-      <div class="tr-dim" id="tr-latency-hint">Çizgin notaların SAĞINDA (geç) görünüyorsa SAĞA kaydır (çizgi sola kayar); SOLUNDA (erken) görünüyorsa SOLA. Ya da "Gecikmeyi otomatik ayarla".</div>
-      <div class="tr-dim" id="tr-latency-info"></div>
-      <label class="trainer-field"><input type="checkbox" id="tr-octave" checked> Oktav farkı doğru sayılsın</label>
+      <details class="tr-details" id="tr-details">
+        <summary id="tr-details-sum">Ayrıntılar ve ayarlar</summary>
+        <div class="tr-details-body">
+          <div class="trainer-note" id="trainer-info"></div>
+          <div class="tr-dim" id="tr-gate">Eşik: —</div>
+          <label class="trainer-field">Hassasiyet <input type="range" id="tr-sens" min="0" max="100" step="1" value="50" aria-describedby="tr-sens-hint">
+            <span id="tr-sens-val">50</span></label>
+          <div class="tr-dim" id="tr-sens-hint">Ortam sesi tepki veriyorsa sola (eşik yükselir); sesin algılanmıyorsa sağa kaydır.</div>
+          <label class="trainer-field">Gecikme (toplam) <input type="range" id="tr-latency" min="-100" max="800" step="10" value="300" aria-describedby="tr-latency-hint">
+            <span id="tr-latency-val">300 ms</span></label>
+          <div class="tr-dim" id="tr-latency-hint">Çizgin notaların SAĞINDA (geç) görünüyorsa SAĞA kaydır (çizgi sola kayar); SOLUNDA (erken) görünüyorsa SOLA. Ya da "Otomatik gecikme".</div>
+          <div class="tr-dim" id="tr-latency-info"></div>
+          <label class="trainer-field"><input type="checkbox" id="tr-octave" checked> Oktav farkı doğru sayılsın</label>
+          <div class="trainer-controls"><button type="button" class="chip" id="trainer-leak" disabled>Sızıntı testi</button></div>
+        </div>
+      </details>
     </section>
 
     <!-- kanallar -->

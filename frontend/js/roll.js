@@ -8,7 +8,8 @@
 export const ROLL_PAST = 1.5;
 export const ROLL_FUTURE = 4.0;
 export const MIN_SPAN = 14;               // en az 14 yarım ses (~1 oktav+) görünür
-export const RANGE_MARGIN = 2.5;
+export const RANGE_MARGIN = 3;
+export const TRAIL_REACH = 8;             // iz, nota aralığının en çok bu kadar yarım ses dışına çıkarak aralığı genişletebilir
 export const TRAIL_SECONDS = 8;
 export const GAP_SECONDS = 0.09;          // iz noktaları arası bu kadar boşluk = çizgi kopar
 
@@ -39,8 +40,12 @@ export function rollLayout({ width, height, now, past = ROLL_PAST, future = ROLL
   };
 }
 
-/** Görünen notalara (kaydırılmış) göre dikey aralık {lo, hi}; nota yoksa fallbackCenter çevresi. */
-export function targetRange(notes, shift = 0, fallbackCenter = 60) {
+/**
+ * Görünen notalara (kaydırılmış) göre dikey aralık {lo, hi}; nota yoksa fallbackCenter çevresi. trailMidis: görünen penceredeki kullanıcı izi
+ * perdeleri: iz notaların dışına çıktıysa (çok alçak / yüksek söylüyor) aralık, en çok TRAIL_REACH yarım ses kadar, izi de kapsayacak genişler;
+ * böylece iz kenara yapışmaz (uçuk bir ses aralığı patlatmasın diye sınırlı).
+ */
+export function targetRange(notes, shift = 0, fallbackCenter = 60, trailMidis = null) {
   if (!notes || !notes.length) return { lo: fallbackCenter - MIN_SPAN / 2, hi: fallbackCenter + MIN_SPAN / 2 };
   let lo = Infinity;
   let hi = -Infinity;
@@ -48,6 +53,19 @@ export function targetRange(notes, shift = 0, fallbackCenter = 60) {
     const midi = note.midi + shift;
     if (midi < lo) lo = midi;
     if (midi > hi) hi = midi;
+  }
+  if (trailMidis && trailMidis.length) {
+    const floor = lo - TRAIL_REACH;
+    const ceil = hi + TRAIL_REACH;
+    let tLo = Infinity;
+    let tHi = -Infinity;
+    for (const midi of trailMidis) {
+      const bounded = Math.min(Math.max(midi, floor), ceil);
+      if (bounded < tLo) tLo = bounded;
+      if (bounded > tHi) tHi = bounded;
+    }
+    lo = Math.min(lo, tLo);
+    hi = Math.max(hi, tHi);
   }
   lo -= RANGE_MARGIN;
   hi += RANGE_MARGIN;

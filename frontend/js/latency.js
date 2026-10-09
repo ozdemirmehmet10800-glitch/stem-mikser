@@ -83,11 +83,11 @@ export function latencyVerdict({ medianMs, spreadMs = 0, bluetooth = false }) {
   if (bluetooth && value < SUSPICIOUS_MS) {
     return {
       suspicious: true,
-      text: `Tarayıcı çıkış gecikmesini ${value} ms bildiriyor ama Bluetooth kulaklık var (genelde 150-300 ms): değer güvenilmez. "Gecikmeyi otomatik ayarla"yı kullan.`,
+      text: `Tarayıcı çıkış gecikmesini ${value} ms bildiriyor ama Bluetooth kulaklık var (genelde 150-300 ms): değer güvenilmez. "Otomatik gecikme" düğmesini kullan.`,
     };
   }
   if (spreadMs > 100) {
-    return { suspicious: true, text: `Tarayıcının bildirdiği çıkış gecikmesi dalgalanıyor (${value} ms, yayılım ${Math.round(spreadMs)} ms): hizayı "Gecikmeyi otomatik ayarla" ile kur.` };
+    return { suspicious: true, text: `Tarayıcının bildirdiği çıkış gecikmesi dalgalanıyor (${value} ms, yayılım ${Math.round(spreadMs)} ms): hizayı "Otomatik gecikme" ile kur.` };
   }
   return { suspicious: false, text: `Tarayıcının bildirdiği çıkış gecikmesi: ${value} ms (yalnız bilgi; hizayı Gecikme ayarı belirler).` };
 }

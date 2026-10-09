@@ -5920,6 +5920,7 @@ async function refreshTrainerUi() {
   const line = el("trainer-melody");
   const prepare = el("trainer-prepare");
   prepare.hidden = true;
+  let melodyInfo = "";                      // hazırsa uzun durum satırı "Ayrıntılar"a gider (rulo ve sözler öne çıksın)
   if (!melody) {
     line.textContent = "Hedef melodi: henüz hazırlanmadı.";
     prepare.hidden = false;
@@ -5933,14 +5934,18 @@ async function refreshTrainerUi() {
   } else if (melody.state === "done") {
     const stale = melody.parent_stems_version !== currentSong.status.stems_version;
     const source = melody.source === "lead" ? "ana vokal" : "vokal stem'i";
-    line.textContent = trainer.notes
-      ? `Hedef melodi hazır: ${trainer.notes.length} nota · ${melody.method || trainer.method} · ${source}${stale ? " · şarkı sonradan yeniden işlendi (eski olabilir)" : ""}`
-      : "Hedef melodi indiriliyor…";
+    if (trainer.notes) {
+      melodyInfo = `Hedef melodi: ${trainer.notes.length} nota · ${melody.method || trainer.method} · ${source}`;
+      line.textContent = stale ? "Şarkı sonradan yeniden işlendi: hedef melodi eski olabilir." : "";
+    } else {
+      line.textContent = "Hedef melodi indiriliyor…";
+    }
     if (stale) {
       prepare.hidden = false;
       prepare.textContent = "Hedef melodiyi yenile";
     }
   }
+  line.hidden = !line.textContent;
   const active = trainerMic.active;
   trainerText("trainer-mic", active ? "Mikrofonu kapat" : "Mikrofonu aç");
   el("trainer-leak").disabled = !active || Boolean(trainer.calib);
@@ -5952,13 +5957,17 @@ async function refreshTrainerUi() {
   const permission = await trainerMic.permissionState();
   const permissionText = { granted: "verildi", prompt: "sorulacak", denied: "reddedildi (Chrome > site ayarları > mikrofon)" }[permission] || "bilinmiyor";
   const mic = trainerMic.info;
-  const parts = [`Mikrofon izni: ${permissionText}`];
+  const parts = [];
+  if (melodyInfo) parts.push(melodyInfo);
+  parts.push(`Mikrofon izni: ${permissionText}`);
   if (mic) {
-    parts.push(`açık: ${mic.label || "dahili"} · ${mic.sampleRate || "?"} Hz`);
-    parts.push(`yankı/gürültü/kazanç kapalı: ${mic.echoCancellation === false && mic.noiseSuppression === false && mic.autoGainControl === false ? "evet ✓" : "UYGULANMADI ✗"}`);
+    const off = mic.echoCancellation === false && mic.noiseSuppression === false && mic.autoGainControl === false;
+    parts.push(`${mic.label || "dahili"} · ${mic.sampleRate || "?"} Hz · yankı/gürültü/kazanç kapalı ${off ? "✓" : "UYGULANMADI ✗"}`);
   }
-  if (trainer.message) parts.push(trainer.message);
   trainerText("trainer-info", parts.join(" · "));
+  const note = el("trainer-msg");                       // önemli kısa mesaj (ölçüm, otomatik ayar, hata) rulonun üstünde görünür
+  note.hidden = !trainer.message;
+  trainerText("trainer-msg", trainer.message);
   el("tr-sens").value = String(trainer.sensitivity);
   trainerText("tr-sens-val", String(trainer.sensitivity));
   paintTrainerGate();
@@ -6097,6 +6106,7 @@ function paintLatencyInfo() {
   const node = el("tr-latency-info");
   trainerText("tr-latency-info", verdict.text);
   node.style.color = verdict.suspicious ? "var(--warn)" : "";
+  trainerText("tr-details-sum", verdict.suspicious ? "Ayrıntılar ve ayarlar ⚠ gecikme uyarısı" : "Ayrıntılar ve ayarlar");
 }
 
 function sampleOutputLatency() {
@@ -6130,7 +6140,7 @@ function trainerAutoAlign() {
     trainer.trail.clear();
     trainer.samples.clear();
     saveTrainerPrefs();
-    trainer.message = `Gecikme ${found.totalMs} ms olarak ayarlandı (son söylediklerinde isabet ${found.currentHits} → ${found.hits} kare). Yeniden söyleyip kontrol et.`;
+    trainer.message = `Gecikme ${found.totalMs} ms (isabet ${found.currentHits} → ${found.hits} kare). Yeniden söyleyip kontrol et.`;
   }
   refreshTrainerUi();
 }
@@ -6198,7 +6208,7 @@ function beginTrainerCalibration() {
   trainer.calib = { values: [], started: performance.now() };
   trainer.gate.reset();
   trainer.smoother.reset();
-  trainer.message = engine.playing ? "Ortam ölçülüyor (müzik çalıyor: sızan müzik de tabana girer). Sessiz kal…" : "Ortam ölçülüyor. 2 sn sessiz kal…";
+  trainer.message = engine.playing ? "Müzik çalıyor: sızan müzik de tabana girer. Sessiz kal." : "";
   paintTrainerState();
   refreshTrainerUi();
 }
@@ -6210,7 +6220,7 @@ function finishTrainerCalibration() {
     trainer.message = "Ortam ölçülemedi (ses akışı yetersiz); varsayılan taban kullanılıyor. Yeniden Kalibre et.";
   } else {
     trainer.floorDb = floor;
-    trainer.message = `Ortam tabanı ${Math.round(floor)} dB ölçüldü; bunun üstündeki sesler sayılır.`;
+    trainer.message = "";
   }
   setTrainerThreshold();
   paintTrainerState();
@@ -6342,7 +6352,9 @@ function trainerDrawFrame(timestamp) {
     const shift = trainerShift();
     const visible = trainer.track.between(now - ROLL_PAST, now + ROLL_FUTURE);
     const center = (trainer.easer.lo + trainer.easer.hi) / 2;
-    const target = targetRange(visible, shift, trainer.easerReady ? center : 60);
+    const windowTrail = [];
+    for (const point of trainer.trail.items) if (point.t >= now - ROLL_PAST && point.t <= now + ROLL_FUTURE) windowTrail.push(point.midi);
+    const target = targetRange(visible, shift, trainer.easerReady ? center : 60, windowTrail);
     if (!trainer.easerReady && visible.length) {
       trainer.easer.snap(target);
       trainer.easerReady = true;

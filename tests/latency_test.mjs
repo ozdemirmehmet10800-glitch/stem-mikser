@@ -43,7 +43,7 @@ check("öneri: değer yok -> varsayılan mikrofon payı; sınırlar", suggestTot
   for (let i = 0; i < 10; i += 1) monitor.add(8);
   check("izleme: pencere sınırlı (7) ve kalıcı düşüşü izler", monitor.values.length === 7 && monitor.median === 8);
   const bad = latencyVerdict({ medianMs: monitor.median, spreadMs: monitor.spread, bluetooth: true });
-  check("Bluetooth varken mantıksız düşük (8 ms) UYARI verir", bad.suspicious && /Bluetooth/.test(bad.text) && /8 ms/.test(bad.text) && /otomatik ayarla/.test(bad.text), bad.text);
+  check("Bluetooth varken mantıksız düşük (8 ms) UYARI verir", bad.suspicious && /Bluetooth/.test(bad.text) && /8 ms/.test(bad.text) && /Otomatik gecikme/.test(bad.text), bad.text);
   check("Bluetooth yokken 8 ms normal sayılır", !latencyVerdict({ medianMs: 8, bluetooth: false }).suspicious);
   check("Bluetooth + 279 ms normal", !latencyVerdict({ medianMs: 279, spreadMs: 3, bluetooth: true }).suspicious);
   check("dalgalanma (yayılım > 100 ms) uyarı verir", latencyVerdict({ medianMs: 150, spreadMs: 270, bluetooth: false }).suspicious);

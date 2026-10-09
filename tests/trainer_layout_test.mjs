@@ -58,6 +58,24 @@ check("ölçüm sürerken geri sayım, bitince 'Ölçüm bitti ✓' yazısı", /
 check("durum şeridi (#tr-state) panelde, rol=status", /id="tr-state"[^>]*role="status"/.test(html));
 check("ölçüm bitince durum şeridi güncellenir (finishTrainerCalibration -> paintTrainerState)", /function finishTrainerCalibration\(\)[\s\S]*?paintTrainerState\(\)/.test(region));
 
+// --- rulo ezilmesin (SW v62: v61'de kaplayıcı grid satırı panel taşınca küçülüp tuvali kırpıyordu)
+const wrapCss = rulesFor(".tr-roll-wrap");
+const wrapMin = Number((wrapCss.match(/min-height:\s*(\d+)px/) || [])[1]);
+check("rulo kaplayıcısı: min-height >= 320 px (ezilemez)", wrapMin >= 320, wrapCss.replace(/\s+/g, " "));
+check("rulo kaplayıcısı: sabit yükseklik max(320px, 40vh) ve flex: none", /height:\s*max\(320px,\s*40vh\)/.test(wrapCss) && /flex:\s*none/.test(wrapCss));
+check("tuval kaplayıcıyı doldurur (height: 100%), sabit 200 px DEĞİL", /height:\s*100%/.test(rulesFor(".tr-roll")) && !/height:\s*200px/.test(rulesFor(".tr-roll")));
+check("overflow:hidden olan rulo kaplayıcısının açık bir min-height'ı var (grid'de 0'a küçülmesin)", !/overflow:\s*hidden/.test(wrapCss) || wrapMin >= 320);
+{
+  const at = (id) => html.indexOf(`id="${id}"`);
+  const details = html.slice(html.indexOf('<details class="tr-details"'), html.indexOf("</details>", html.indexOf('<details class="tr-details"')));
+  check("sıra: kontrol düğmeleri < durum şeridi < rulo < söz satırları < okuma < Ayrıntılar", at("trainer-mic") < at("tr-state") && at("tr-state") < at("tr-roll-wrap") && at("tr-roll-wrap") < at("tr-lyrics") && at("tr-lyrics") < at("trainer-readout") && at("trainer-readout") < at("tr-details"));
+  check("uzun ayar / uyarı yazıları katlanır 'Ayrıntılar' altında (mikrofon bilgisi, eşik, kaydırıcılar, gecikme bilgisi, oktav, sızıntı)", ["trainer-info", "tr-gate", "tr-sens", "tr-latency", "tr-latency-info", "tr-octave", "trainer-leak"].every((id) => details.includes(`id="${id}"`)));
+  check("rulo, sözler, okuma, durum şeridi ve kısa mesaj Ayrıntıların DIŞINDA", ["tr-roll-wrap", "tr-lyrics", "trainer-readout", "tr-state", "trainer-msg"].every((id) => !details.includes(`id="${id}"`)));
+  check("Ayrıntılar varsayılan KAPALI (open özniteliği yok)", !/<details class="tr-details"[^>]*\sopen/.test(html));
+  check("kısa mesaj satırı (#trainer-msg) rulonun üstünde, trainer.message oraya yazılır", at("trainer-msg") < at("tr-roll-wrap") && /trainerText\("trainer-msg", trainer\.message\)/.test(region));
+}
+check("rulo aralığına kullanıcı izi de girer (targetRange'e iz perdeleri verilir)", /targetRange\(visible, shift, [^)]*windowTrail\)/.test(region));
+
 // --- zaman hizası (SW v61)
 check("antrenör bölümü engine.visualTime KULLANMAZ (çıkış gecikmesi çift sayılmasın)", !/visualTime/.test(region));
 check("şarkı zamanı yalnız songTimeAt ile (kare + rulo) ve toplam gecikme bir kez", (region.match(/songTimeAt\(/g) || []).length === 2 && !/outputLatency[^;]*songTime|songTime[^;]*outputLatency/.test(region));

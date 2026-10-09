@@ -25,9 +25,13 @@ check("aralık 0 olsa da bölme patlamaz", Number.isFinite(rollLayout({ width: 3
 
 // --- dikey aralık
 const mk = (midis) => midis.map((midi, i) => ({ t0: i, t1: i + 0.5, midi, frames: 20 }));
-check("hedef aralığı: notaların min/max ± 2,5", (() => { const r = targetRange(mk([55, 62, 70]), 0); return near(r.lo, 52.5) && near(r.hi, 72.5); })());
+check("hedef aralığı: notaların min/max ± RANGE_MARGIN (3)", (() => { const r = targetRange(mk([55, 62, 70]), 0); return near(r.lo, 52) && near(r.hi, 73); })());
 check("dar aralık (tek nota) en az MIN_SPAN yarım ses, notaya ortalı", (() => { const r = targetRange(mk([60]), 0); return near(r.hi - r.lo, MIN_SPAN) && near((r.lo + r.hi) / 2, 60); })());
-check("ton kayması aralığı kaydırır (+2): (55+2)-2,5 .. (70+2)+2,5", (() => { const r = targetRange(mk([55, 70]), 2); return near(r.lo, 54.5) && near(r.hi, 74.5); })());
+check("ton kayması aralığı kaydırır (+2): (55+2)-3 .. (70+2)+3", (() => { const r = targetRange(mk([55, 70]), 2); return near(r.lo, 54) && near(r.hi, 75); })());
+check("iz notaların ALTINA çıkarsa aralık izi de kapsar (kenara yapışmaz)", (() => { const r = targetRange(mk([60, 66]), 0, 60, [54, 55, 60]); return near(r.lo, 51) && near(r.hi, 69); })());
+check("iz notaların ÜSTÜNE çıkarsa aralık izi de kapsar", (() => { const r = targetRange(mk([60, 66]), 0, 60, [60, 70]); return near(r.lo, 57) && near(r.hi, 73); })());
+check("uçuk iz (TRAIL_REACH'ten uzak) aralığı patlatmaz: en çok 8 yarım ses genişler", (() => { const r = targetRange(mk([60, 66]), 0, 60, [20, 120]); return near(r.lo, 60 - 8 - 3) && near(r.hi, 66 + 8 + 3); })());
+check("iz notaların içindeyse aralık değişmez; boş iz de sorun değil", (() => { const a = targetRange(mk([55, 70]), 0, 60, [60, 65]); const b = targetRange(mk([55, 70]), 0, 60, []); return near(a.lo, 52) && near(a.hi, 73) && near(b.lo, 52) && near(b.hi, 73); })());
 check("nota yoksa varsayılan merkez çevresi", (() => { const r = targetRange([], 0, 64); return near(r.hi - r.lo, MIN_SPAN) && near((r.lo + r.hi) / 2, 64); })());
 {
   const easer = new RangeEaser(50, 64, 3);

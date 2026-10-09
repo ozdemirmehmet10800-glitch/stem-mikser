@@ -1313,7 +1313,7 @@ input[type="range"]::-moz-range-thumb {
 /* Panel yüksek (rulo + sözler + kaydırıcılar): oynatıcı sütununda KALANA SIĞAR ve kendi içinde kaydırılır; yoksa alt çubuk (oynat / konum) ekran dışına itilirdi. */
 .trainer { margin: 8px 0; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); display: grid; gap: 8px;
   flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; align-content: start; }
-.trainer[hidden], .trainer-note[hidden], .trainer-readout[hidden], #trainer-prepare[hidden], .tr-roll-wrap[hidden], .tr-lyrics[hidden] { display: none; }
+.trainer[hidden], .trainer-note[hidden], .trainer-readout[hidden], #trainer-prepare[hidden], .tr-roll-wrap[hidden], .tr-lyrics[hidden], .trainer-line[hidden] { display: none; }
 /* Söyleme panelinde oynatıcı sütunu panele ayrılır: akor şeridi, söz bölümü, mikser ve döngü çubuğu geçici gizlenir (söz satırları, karışım
    kısayolları ve oynat / duraklat panelin İÇİNDE; alt çubuk yerinde kalır). Panel kapanınca hepsi geri gelir. */
 #view-player.trainer-on .chordstrip, #view-player.trainer-on .lyrics, #view-player.trainer-on .mix-bar, #view-player.trainer-on .mix-notice,
@@ -1346,8 +1346,13 @@ input[type="range"]::-moz-range-thumb {
 .tr-meter i { border-radius: 4px; }
 .tr-meter.gated i { background: var(--text-faint); }
 .tr-meter u { position: absolute; top: -3px; bottom: -3px; left: 50%; width: 2px; background: var(--warn); text-decoration: none; }
-.tr-roll-wrap { border-radius: 8px; overflow: hidden; background: #0d1017; }
-.tr-roll { display: block; width: 100%; height: 200px; touch-action: none; }
+/* Rulo ezilmesin: SABİT yükseklik (en az 320 px, ekranın ~%40'ı). Panel yüksekliği aşarsa panel kendi içinde kayar. (v61'de kaplayıcı overflow:hidden
+   olduğu için grid satırı panel taşınca 0'a kadar küçülüyor, tuval 200 px kalıp kırpılıyordu.) */
+.tr-roll-wrap { border-radius: 8px; overflow: hidden; background: #0d1017; height: max(320px, 40vh); min-height: 320px; flex: none; }
+.tr-roll { display: block; width: 100%; height: 100%; touch-action: none; }
+.tr-msg { color: var(--text); }
+.tr-details > summary { cursor: pointer; font-size: 13px; color: var(--text-dim); padding: 4px 0; }
+.tr-details-body { display: grid; gap: 8px; padding-top: 6px; }
 .tr-lyrics { display: grid; gap: 4px; text-align: center; padding: 2px 4px; }
 .tr-lyrics > div { display: flex; align-items: baseline; justify-content: center; gap: 8px; min-height: 1.3em; }
 .tr-prev { font-size: 13px; color: var(--text-faint); }
