@@ -51,12 +51,22 @@ const startFn = region.slice(region.indexOf("async function startTrainerMic()"),
 check("startTrainerMic çalmayı durdurmaz / başlatmaz (stopPlayback, startPlayback, engine.play/pause YOK)", !/stopPlayback|startPlayback|engine\.(play|pause)\(/.test(startFn));
 const calibFns = region.slice(region.indexOf("function beginTrainerCalibration()"), region.indexOf("function handleGateEvent"));
 check("kalibrasyon çalmayı durdurmaz / başlatmaz", !/stopPlayback|startPlayback|engine\.(play|pause)\(|\.suspend\(|\.close\(/.test(calibFns));
-check("mikrofon açıkken çalma başlamazsa (2,5 sn) nedeni (ses bağlamı durumu) panelde söylenir", /function watchTrainerPlayStart\(\)[\s\S]*?ses bağlamı: \$\{engine\.ctx \? engine\.ctx\.state/.test(region) && /watchTrainerPlayStart\(\);\s*await engine\.play\(\)/.test(app));
+check("mikrofon açıkken çalma başlamazsa (2,5 sn) nedeni (ses bağlamı durumu) panelde söylenir", /new PlayWatch\([\s\S]*?ses bağlamı: \$\{state\}/.test(region) && /trainerPlayWatch\.begin\(\);[\s\S]*?await engine\.play\(\)/.test(app));
 
 // --- kalibrasyon durumu belirgin
 check("ölçüm sürerken geri sayım, bitince 'Ölçüm bitti ✓' yazısı", /Ortam ölçülüyor… \$\{left\} sn sessiz kal/.test(region) && /Ölçüm bitti ✓ · şarkıyı başlat \(▶ Çal\) ve söyle/.test(region) && /Ölçüm bitti ✓ · söyle!/.test(region));
 check("durum şeridi (#tr-state) panelde, rol=status", /id="tr-state"[^>]*role="status"/.test(html));
 check("ölçüm bitince durum şeridi güncellenir (finishTrainerCalibration -> paintTrainerState)", /function finishTrainerCalibration\(\)[\s\S]*?paintTrainerState\(\)/.test(region));
+
+// --- zaman hizası (SW v61)
+check("antrenör bölümü engine.visualTime KULLANMAZ (çıkış gecikmesi çift sayılmasın)", !/visualTime/.test(region));
+check("şarkı zamanı yalnız songTimeAt ile (kare + rulo) ve toplam gecikme bir kez", (region.match(/songTimeAt\(/g) || []).length === 2 && !/outputLatency[^;]*songTime|songTime[^;]*outputLatency/.test(region));
+check("outputLatency yalnız okuma / öneri / uyarı için (hizaya karışmaz)", (region.match(/outputLatency/g) || []).length <= 4 && /monitor\.add\(engine\.ctx\.outputLatency/.test(region));
+check("kaydırıcı toplam gecikme: -100..800, yön ipucu metni (geç = sağa) ve otomatik ayar düğmesi", /id="tr-latency" min="-100" max="800"/.test(html) && /SAĞINDA \(geç\) görünüyorsa SAĞA kaydır/.test(html) && /id="trainer-align"/.test(html) && /on\("trainer-align", "click", trainerAutoAlign\)/.test(region));
+check("otomatik ayar: bestShift sonucu uygulanır, tercih kaydedilir, iz ve örnekler temizlenir", /function trainerAutoAlign\(\)[\s\S]*?bestShift\([\s\S]*?latencyMs = found\.totalMs[\s\S]*?saveTrainerPrefs\(\)[\s\S]*?trail\.clear\(\)/.test(region));
+check("kabul edilen perdeler SampleRing'e yalnız çalarken eklenir", /if \(midi !== null && playing\) trainer\.samples\.push\(rawT, rate, midi\)/.test(region));
+check("çalma başlatma yeniden girişe karşı korumalı (çift dokunuş çift kaynak kurmaz)", /let startingPlayback = false;[\s\S]*?if \(startingPlayback\) return;/.test(app));
+check("saklanan tercih anahtarı latencyTotalMs (eski 'ek gecikme' değeri okunmaz)", /saved\.latencyTotalMs/.test(region) && !/saved\.latencyMs/.test(region));
 
 if (failed) {
   console.error(`\n${failed} test başarısız`);

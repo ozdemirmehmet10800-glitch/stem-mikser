@@ -52,9 +52,12 @@ import {
 import { PeaksCache } from "./peakscache.js";
 import { PitchSmoother, nearestNote, noteName, midiToHz } from "./pitch.js";
 import { decodeMelody, segmentNotes, NoteTrack, judge, Scoreboard } from "./melody.js";
-import { Mic, leakVerdict } from "./mic.js";
+import { Mic, leakVerdict, isBluetoothLabel } from "./mic.js";
 import { MelodyCache } from "./melodycache.js";
 import { VoiceGate, validHz, calibrateFloor, thresholdDb, SENSITIVITY_DEFAULT } from "./voicegate.js";
+import {
+  songTimeAt, suggestTotalMs, LatencyMonitor, latencyVerdict, SampleRing, bestShift, PlayWatch, clampTotal, TOTAL_DEFAULT, MIN_SAMPLES,
+} from "./latency.js";
 import { drawRoll, targetRange, RangeEaser, Trail, ROLL_PAST, ROLL_FUTURE } from "./roll.js";
 import { Timeline } from "./timeline.js";
 import {
@@ -5288,14 +5291,32 @@ document.addEventListener("keydown", (event) => {
 // (aynı şarkıya hızlı dönüş). Mini oynatıcı yok - bilinçli.
 on("back-to-library", "click", () => requestBack("view"));
 
+let startingPlayback = false;
+
 async function startPlayback() {
   // Autoplay politikası: bu bir kullanıcı hareketi, context burada açılır.
   // Sessiz elementi ÖNCE ve await'siz başlat: kullanıcı hareketi içinde
   // kalsın, yoksa Chrome reddediyor ve kilit ekranı kontrolleri çıkmıyor.
+  if (startingPlayback) return;           // başlatma sürerken ikinci dokunuş çift başlatmasın (iki kez kaynak kurulurdu)
+  startingPlayback = true;
   media.startKeeper();
   media.setPlaybackState(true);
-  watchTrainerPlayStart();
-  await engine.play();
+  try {
+    if (trainerMicActive()) trainerPlayWatch.begin();
+    await engine.play();
+  } finally {
+    startingPlayback = false;
+    if (trainerPlayWatch.end()) {          // "hazırlanıyor" uyarısı çıkmıştı, çalma sonunda başladı: uyarıyı sil
+      trainer.message = "";
+      refreshTrainerUi();
+    }
+  }
+  if (!engine.playing) {                   // motor çalmayı başlatmadı (kanal yok / bağlam kesildi): simge yalan söylemesin
+    setPlayIcon(false);
+    media.stopKeeper();
+    media.setPlaybackState(false);
+    return;
+  }
   metronome.resync();
   metronome.start();
   setPlayIcon(true);
@@ -5305,6 +5326,7 @@ async function startPlayback() {
 }
 
 function stopPlayback() {
+  trainerPlayWatch.cancel();
   engine.pause();
   metronome.stop();
   setPlayIcon(false);
@@ -5818,7 +5840,9 @@ mixer = new Mixer(el("channels"), engine, scheduleMixSave, downloadStem);
 // (piyano rulosu, söz satırları, satır başına isabet yüzdesi, canlı nota, seviye + eşik). KURALLAR:
 //  - Mikrofon HER ZAMAN Bluetooth olmayan dahili aygıttır (deviceId); varsayılan aygıt yalnız ilk İZİN adımında, kısaca ve açıklamayla açılır.
 //  - Mikrofon sesi hiçbir koşulda diske, loga ya da sunucuya gitmez: bu bölüm yalnız worklet'ten gelen SAYILARI ({t, hz, clarity, rmsDb}) görür.
-//    Burada saklanan tek şey kullanıcı tercihleri (oktav, gecikme, hassasiyet); ses, perde ya da puan DEPOLANMAZ.
+//    Burada saklanan tek şey kullanıcı tercihleri (oktav, toplam gecikme, hassasiyet); ses, perde ya da puan DEPOLANMAZ.
+//  - ZAMAN HİZASI (latency.js): şarkı zamanı = ham çalma konumu - (kare gecikmesi + TOPLAM gecikme) x hız, TEK düşüm; ctx.outputLatency formüle girmez
+//    (Android Bluetooth gecikmesini tutarsız bildiriyor: aynı Q45'te 279 / 8 ms), yalnız ilk öneri ve uyarı için okunur.
 //  - Ortam sesleri: açılışta 2 sn "sessiz kal" kalibrasyonu ortam tabanını ölçer (şarkı çalıyorsa sızan müzik de tabana girer); kapı eşiği =
 //    taban + pay (+ Hassasiyet kaydırıcısı). Eşiğin altı / insan sesi aralığı dışı / kısa-titrek algılar rulo ve puana HİÇ girmez (voicegate.js).
 //    noiseSuppression KAPALI kalır (perdeyi bozuyor).
@@ -5830,7 +5854,8 @@ const trainer = {
   songId: null, version: 0, notes: null, track: null, method: "", source: "",
   smoother: new PitchSmoother(), board: new Scoreboard(), gate: new VoiceGate(), trail: new Trail(),
   easer: new RangeEaser(), easerReady: false, rafId: 0, lastDraw: 0, lastText: 0, drawNow: 0, duckFrom: 1,
-  latencyMs: 60, octave: true, latencyTouched: false,
+  latencyMs: TOTAL_DEFAULT, octave: true, latencyTouched: false,       // latencyMs = TOPLAM gecikme (çıkış + mikrofon + tepki), bkz. latency.js
+  monitor: new LatencyMonitor(), samples: new SampleRing(), bluetooth: false, lastLatencyRead: 0,
   sensitivity: SENSITIVITY_DEFAULT, sensitivityTouched: false, floorDb: null, thresholdDb: thresholdDb(null, SENSITIVITY_DEFAULT), calib: null,
   collect: null, level: -120, lastPaint: 0, busy: false, pollTimer: 0, message: "", info: null,
 };
@@ -5843,8 +5868,8 @@ const trainer = {
       trainer.sensitivityTouched = true;
       trainer.thresholdDb = thresholdDb(null, trainer.sensitivity);
     }
-    if (Number.isFinite(saved.latencyMs)) {
-      trainer.latencyMs = Math.min(Math.max(Math.round(saved.latencyMs), -100), 500);
+    if (Number.isFinite(saved.latencyTotalMs)) {
+      trainer.latencyMs = clampTotal(saved.latencyTotalMs);
       trainer.latencyTouched = true;
     }
   } catch { /* tercihler bu oturumda varsayılan kalır */ }
@@ -5852,7 +5877,7 @@ const trainer = {
 
 function saveTrainerPrefs() {
   try {
-    localStorage.setItem(TRAINER_PREFS_KEY, JSON.stringify({ octave: trainer.octave, latencyMs: trainer.latencyTouched ? trainer.latencyMs : undefined, sensitivity: trainer.sensitivityTouched ? trainer.sensitivity : undefined }));
+    localStorage.setItem(TRAINER_PREFS_KEY, JSON.stringify({ octave: trainer.octave, latencyTotalMs: trainer.latencyTouched ? trainer.latencyMs : undefined, sensitivity: trainer.sensitivityTouched ? trainer.sensitivity : undefined }));
   } catch { /* tercih bu oturumda kalır */ }
 }
 
@@ -5932,14 +5957,13 @@ async function refreshTrainerUi() {
     parts.push(`açık: ${mic.label || "dahili"} · ${mic.sampleRate || "?"} Hz`);
     parts.push(`yankı/gürültü/kazanç kapalı: ${mic.echoCancellation === false && mic.noiseSuppression === false && mic.autoGainControl === false ? "evet ✓" : "UYGULANMADI ✗"}`);
   }
-  if (engine.ctx && Number.isFinite(engine.ctx.outputLatency)) {
-    parts.push(`çıkış gecikmesi ${Math.round(engine.ctx.outputLatency * 1000)} ms (şarkı konumuna zaten uygulanıyor; kaydırıcı = EK gecikme)`);
-  }
   if (trainer.message) parts.push(trainer.message);
   trainerText("trainer-info", parts.join(" · "));
   el("tr-sens").value = String(trainer.sensitivity);
   trainerText("tr-sens-val", String(trainer.sensitivity));
   paintTrainerGate();
+  el("trainer-align").disabled = !active || trainer.busy;
+  paintLatencyInfo();
   el("tr-latency").value = String(trainer.latencyMs);
   trainerText("tr-latency-val", `${trainer.latencyMs} ms`);
   el("tr-octave").checked = trainer.octave;
@@ -6055,14 +6079,60 @@ function paintTrainerState() {
   if (box.className !== `tr-state ${kind}`.trim()) box.className = `tr-state ${kind}`.trim();
 }
 
-// Çalma düğmesine basıldı ama 2,5 sn içinde başlamadıysa (mikrofon açıkken ses bağlamı askıda kalırsa) nedeni panelde söyle.
-function watchTrainerPlayStart() {
-  if (!trainerMicActive()) return;
-  setTimeout(() => {
-    if (engine.playing || !trainerMicActive()) return;
-    trainer.message = `Çalma başlamadı (ses bağlamı: ${engine.ctx ? engine.ctx.state : "yok"}). Mikrofonu kapatıp çalmayı başlat, sonra mikrofonu yeniden aç.`;
+// Çalma düğmesine basılıp 2,5 sn içinde başlamadıysa (mikrofon açıkken) nedeni söyler. Çalma zamanında başlarsa ya da kullanıcı durdurursa
+// uyarı ÇIKMAZ; ses motoru yavaşsa (ilk esnetici kurulumu) "başlamadı" değil "hazırlanıyor" der.
+const trainerPlayWatch = new PlayWatch({
+  onSlow() {
+    const state = engine.ctx ? engine.ctx.state : "yok";
+    trainer.message = state === "running"
+      ? "Çalma hazırlanıyor… ses motoru yavaş yanıt veriyor, bekle (ses bağlamı: running)."
+      : `Çalma başlamadı (ses bağlamı: ${state}). Mikrofonu kapatıp çalmayı başlat, sonra mikrofonu yeniden aç.`;
     refreshTrainerUi();
-  }, 2500);
+  },
+});
+
+// Çıkış gecikmesi okuması: yalnız bilgi / uyarı (hizayı belirlemez). Çalarken ~1 sn'de bir okunur.
+function paintLatencyInfo() {
+  const verdict = latencyVerdict({ medianMs: trainer.monitor.median, spreadMs: trainer.monitor.spread, bluetooth: trainer.bluetooth });
+  const node = el("tr-latency-info");
+  trainerText("tr-latency-info", verdict.text);
+  node.style.color = verdict.suspicious ? "var(--warn)" : "";
+}
+
+function sampleOutputLatency() {
+  if (!engine.playing || !engine.ctx || !Number.isFinite(engine.ctx.outputLatency)) return;
+  trainer.monitor.add(engine.ctx.outputLatency * 1000);
+  if (!trainer.latencyTouched && trainer.monitor.values.length === 3) {
+    trainer.latencyMs = suggestTotalMs({ outputMs: trainer.monitor.median, micMs: trainerMic.info ? trainerMic.info.latencyMs : null, bluetooth: trainer.bluetooth });
+    el("tr-latency").value = String(trainer.latencyMs);
+    trainerText("tr-latency-val", `${trainer.latencyMs} ms`);
+  }
+  paintLatencyInfo();
+}
+
+// Otomatik hizalama: son ~15 sn'de kabul edilen perdelerle hedef arasında en çok isabet veren TOPLAM gecikme; tek dokunuşla uygulanır.
+function trainerAutoAlign() {
+  if (!trainerMic.active || !trainer.track) {
+    trainer.message = "Otomatik ayar için mikrofon açık ve hedef melodi hazır olmalı.";
+    refreshTrainerUi();
+    return;
+  }
+  const found = bestShift(trainer.samples.items, trainer.track, {
+    shift: trainerShift(), octave: trainer.octave, loop: engine.loop, duration: engine.duration, currentMs: trainer.latencyMs,
+  });
+  if (!found.ok) {
+    trainer.message = found.reason === "few"
+      ? `Otomatik ayar için şarkıyla birlikte en az ~10 sn söyle (şu an ${trainer.samples.items.length} / ${MIN_SAMPLES} kare).`
+      : "Söylediğin perde hedef melodiyle eşleşmedi; şarkıyla birlikte söyleyip tekrar dene.";
+  } else {
+    trainer.latencyMs = found.totalMs;
+    trainer.latencyTouched = true;
+    trainer.trail.clear();
+    trainer.samples.clear();
+    saveTrainerPrefs();
+    trainer.message = `Gecikme ${found.totalMs} ms olarak ayarlandı (son söylediklerinde isabet ${found.currentHits} → ${found.hits} kare). Yeniden söyleyip kontrol et.`;
+  }
+  refreshTrainerUi();
 }
 
 // Seviye çubuğu + eşik çizgisi (dBFS -70..0 -> %0..100) ve eşik yazısı.
@@ -6150,8 +6220,9 @@ function finishTrainerCalibration() {
 // Süzgeçten çıkan olay: kabul edilen perde değerlendirilir, rulo izine ve puana girer; reddedilen kare yalnız "sessiz" sayılır
 // (hedef nota varken sessizlik = kaçırdı; eşiğin altındaki ses hiçbir zaman hit ya da iz üretmez).
 function handleGateEvent(event) {
-  const { songTime, playing } = event.meta;
+  const { songTime, playing, rawT, rate } = event.meta;
   const midi = event.accepted ? event.midi : null;
+  if (midi !== null && playing) trainer.samples.push(rawT, rate, midi);
   const result = trainer.track ? judge(midi, trainer.track, songTime, { shift: trainerShift(), octave: trainer.octave }) : null;
   if (playing && result) trainer.board.add(songTime, result.hit);
   if (midi !== null) {
@@ -6169,6 +6240,11 @@ function onTrainerFrame(frame) {
   }
   trainer.level = frame.rmsDb;
   if (trainer.collect) trainer.collect.push(frame.rmsDb);
+  const clock = performance.now();
+  if (clock - trainer.lastLatencyRead >= 1000) {          // çıkış gecikmesi okuması ~1 sn'de bir (çizim döngüsüne bağlı değil)
+    trainer.lastLatencyRead = clock;
+    sampleOutputLatency();
+  }
   if (trainer.calib) {
     if (Number.isFinite(frame.rmsDb)) trainer.calib.values.push(frame.rmsDb);
     if (performance.now() - trainer.calib.started >= CALIBRATION_MS) finishTrainerCalibration();
@@ -6178,10 +6254,11 @@ function onTrainerFrame(frame) {
   }
   const midi = trainer.smoother.push(validHz(frame, trainer.thresholdDb));
   const lag = Math.max(engine.ctx.currentTime - frame.t, 0);
-  const rate = engine.playing ? engine.rate : 0;
-  const songTime = engine.visualTime - (lag + trainer.latencyMs / 1000) * rate;
+  const rate = engine.rate;
+  const raw = engine.rawTime;
+  const songTime = songTimeAt({ raw, lagSec: lag, totalMs: trainer.latencyMs, rate, loop: engine.loop, duration: engine.duration, playing: engine.playing });
   let last = { midi: null, result: null };
-  for (const event of trainer.gate.push(midi, { songTime, playing: engine.playing })) last = handleGateEvent(event);
+  for (const event of trainer.gate.push(midi, { songTime, playing: engine.playing, rawT: raw - lag * rate, rate })) last = handleGateEvent(event);
   trainerPaint(last.midi, last.result);
 }
 
@@ -6255,7 +6332,7 @@ function trainerDrawFrame(timestamp) {
   if (timestamp - trainer.lastDraw < 30) return;
   const dt = Math.min((timestamp - trainer.lastDraw) / 1000, 0.25);
   trainer.lastDraw = timestamp;
-  const now = engine.visualTime;
+  const now = songTimeAt({ raw: engine.rawTime, lagSec: 0, totalMs: trainer.latencyMs, rate: engine.rate, loop: engine.loop, duration: engine.duration, playing: engine.playing });
   // Sarma / atlama: iz zaman ekseninde tutarsız kalır -> temizle
   if (now < trainer.drawNow - 0.05 || now > trainer.drawNow + 1.5) trainer.trail.clear();
   trainer.drawNow = now;
@@ -6348,7 +6425,12 @@ async function startTrainerMic() {
       trainer.gate.reset();
       trainer.board.reset();
       trainer.trail.clear();
-      if (!trainer.latencyTouched) trainer.latencyMs = Math.min(Math.max(info.latencyMs === null ? 60 : info.latencyMs, -100), 500);
+      trainer.bluetooth = (prepared.devices || []).some((device) => isBluetoothLabel(device.label));
+      trainer.monitor.reset();
+      trainer.samples.clear();
+      if (!trainer.latencyTouched) {
+        trainer.latencyMs = suggestTotalMs({ outputMs: engine.ctx.outputLatency * 1000, micMs: info.latencyMs, bluetooth: trainer.bluetooth });
+      }
       wakeLock.request();
       beginTrainerCalibration();
     }
@@ -6366,6 +6448,7 @@ async function startTrainerMic() {
 function stopTrainerMic(reason = "") {
   trainer.collect = null;
   trainer.calib = null;
+  trainerPlayWatch.cancel();
   if (trainerMic.active) trainerMic.stop();
   trainer.smoother.reset();
   trainer.gate.reset();
@@ -6465,6 +6548,7 @@ on("trainer-prepare", "click", prepareTrainerMelody);
 on("trainer-mic", "click", () => (trainerMic.active ? stopTrainerMic() : startTrainerMic()));
 on("trainer-leak", "click", trainerLeakTest);
 on("trainer-calibrate", "click", beginTrainerCalibration);
+on("trainer-align", "click", trainerAutoAlign);
 on("tr-karaoke", "click", trainerKaraoke);
 on("tr-duck", "click", trainerDuck);
 on("tr-sens", "input", () => {

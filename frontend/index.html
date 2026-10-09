@@ -235,6 +235,7 @@
       <div class="trainer-controls">
         <button type="button" class="chip chip-primary" id="trainer-mic">Mikrofonu aç</button>
         <button type="button" class="chip" id="trainer-calibrate" disabled title="2 sn sessiz kal: ortam gürültü tabanı ölçülür (şarkı çalıyorsa kulaklıktan sızan müzik de tabana girer)">Kalibre et</button>
+        <button type="button" class="chip" id="trainer-align" disabled title="Son ~15 sn'de söylediğin perdeyi hedefle karşılaştırır, en iyi gecikmeyi uygular (şarkıyla birlikte söyledikten sonra bas)">Gecikmeyi otomatik ayarla</button>
         <button type="button" class="chip" id="trainer-leak" disabled>Sızıntı testi</button>
       </div>
       <div class="trainer-controls" role="group" aria-label="Karışım">
@@ -262,8 +263,10 @@
       <label class="trainer-field">Hassasiyet <input type="range" id="tr-sens" min="0" max="100" step="1" value="50" aria-describedby="tr-sens-hint">
         <span id="tr-sens-val">50</span></label>
       <div class="tr-dim" id="tr-sens-hint">Ortam sesi tepki veriyorsa sola (eşik yükselir); sesin algılanmıyorsa sağa kaydır.</div>
-      <label class="trainer-field">Gecikme <input type="range" id="tr-latency" min="-100" max="500" step="10" value="60">
-        <span id="tr-latency-val">60 ms</span></label>
+      <label class="trainer-field">Gecikme (toplam) <input type="range" id="tr-latency" min="-100" max="800" step="10" value="300" aria-describedby="tr-latency-hint">
+        <span id="tr-latency-val">300 ms</span></label>
+      <div class="tr-dim" id="tr-latency-hint">Çizgin notaların SAĞINDA (geç) görünüyorsa SAĞA kaydır (çizgi sola kayar); SOLUNDA (erken) görünüyorsa SOLA. Ya da "Gecikmeyi otomatik ayarla".</div>
+      <div class="tr-dim" id="tr-latency-info"></div>
       <label class="trainer-field"><input type="checkbox" id="tr-octave" checked> Oktav farkı doğru sayılsın</label>
     </section>
 
