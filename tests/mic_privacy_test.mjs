@@ -60,7 +60,10 @@ for (const [name, pattern] of FORBIDDEN.filter(([name]) => !["localStorage", "co
 }
 check("antrenör bölümünde console / diag yok", !/console\.|\bdiag\./.test(region));
 const storageLines = region.split("\n").filter((line) => /localStorage/.test(line));
-check("localStorage yalnız antrenör TERCİHLERİ için (TRAINER_PREFS_KEY), başka anahtar yok", storageLines.length === 2 && storageLines.every((line) => /TRAINER_PREFS_KEY/.test(line)), storageLines.join(" | "));
+const prefLines = storageLines.filter((line) => /TRAINER_PREFS_KEY/.test(line));
+const flagLines = storageLines.filter((line) => !/TRAINER_PREFS_KEY/.test(line));
+check("localStorage yalnız antrenör TERCİHLERİ (TRAINER_PREFS_KEY) ve açık / kapalı BAYRAĞI (stem-mikser.trainer-on) için, başka anahtar yok",
+  prefLines.length === 2 && flagLines.length === 3 && flagLines.every((line) => /"stem-mikser\.trainer-on"/.test(line)), storageLines.join(" | "));
 check("saklanan tek şey { octave, latencyTotalMs, sensitivity } (tercihler)", /JSON\.stringify\(\{ octave: trainer\.octave, latencyTotalMs: trainer\.latencyTouched \? trainer\.latencyMs : undefined, sensitivity: trainer\.sensitivityTouched \? trainer\.sensitivity : undefined \}\)/.test(region));
 // --- ses süzgeci: eşik altı / süzgeçten geçmeyen ses perde, rulo ya da puan üretmez
 check("kare önce validHz(eşik) ile süzülür, sonra düzgünleştirici, sonra VoiceGate; judge yalnız kapı olayında", /smoother\.push\(validHz\(frame, trainer\.thresholdDb\)\)/.test(region) && /trainer\.gate\.push\(midi,/.test(region) && (region.match(/\bjudge\(/g) || []).length === 1 && /function handleGateEvent[\s\S]*?judge\(/.test(region));
@@ -87,7 +90,7 @@ check("sunucu API istemcisinde mikrofon verisi gönderen yöntem yok (yalnız st
 // --- service worker kabuğu
 const sw = strip(read("../frontend/sw.js"));
 for (const file of ["pitch.js", "pitch-processor.js", "mic.js", "melody.js", "melodycache.js", "voicegate.js", "roll.js", "latency.js"]) check(`sw.js kabuğunda js/${file} var`, sw.includes(`./js/${file}`));
-check("SW sürümü >= 63", Number((sw.match(/const VERSION = "v(\d+)"/) || [])[1]) >= 63);
+check("SW sürümü >= 64", Number((sw.match(/const VERSION = "v(\d+)"/) || [])[1]) >= 64);
 
 if (failed) {
   console.error(`\n${failed} test başarısız`);

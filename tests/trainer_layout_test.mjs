@@ -51,7 +51,7 @@ const startFn = region.slice(region.indexOf("async function startTrainerMic()"),
 check("startTrainerMic çalmayı durdurmaz / başlatmaz (stopPlayback, startPlayback, engine.play/pause YOK)", !/stopPlayback|startPlayback|engine\.(play|pause)\(/.test(startFn));
 const calibFns = region.slice(region.indexOf("function beginTrainerCalibration()"), region.indexOf("function handleGateEvent"));
 check("kalibrasyon çalmayı durdurmaz / başlatmaz", !/stopPlayback|startPlayback|engine\.(play|pause)\(|\.suspend\(|\.close\(/.test(calibFns));
-check("mikrofon açıkken çalma başlamazsa (2,5 sn) nedeni (ses bağlamı durumu) panelde söylenir", /new PlayWatch\([\s\S]*?ses bağlamı: \$\{state\}/.test(region) && /trainerPlayWatch\.begin\(\);[\s\S]*?await engine\.play\(\)/.test(app));
+check("mikrofon açıkken çalma başlamazsa (2,5 sn) nedeni (ses bağlamı durumu) panelde söylenir", /new PlayWatch\([\s\S]*?ses bağlamı: \$\{state\}/.test(region) && /playHooks\.begin = \(\) => \{ if \(trainerMicActive\(\)\) trainerPlayWatch\.begin\(\); \};/.test(region));
 
 // --- kalibrasyon durumu belirgin
 check("ölçüm sürerken geri sayım, bitince 'Ölçüm bitti ✓' yazısı", /Ortam ölçülüyor… \$\{left\} sn sessiz kal/.test(region) && /Ölçüm bitti ✓ · şarkıyı başlat \(▶ Çal\) ve söyle/.test(region) && /Ölçüm bitti ✓ · söyle!/.test(region));
@@ -87,7 +87,7 @@ check("başarılı sonuç mesajında güven gösterilir", /\(güven: \$\{decisio
 check("son başarılı otomatik değer kaydırıcıda işaretlenir (datalist çentiği) ve 'Buna dön' vardır", /list="tr-latency-ticks"/.test(html) && /<datalist id="tr-latency-ticks">/.test(html) && /function paintAutoMark\(\)/.test(region) && /on\("tr-auto-restore", "click", restoreAutoLatency\)/.test(region));
 check("ölçüm geçmişi (ortanca için) mikrofon kapanınca ve şarkı değişince sıfırlanır", /function stopTrainerMic[\s\S]*?alignHistory = \[\]/.test(region) && /function trainerReset\(\)[\s\S]*?alignHistory = \[\]/.test(region));
 check("kabul edilen perdeler SampleRing'e yalnız çalarken eklenir", /if \(midi !== null && playing\) trainer\.samples\.push\(rawT, rate, midi\)/.test(region));
-check("çalma başlatma yeniden girişe karşı korumalı (çift dokunuş çift kaynak kurmaz)", /let startingPlayback = false;[\s\S]*?if \(startingPlayback\) return;/.test(app));
+check("çalma başlatma yeniden girişe karşı korumalı (çift dokunuş çift kaynak kurmaz)", /let playStarting = null;[\s\S]*?if \(playStarting\) return playStarting;/.test(app));
 check("saklanan tercih anahtarı latencyTotalMs (eski 'ek gecikme' değeri okunmaz)", /saved\.latencyTotalMs/.test(region) && !/saved\.latencyMs/.test(region));
 
 if (failed) {

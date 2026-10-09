@@ -262,6 +262,8 @@ node tests\voicegate_test.mjs
 node tests\roll_test.mjs
 node tests\trainer_layout_test.mjs
 node tests\latency_test.mjs
+node tests\playback_core_test.mjs
+node tests\outputcheck_test.mjs
 ```
 
 Listeler aynı belgede (`stem-mikser.collection`, `lists`), yedeğe dahil. Şarkı bitişi artık `onended` ile de algılanır (ekran

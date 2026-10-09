@@ -73,6 +73,7 @@ import {
 import { transposeKey } from "./tonality.js";
 import { NavStack, CLOSE, BLOCKED } from "./navstack.js";
 import { diag, summarize, eventsText } from "./diag.js";
+import { outputVerdict, peakOf, CHECK_DELAY_MS, CHECK_WINDOW_MS, RECHECK_AFTER_MS } from "./outputcheck.js";
 import {
   SHARE_PARAM, MESSAGES as SHARE_MESSAGES, launchKind, readPending, clearPending, classify, formatSize,
   formatDuration, durationWarning, cardView,
@@ -2068,13 +2069,25 @@ async function downloadStem(name, format) {
   }
 }
 
+// Şarkı söyleme antrenörü ÇEKİRDEK ÇALMAYA yalnız bu küçük kancalarla bağlanır (antrenör bölümü doldurur). Kanca hata verse (ya da henüz
+// tanımlı değilse) çalma ASLA etkilenmez: telefonda "ses yok" şikâyeti sonrası yalıtıldı (SW v64).
+const playHooks = { begin() {}, end() {}, stop() {}, icon() {} };
+function safeHook(name, ...args) {
+  try {
+    return playHooks[name](...args);
+  } catch (error) {
+    try { diag.note("error", `kanca ${name}: ${error && error.message}`); } catch { /* günlük yazılamadı */ }
+    return undefined;
+  }
+}
+
 function setPlayIcon(playing) {
   el("play-icon").innerHTML = playing
     ? '<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>'
     : '<path d="M8 5v14l11-7z"/>';
   el("play").setAttribute("aria-label", playing ? "Duraklat" : "Oynat");
   if (lyricsScreen) lyricsScreen.setPlaying(playing);
-  paintTrainerPlay(playing);
+  safeHook("icon", playing);
 }
 
 // Tam ekran sözler açıkken ekran kilidi (Wake Lock) çalma bitse de tutulur; ekran kapanınca
@@ -5291,25 +5304,27 @@ document.addEventListener("keydown", (event) => {
 // (aynı şarkıya hızlı dönüş). Mini oynatıcı yok - bilinçli.
 on("back-to-library", "click", () => requestBack("view"));
 
-let startingPlayback = false;
+// ÇEKİRDEK ÇALMA: antrenörden BAĞIMSIZ (yalnız yalıtılmış kancalar). Başlatma sürerken ikinci dokunuş aynı sözü bekler (çift kaynak kurulmaz);
+// bayrak yok, söz bitince kendiliğinden temizlenir (takılı kalamaz).
+let playStarting = null;
 
-async function startPlayback() {
+function startPlayback() {
+  if (playStarting) return playStarting;
+  playStarting = runStartPlayback().finally(() => { playStarting = null; });
+  return playStarting;
+}
+
+async function runStartPlayback() {
   // Autoplay politikası: bu bir kullanıcı hareketi, context burada açılır.
   // Sessiz elementi ÖNCE ve await'siz başlat: kullanıcı hareketi içinde
   // kalsın, yoksa Chrome reddediyor ve kilit ekranı kontrolleri çıkmıyor.
-  if (startingPlayback) return;           // başlatma sürerken ikinci dokunuş çift başlatmasın (iki kez kaynak kurulurdu)
-  startingPlayback = true;
   media.startKeeper();
   media.setPlaybackState(true);
+  safeHook("begin");
   try {
-    if (trainerMicActive()) trainerPlayWatch.begin();
     await engine.play();
   } finally {
-    startingPlayback = false;
-    if (trainerPlayWatch.end()) {          // "hazırlanıyor" uyarısı çıkmıştı, çalma sonunda başladı: uyarıyı sil
-      trainer.message = "";
-      refreshTrainerUi();
-    }
+    safeHook("end");
   }
   if (!engine.playing) {                   // motor çalmayı başlatmadı (kanal yok / bağlam kesildi): simge yalan söylemesin
     setPlayIcon(false);
@@ -5323,10 +5338,11 @@ async function startPlayback() {
   media.setPlaybackState(true);
   media.updatePosition();
   wakeLock.request();
+  verifyOutputSoon();
 }
 
 function stopPlayback() {
-  trainerPlayWatch.cancel();
+  safeHook("stop");
   engine.pause();
   metronome.stop();
   setPlayIcon(false);
@@ -5334,6 +5350,55 @@ function stopPlayback() {
   media.setPlaybackState(false);
   media.updatePosition();
   releasePlaybackWake();
+}
+
+// Çıkış denetimi: çalmaya başladıktan ~2,5 sn sonra şarkı çıkışının tepe seviyesi ölçülür; iki ölçüm de sessizse (ve duyulur kanal varsa)
+// uyarı + "Ses olayları" günlüğü. Uygulama örnek üretip cihaz susuyorsa tepe NORMAL çıkar: sorunun cihazda olduğu anlaşılır.
+let outputCheckGen = 0;
+
+function measureOutputPeak(ms) {
+  return new Promise((resolve) => {
+    const ctx = engine.ctx;
+    const source = engine.output;
+    if (!ctx || !source || typeof ctx.createAnalyser !== "function") { resolve(null); return; }
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    const buffer = new Float32Array(analyser.fftSize);
+    let peak = 0;
+    source.connect(analyser);
+    const timer = setInterval(() => {
+      analyser.getFloatTimeDomainData(buffer);
+      peak = Math.max(peak, peakOf(buffer));
+    }, 80);
+    setTimeout(() => {
+      clearInterval(timer);
+      try { source.disconnect(analyser); } catch { /* zaten ayrık */ }
+      resolve(peak);
+    }, ms);
+  });
+}
+
+function verifyOutputSoon() {
+  const gen = ++outputCheckGen;
+  setTimeout(async () => {
+    try {
+      if (gen !== outputCheckGen || !engine.playing) return;
+      const peaks = [];
+      const first = await measureOutputPeak(CHECK_WINDOW_MS);
+      if (first === null) return;
+      peaks.push(first);
+      if (first < 1e-4) {                    // şarkının sessiz bir yeri olabilir: bir kez daha
+        await new Promise((resolve) => setTimeout(resolve, RECHECK_AFTER_MS));
+        if (gen !== outputCheckGen || !engine.playing) return;
+        peaks.push(await measureOutputPeak(CHECK_WINDOW_MS));
+      }
+      const audible = [...engine.channels.keys()].filter((name) => engine.isAudible(name)).length;
+      const master = engine.master && engine.master.gain ? engine.master.gain.value : 1;
+      const verdict = outputVerdict({ peaks: peaks.filter((value) => value !== null), ctxState: engine.ctx.state, playing: engine.playing, audible, masterGain: master });
+      diag.note("state", `çıkış denetimi: ${verdict.text}`);
+      if (verdict.silent) showMessage(el("player-message"), verdict.text, "warn");
+    } catch { /* denetim çalmayı hiçbir koşulda etkilemez */ }
+  }, CHECK_DELAY_MS);
 }
 
 async function togglePlayback() {
@@ -5440,6 +5505,8 @@ function measureAacDelta(status, decodedDuration) {
 // açıp okunuyor) ve ŞU AN kullanılan context'in hızı + kanal sayısı. İkisi
 // ayrı ayrı gerekiyor: zorlama yüzünden doğal hız bugüne kadar hiç görünmedi.
 async function refreshAudioUi() {
+  const trainerBox = el("setting-trainer");
+  if (trainerBox) trainerBox.checked = trainerEnabled();
   const select = el("setting-audio");
   if (select) select.value = settings.mobileAudio;
 
@@ -5882,8 +5949,18 @@ function saveTrainerPrefs() {
   } catch { /* tercih bu oturumda kalır */ }
 }
 
+// Antrenör deneysel ve varsayılan KAPALI (Ayarlar > "Şarkı söyleme antrenörü"): kapalıyken söyle düğmesi görünmez, mikrofon / kalibrasyon /
+// panel kodu hiç çalışmaz. Tek bayrak: localStorage "stem-mikser.trainer-on" = "1".
+function trainerEnabled() {
+  try {
+    return localStorage.getItem("stem-mikser.trainer-on") === "1";
+  } catch {
+    return false;
+  }
+}
+
 function trainerSupported() {
-  return trainerMic.supported && typeof AudioWorkletNode !== "undefined";
+  return trainerEnabled() && trainerMic.supported && typeof AudioWorkletNode !== "undefined";
 }
 
 function trainerMicActive() {
@@ -6101,6 +6178,16 @@ const trainerPlayWatch = new PlayWatch({
     refreshTrainerUi();
   },
 });
+
+playHooks.begin = () => { if (trainerMicActive()) trainerPlayWatch.begin(); };
+playHooks.end = () => {
+  if (trainerPlayWatch.end()) {          // "hazırlanıyor" uyarısı çıkmıştı, çalma sonunda başladı: uyarıyı sil
+    trainer.message = "";
+    refreshTrainerUi();
+  }
+};
+playHooks.stop = () => trainerPlayWatch.cancel();
+playHooks.icon = (playing) => paintTrainerPlay(playing);
 
 // Çıkış gecikmesi okuması: yalnız bilgi / uyarı (hizayı belirlemez). Çalarken ~1 sn'de bir okunur.
 function paintLatencyInfo() {
@@ -6596,6 +6683,14 @@ async function trainerLeakTest() {
 }
 
 on("trainer-open", "click", openTrainer);
+on("setting-trainer", "change", () => {
+  try {
+    if (el("setting-trainer").checked) localStorage.setItem("stem-mikser.trainer-on", "1");
+    else localStorage.removeItem("stem-mikser.trainer-on");
+  } catch { /* bayrak yazılamadı: bu oturumda eski değer */ }
+  if (!el("setting-trainer").checked) closeTrainer();
+  refreshTrainerChip();
+});
 on("trainer-close", "click", closeTrainer);
 on("trainer-prepare", "click", prepareTrainerMelody);
 on("trainer-mic", "click", () => (trainerMic.active ? stopTrainerMic() : startTrainerMic()));
