@@ -54,6 +54,8 @@ import { PitchSmoother, nearestNote, noteName, midiToHz } from "./pitch.js";
 import { decodeMelody, segmentNotes, NoteTrack, judge, Scoreboard } from "./melody.js";
 import { Mic, leakVerdict } from "./mic.js";
 import { MelodyCache } from "./melodycache.js";
+import { VoiceGate, validHz, calibrateFloor, thresholdDb, SENSITIVITY_DEFAULT } from "./voicegate.js";
+import { drawRoll, targetRange, RangeEaser, Trail, ROLL_PAST, ROLL_FUTURE } from "./roll.js";
 import { Timeline } from "./timeline.js";
 import {
   prepareChords, displayLabel, mapSheet, buildGrid, renderMain, renderGap, renderGrid, soundingAt,
@@ -5810,24 +5812,34 @@ ${eventsText(diag)}`;
 mixer = new Mixer(el("channels"), engine, scheduleMixSave, downloadStem);
 // ---------------------------------------------------------------- şarkı söyleme antrenörü (Mikrofon paketi 9, 2. oturum)
 // Mantık pitch.js (YIN), melody.js (hedef melodi + puanlama), mic.js (izin / aygıt / akış) içinde; burada yalnız bağlantı ve GEÇİCİ görünüm
-// (canlı nota, hedef nota, cent farkı, seviye; piyano rulosu 3. oturumda). KURALLAR:
+// (piyano rulosu, söz satırları, satır başına isabet yüzdesi, canlı nota, seviye + eşik). KURALLAR:
 //  - Mikrofon HER ZAMAN Bluetooth olmayan dahili aygıttır (deviceId); varsayılan aygıt yalnız ilk İZİN adımında, kısaca ve açıklamayla açılır.
 //  - Mikrofon sesi hiçbir koşulda diske, loga ya da sunucuya gitmez: bu bölüm yalnız worklet'ten gelen SAYILARI ({t, hz, clarity, rmsDb}) görür.
-//    Burada saklanan tek şey kullanıcı tercihleri (oktav, gecikme); ses, perde ya da puan DEPOLANMAZ.
+//    Burada saklanan tek şey kullanıcı tercihleri (oktav, gecikme, hassasiyet); ses, perde ya da puan DEPOLANMAZ.
+//  - Ortam sesleri: açılışta 2 sn "sessiz kal" kalibrasyonu ortam tabanını ölçer (şarkı çalıyorsa sızan müzik de tabana girer); kapı eşiği =
+//    taban + pay (+ Hassasiyet kaydırıcısı). Eşiğin altı / insan sesi aralığı dışı / kısa-titrek algılar rulo ve puana HİÇ girmez (voicegate.js).
+//    noiseSuppression KAPALI kalır (perdeyi bozuyor).
 // TRAINER-BAŞLANGIÇ
 const TRAINER_PREFS_KEY = "stem-mikser.trainer";
 const melodyCache = new MelodyCache();
 const trainerMic = new Mic();
 const trainer = {
   songId: null, version: 0, notes: null, track: null, method: "", source: "",
-  smoother: new PitchSmoother(), board: new Scoreboard(),
+  smoother: new PitchSmoother(), board: new Scoreboard(), gate: new VoiceGate(), trail: new Trail(),
+  easer: new RangeEaser(), easerReady: false, rafId: 0, lastDraw: 0, lastText: 0, drawNow: 0, duckFrom: 1,
   latencyMs: 60, octave: true, latencyTouched: false,
+  sensitivity: SENSITIVITY_DEFAULT, sensitivityTouched: false, floorDb: null, thresholdDb: thresholdDb(null, SENSITIVITY_DEFAULT), calib: null,
   collect: null, level: -120, lastPaint: 0, busy: false, pollTimer: 0, message: "", info: null,
 };
 (function readTrainerPrefs() {
   try {
     const saved = JSON.parse(localStorage.getItem(TRAINER_PREFS_KEY) || "{}");
     if (typeof saved.octave === "boolean") trainer.octave = saved.octave;
+    if (Number.isFinite(saved.sensitivity)) {
+      trainer.sensitivity = Math.min(Math.max(Math.round(saved.sensitivity), 0), 100);
+      trainer.sensitivityTouched = true;
+      trainer.thresholdDb = thresholdDb(null, trainer.sensitivity);
+    }
     if (Number.isFinite(saved.latencyMs)) {
       trainer.latencyMs = Math.min(Math.max(Math.round(saved.latencyMs), -100), 500);
       trainer.latencyTouched = true;
@@ -5837,7 +5849,7 @@ const trainer = {
 
 function saveTrainerPrefs() {
   try {
-    localStorage.setItem(TRAINER_PREFS_KEY, JSON.stringify({ octave: trainer.octave, latencyMs: trainer.latencyTouched ? trainer.latencyMs : undefined }));
+    localStorage.setItem(TRAINER_PREFS_KEY, JSON.stringify({ octave: trainer.octave, latencyMs: trainer.latencyTouched ? trainer.latencyMs : undefined, sensitivity: trainer.sensitivityTouched ? trainer.sensitivity : undefined }));
   } catch { /* tercih bu oturumda kalır */ }
 }
 
@@ -5903,8 +5915,11 @@ async function refreshTrainerUi() {
   }
   const active = trainerMic.active;
   trainerText("trainer-mic", active ? "Mikrofonu kapat" : "Mikrofonu aç");
-  el("trainer-leak").disabled = !active;
+  el("trainer-leak").disabled = !active || Boolean(trainer.calib);
+  el("trainer-calibrate").disabled = !active || trainer.busy;
   el("trainer-readout").hidden = !active;
+  el("tr-roll-wrap").hidden = !trainer.track;
+  refreshTrainerMixChips();
   const permission = await trainerMic.permissionState();
   const permissionText = { granted: "verildi", prompt: "sorulacak", denied: "reddedildi (Chrome > site ayarları > mikrofon)" }[permission] || "bilinmiyor";
   const mic = trainerMic.info;
@@ -5918,6 +5933,9 @@ async function refreshTrainerUi() {
   }
   if (trainer.message) parts.push(trainer.message);
   trainerText("trainer-info", parts.join(" · "));
+  el("tr-sens").value = String(trainer.sensitivity);
+  trainerText("tr-sens-val", String(trainer.sensitivity));
+  paintTrainerGate();
   el("tr-latency").value = String(trainer.latencyMs);
   trainerText("tr-latency-val", `${trainer.latencyMs} ms`);
   el("tr-octave").checked = trainer.octave;
@@ -5954,6 +5972,8 @@ async function loadTrainerMelody() {
   trainer.source = decoded.source;
   trainer.message = "";
   trainer.board.reset();
+  trainer.trail.clear();
+  trainer.easerReady = false;
   refreshTrainerUi();
 }
 
@@ -5997,6 +6017,23 @@ function pollTrainerMelody(id) {
   }, 3000);
 }
 
+// Seviye çubuğu + eşik çizgisi (dBFS -70..0 -> %0..100) ve eşik yazısı.
+const levelFraction = (db) => Math.min(Math.max((db + 70) / 70, 0), 1);
+
+function paintTrainerGate() {
+  const marker = el("tr-thr");
+  if (marker) marker.style.left = `${Math.round(levelFraction(trainer.thresholdDb) * 100)}%`;
+  const floor = trainer.floorDb === null ? "ölçülmedi (varsayılan)" : `${Math.round(trainer.floorDb)} dB`;
+  trainerText("tr-gate", trainer.calib
+    ? "Ortam sesi ölçülüyor: 2 sn sessiz kal…"
+    : `Ortam tabanı: ${floor} · eşik: ${Math.round(trainer.thresholdDb)} dB`);
+}
+
+function setTrainerThreshold() {
+  trainer.thresholdDb = thresholdDb(trainer.floorDb, trainer.sensitivity);
+  paintTrainerGate();
+}
+
 function trainerPaint(midi, result) {
   const now = performance.now();
   if (now - trainer.lastPaint < 40) return;
@@ -6031,8 +6068,47 @@ function trainerPaint(midi, result) {
   }
   const total = trainer.board.all();
   trainerText("tr-score", total.total ? `İsabet: %${total.percent} (${total.total} kare)` : "İsabet: —");
-  const fraction = Math.min(Math.max((trainer.level + 70) / 70, 0), 1);
-  el("tr-level").style.width = `${Math.round(fraction * 100)}%`;
+  el("tr-level").style.width = `${Math.round(levelFraction(trainer.level) * 100)}%`;
+  el("tr-level").parentElement.classList.toggle("gated", trainer.level < trainer.thresholdDb);
+}
+
+// Kalibrasyon: ~2 sn boyunca KARE SEVİYELERİ (dBFS sayıları) toplanır; yalnız bu sayıların %90'lık dilimi saklanır, ses değil.
+const CALIBRATION_MS = 2000;
+
+function beginTrainerCalibration() {
+  if (!trainerMic.active) return;
+  trainer.calib = { values: [], started: performance.now() };
+  trainer.gate.reset();
+  trainer.smoother.reset();
+  trainer.message = engine.playing ? "Ortam ölçülüyor (müzik çalıyor: sızan müzik de tabana girer). Sessiz kal…" : "Ortam ölçülüyor. 2 sn sessiz kal…";
+  refreshTrainerUi();
+}
+
+function finishTrainerCalibration() {
+  const floor = calibrateFloor(trainer.calib.values);
+  trainer.calib = null;
+  if (floor === null) {
+    trainer.message = "Ortam ölçülemedi (ses akışı yetersiz); varsayılan taban kullanılıyor. Yeniden Kalibre et.";
+  } else {
+    trainer.floorDb = floor;
+    trainer.message = `Ortam tabanı ${Math.round(floor)} dB ölçüldü; bunun üstündeki sesler sayılır.`;
+  }
+  setTrainerThreshold();
+  refreshTrainerUi();
+}
+
+// Süzgeçten çıkan olay: kabul edilen perde değerlendirilir, rulo izine ve puana girer; reddedilen kare yalnız "sessiz" sayılır
+// (hedef nota varken sessizlik = kaçırdı; eşiğin altındaki ses hiçbir zaman hit ya da iz üretmez).
+function handleGateEvent(event) {
+  const { songTime, playing } = event.meta;
+  const midi = event.accepted ? event.midi : null;
+  const result = trainer.track ? judge(midi, trainer.track, songTime, { shift: trainerShift(), octave: trainer.octave }) : null;
+  if (playing && result) trainer.board.add(songTime, result.hit);
+  if (midi !== null) {
+    const plotted = result && result.target !== null && result.diffCents !== null ? result.target + result.diffCents / 100 : midi;
+    trainer.trail.push(songTime, plotted, result ? result.hit : null);
+  }
+  return { midi, result };
 }
 
 // Worklet'ten gelen SAYILAR (t, hz, clarity, rmsDb). Ses örneği burada hiç yok.
@@ -6043,13 +6119,157 @@ function onTrainerFrame(frame) {
   }
   trainer.level = frame.rmsDb;
   if (trainer.collect) trainer.collect.push(frame.rmsDb);
-  const midi = trainer.smoother.push(frame.hz);
+  if (trainer.calib) {
+    if (Number.isFinite(frame.rmsDb)) trainer.calib.values.push(frame.rmsDb);
+    if (performance.now() - trainer.calib.started >= CALIBRATION_MS) finishTrainerCalibration();
+    trainerPaint(null, null);
+    return;
+  }
+  const midi = trainer.smoother.push(validHz(frame, trainer.thresholdDb));
   const lag = Math.max(engine.ctx.currentTime - frame.t, 0);
   const rate = engine.playing ? engine.rate : 0;
   const songTime = engine.visualTime - (lag + trainer.latencyMs / 1000) * rate;
-  const result = trainer.track ? judge(midi, trainer.track, songTime, { shift: trainerShift(), octave: trainer.octave }) : null;
-  if (engine.playing && result) trainer.board.add(songTime, result.hit);
-  trainerPaint(midi, result);
+  let last = { midi: null, result: null };
+  for (const event of trainer.gate.push(midi, { songTime, playing: engine.playing })) last = handleGateEvent(event);
+  trainerPaint(last.midi, last.result);
+}
+
+// ------------------------------------------------ rulo + söz satırları çizimi (rAF, panel açıkken ~30 kare/sn)
+let rollCtx = null;
+let rollCanvasKey = "";
+
+function fitRollCanvas() {
+  const canvas = el("tr-roll");
+  const width = Math.round(canvas.clientWidth);
+  const height = Math.round(canvas.clientHeight);
+  if (width < 20 || height < 20) return null;
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const key = `${width}x${height}@${dpr}`;
+  if (key !== rollCanvasKey) {
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    rollCtx = canvas.getContext("2d");
+    rollCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    rollCanvasKey = key;
+  }
+  return { width, height };
+}
+
+function paintLineScore(node, percent) {
+  const text = percent === null ? "" : `%${percent}`;
+  if (node.textContent !== text) node.textContent = text;
+  node.className = percent === null ? "" : percent >= 70 ? "" : percent >= 40 ? "mid" : "low";
+}
+
+function trainerLyricsPaint(now) {
+  const box = el("tr-lyrics");
+  const lines = lyricsDoc ? lyricsDoc.lines : null;
+  box.hidden = !lines;
+  if (!lines) return;
+  const probe = highlightTime(now);
+  const index = findLine(lines, probe);
+  let doneIndex = -1;
+  let nextIndex = -1;
+  if (index >= 0) {
+    doneIndex = index - 1;
+    nextIndex = index + 1 < lines.length ? index + 1 : -1;
+  } else {
+    for (let i = 0; i < lines.length; i += 1) {
+      if (lines[i].t <= probe) doneIndex = i; else { nextIndex = i; break; }
+    }
+  }
+  const span = (line) => ({ t0: line.t, t1: line.e > line.t ? line.e : line.t + 3 });
+  trainerText("tr-prev-text", doneIndex >= 0 ? lines[doneIndex].text : "");
+  if (doneIndex >= 0) {
+    const { t0, t1 } = span(lines[doneIndex]);
+    paintLineScore(el("tr-prev-score"), trainer.board.range(t0, t1).percent);
+  } else {
+    paintLineScore(el("tr-prev-score"), null);
+  }
+  trainerText("tr-cur-text", index >= 0 ? lines[index].text : "…");
+  if (index >= 0) {
+    const { t0, t1 } = span(lines[index]);
+    paintLineScore(el("tr-cur-score"), trainer.board.range(t0, Math.min(t1, now + 0.05)).percent);
+  } else {
+    paintLineScore(el("tr-cur-score"), null);
+  }
+  trainerText("tr-next-text", nextIndex >= 0 ? lines[nextIndex].text : "");
+}
+
+function trainerDrawFrame(timestamp) {
+  trainer.rafId = 0;
+  const panel = el("trainer");
+  if (!panel || panel.hidden || document.hidden) return;
+  trainer.rafId = requestAnimationFrame(trainerDrawFrame);
+  if (timestamp - trainer.lastDraw < 30) return;
+  const dt = Math.min((timestamp - trainer.lastDraw) / 1000, 0.25);
+  trainer.lastDraw = timestamp;
+  const now = engine.visualTime;
+  // Sarma / atlama: iz zaman ekseninde tutarsız kalır -> temizle
+  if (now < trainer.drawNow - 0.05 || now > trainer.drawNow + 1.5) trainer.trail.clear();
+  trainer.drawNow = now;
+  trainer.trail.prune(now);
+  const size = trainer.track ? fitRollCanvas() : null;
+  if (size && rollCtx) {
+    const shift = trainerShift();
+    const visible = trainer.track.between(now - ROLL_PAST, now + ROLL_FUTURE);
+    const center = (trainer.easer.lo + trainer.easer.hi) / 2;
+    const target = targetRange(visible, shift, trainer.easerReady ? center : 60);
+    if (!trainer.easerReady && visible.length) {
+      trainer.easer.snap(target);
+      trainer.easerReady = true;
+    }
+    const range = visible.length ? trainer.easer.step(target, dt) : { lo: trainer.easer.lo, hi: trainer.easer.hi };
+    drawRoll(rollCtx, {
+      width: size.width, height: size.height, now, notes: visible, shift, lo: range.lo, hi: range.hi, trail: trainer.trail.items,
+      noteScore: (note) => trainer.board.range(note.t0, note.t1).percent,
+    });
+  }
+  if (timestamp - trainer.lastText >= 100) {
+    trainer.lastText = timestamp;
+    trainerLyricsPaint(now);
+  }
+}
+
+function startTrainerDraw() {
+  if (!trainer.rafId) trainer.rafId = requestAnimationFrame(trainerDrawFrame);
+}
+
+function stopTrainerDraw() {
+  if (trainer.rafId) cancelAnimationFrame(trainer.rafId);
+  trainer.rafId = 0;
+}
+
+// Karışım kısayolları: mevcut "Karaoke" ön ayarı ve vokal kısma (mikser kaydına normal yoldan yazılır).
+const VOCAL_DUCK = 0.3;
+
+function refreshTrainerMixChips() {
+  const vocals = engine.channels.get("vocals");
+  const karaoke = el("tr-karaoke");
+  const duck = el("tr-duck");
+  if (!karaoke || !duck) return;
+  karaoke.disabled = !vocals;
+  duck.disabled = !vocals;
+  karaoke.setAttribute("aria-pressed", String(Boolean(vocals && vocals.mute)));
+  duck.setAttribute("aria-pressed", String(Boolean(vocals && !vocals.mute && Math.abs(vocals.fader - VOCAL_DUCK) < 0.011)));
+}
+
+function trainerKaraoke() {
+  const preset = document.querySelector('#mix-presets [data-preset="karaoke"]');
+  if (preset && !preset.disabled) preset.click();
+  setTimeout(refreshTrainerMixChips, 50);
+}
+
+function trainerDuck() {
+  const vocals = engine.channels.get("vocals");
+  if (!vocals) return;
+  const ducked = Math.abs(vocals.fader - VOCAL_DUCK) < 0.011;
+  if (!ducked) trainer.duckFrom = vocals.fader;
+  vocals.mute = false;
+  engine.setFader("vocals", ducked ? (trainer.duckFrom || 1) : VOCAL_DUCK);
+  mixer.syncFromEngine();
+  scheduleMixSave();
+  refreshTrainerMixChips();
 }
 
 async function startTrainerMic() {
@@ -6073,9 +6293,12 @@ async function startTrainerMic() {
       await engine.ensureContext();
       const info = await trainerMic.start(engine.ctx, onTrainerFrame, prepared.device);
       trainer.smoother.reset();
+      trainer.gate.reset();
       trainer.board.reset();
+      trainer.trail.clear();
       if (!trainer.latencyTouched) trainer.latencyMs = Math.min(Math.max(info.latencyMs === null ? 60 : info.latencyMs, -100), 500);
       wakeLock.request();
+      beginTrainerCalibration();
     }
   } catch (error) {
     const reason = error && error.message ? error.message : String(error);
@@ -6090,8 +6313,10 @@ async function startTrainerMic() {
 
 function stopTrainerMic(reason = "") {
   trainer.collect = null;
+  trainer.calib = null;
   if (trainerMic.active) trainerMic.stop();
   trainer.smoother.reset();
+  trainer.gate.reset();
   if (reason) trainer.message = reason;
   releasePlaybackWake();
   refreshTrainerUi();
@@ -6105,13 +6330,20 @@ function trainerReset() {
   trainer.notes = null;
   trainer.track = null;
   trainer.board.reset();
+  trainer.trail.clear();
+  trainer.easerReady = false;
+  trainer.floorDb = null;
+  trainer.duckFrom = 1;
+  setTrainerThreshold();
   trainer.message = "";
+  stopTrainerDraw();
   const panel = el("trainer");
   if (panel) panel.hidden = true;
 }
 
 function openTrainer() {
   el("trainer").hidden = false;
+  startTrainerDraw();
   refreshTrainerUi();
   loadTrainerMelody().then(() => refreshTrainerUi());
   if (melodyStatus() && melodyStatus().state === "running") pollTrainerMelody(currentSong.id);
@@ -6119,6 +6351,7 @@ function openTrainer() {
 
 function closeTrainer() {
   stopTrainerMic();
+  stopTrainerDraw();
   el("trainer").hidden = true;
 }
 
@@ -6176,6 +6409,16 @@ on("trainer-close", "click", closeTrainer);
 on("trainer-prepare", "click", prepareTrainerMelody);
 on("trainer-mic", "click", () => (trainerMic.active ? stopTrainerMic() : startTrainerMic()));
 on("trainer-leak", "click", trainerLeakTest);
+on("trainer-calibrate", "click", beginTrainerCalibration);
+on("tr-karaoke", "click", trainerKaraoke);
+on("tr-duck", "click", trainerDuck);
+on("tr-sens", "input", () => {
+  trainer.sensitivity = Number(el("tr-sens").value);
+  trainer.sensitivityTouched = true;
+  trainerText("tr-sens-val", String(trainer.sensitivity));
+  setTrainerThreshold();
+  saveTrainerPrefs();
+});
 on("trainer-perm-go", "click", async () => {
   if (trainer.busy) return;
   trainer.busy = true;
@@ -6201,6 +6444,8 @@ on("tr-octave", "change", () => {
 });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden && trainerMic.active) stopTrainerMic("sayfa gizlendi: mikrofon kapatıldı");
+  if (document.hidden) stopTrainerDraw();
+  else if (!el("trainer").hidden) startTrainerDraw();
 });
 // TRAINER-BİTİŞ
 

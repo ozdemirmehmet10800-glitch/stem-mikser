@@ -81,14 +81,19 @@ check("iki aday arasında perdeye en yakın seçilir (sınır)", (() => { const 
 // --- isabet sayacı
 {
   const board = new Scoreboard();
-  board.add(0.5, true); board.add(1.0, true); board.add(1.5, false); board.add(2.5, null); board.add(3.0, true); board.add(3.5, undefined);
-  check("sayaç: null/undefined kaydedilmez; toplam 4 kare, 3 isabet = %75", board.all().total === 4 && board.all().hits === 3 && board.all().percent === 75);
-  check("aralık sorgusu [t0, t1)", board.range(0, 2).percent === 67 && board.range(2, 4).percent === 100 && board.range(10, 20).percent === null);
+  board.add(0.5, true); board.add(1.0, true); board.add(1.5, false); board.add(2.5, null); board.add(3.0, true); board.add(3.5, undefined); board.add(NaN, true);
+  check("sayaç: null/undefined/NaN kaydedilmez; toplam 4 kare, 3 isabet = %75", board.all().total === 4 && board.all().hits === 3 && board.all().percent === 75);
+  check("aralık sorgusu [t0, t1)", board.range(0, 2).percent === 67 && board.range(2, 4).percent === 100 && board.range(10, 20).percent === null && board.range(0.4, 0.6).total === 1);
+  board.add(1.5, true);
+  check("aynı kareyi yeniden yazmak SONUCU değiştirir (geri sarıp tekrar söyleyince eski deneme silinir), sayı artmaz", board.all().total === 4 && board.range(0, 2).percent === 100);
   board.reset();
-  check("reset", board.all().total === 0);
+  check("reset", board.all().total === 0 && board.size === 0);
   const big = new Scoreboard();
-  for (let i = 0; i < 210000; i += 1) big.add(i * 0.02, i % 2 === 0);
-  check("çok uzun oturumda sayaç sınırlı kalır (bellek)", big.times.length < 210000 && big.times.length === big.hits.length);
+  for (let i = 0; i < 210000; i += 1) big.add(i * 0.0213, i % 2 === 0);
+  check("çok uzun oturumda sayaç sınırlı kalır (bellek)", big.size <= 200000 && big.size > 100000, String(big.size));
+  const dense = new Scoreboard();
+  for (let i = 0; i < 3000; i += 1) dense.add(i * 0.0213, i % 4 !== 0);
+  check("kısa aralık sorgusu hızlı ve doğru (3000 kareden 1 sn = ~47 kare, %75)", dense.range(10, 11).total >= 46 && dense.range(10, 11).total <= 48 && Math.abs(dense.range(10, 11).percent - 75) <= 3);
 }
 
 // --- bu dosyada mikrofon verisi / ağ / depolama yok

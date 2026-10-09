@@ -107,6 +107,11 @@ export class NoteTrack {
     }
     return out;
   }
+
+  /** [t0, t1] ile kesişen notalar (rulo penceresi). */
+  between(t0, t1) {
+    return this.near((t0 + t1) / 2, (t1 - t0) / 2);
+  }
 }
 
 /** Kullanıcı perdesini hedefe en yakın oktava kaydırır (hedef ± 6 yarım ses içine). */
@@ -139,37 +144,57 @@ export function judge(userMidi, track, t, { shift = 0, octave = true, tolCents =
   return { target: best.target, diffCents: clean(best.diffCents), hit: Math.abs(best.diffCents) <= tolCents, folded: best.folded };
 }
 
-/** İsabet sayacı: kare zamanı + sonuç; aralık sorgusu (satır başına yüzde için). Yalnız sayılar tutulur. */
+/**
+ * İsabet sayacı: kare başına BİR kayıt (kare = ~21 ms dilimi; aynı kare yeniden yazılırsa SON değer geçerli: geri sarıp yeniden
+ * söyleyince eski deneme silinir). Aralık sorgusu satır / nota başına yüzde içindir (kare sayısı kadar iş: ~100). Yalnız sayılar tutulur.
+ */
+export const SCORE_FRAME = 0.0213;
+export const SCORE_MAX_FRAMES = 200000;
+
 export class Scoreboard {
   constructor() {
-    this.times = [];
-    this.hits = [];
+    this.map = new Map();            // kare sırası -> 1 (isabet) | 0 (kaçırdı)
+  }
+
+  get size() {
+    return this.map.size;
   }
 
   reset() {
-    this.times.length = 0;
-    this.hits.length = 0;
+    this.map.clear();
   }
 
-  /** hit: true | false | null (null kaydedilmez). Zaman azalırsa (geri sarma) aralık sorgusu yine doğru çalışır. */
+  /** hit: true | false | null (null kaydedilmez). */
   add(t, hit) {
-    if (hit === null || hit === undefined) return;
-    this.times.push(t);
-    this.hits.push(hit ? 1 : 0);
-    if (this.times.length > 200000) {
-      this.times.splice(0, 50000);
-      this.hits.splice(0, 50000);
+    if (hit === null || hit === undefined || !Number.isFinite(t)) return;
+    this.map.set(Math.round(t / SCORE_FRAME), hit ? 1 : 0);
+    if (this.map.size > SCORE_MAX_FRAMES) {
+      let drop = 50000;
+      for (const key of this.map.keys()) {
+        if (drop-- <= 0) break;
+        this.map.delete(key);
+      }
     }
   }
 
   range(t0, t1) {
     let total = 0;
     let hits = 0;
-    for (let i = 0; i < this.times.length; i += 1) {
-      if (this.times[i] >= t0 && this.times[i] < t1) {
-        total += 1;
-        hits += this.hits[i];
+    if (Number.isFinite(t0) && Number.isFinite(t1)) {
+      const from = Math.ceil(t0 / SCORE_FRAME - 0.5);
+      const to = Math.ceil(t1 / SCORE_FRAME - 0.5);          // t1 hariç
+      if (to - from > this.map.size) {
+        for (const [key, value] of this.map) {
+          if (key >= from && key < to) { total += 1; hits += value; }
+        }
+      } else {
+        for (let key = from; key < to; key += 1) {
+          const value = this.map.get(key);
+          if (value !== undefined) { total += 1; hits += value; }
+        }
       }
+    } else {
+      for (const value of this.map.values()) { total += 1; hits += value; }
     }
     return { hits, total, percent: total ? Math.round((100 * hits) / total) : null };
   }

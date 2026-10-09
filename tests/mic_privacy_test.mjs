@@ -24,7 +24,8 @@ const FORBIDDEN = [
   ["ham örnek okuma (AnalyserNode / getChannelData)", /createAnalyser|getFloatTimeDomainData|getByteTimeDomainData|getChannelData|ScriptProcessor/],
 ];
 
-const micFiles = { "pitch.js": "../frontend/js/pitch.js", "pitch-processor.js": "../frontend/js/pitch-processor.js", "mic.js": "../frontend/js/mic.js", "melody.js": "../frontend/js/melody.js" };
+const micFiles = { "pitch.js": "../frontend/js/pitch.js", "pitch-processor.js": "../frontend/js/pitch-processor.js", "mic.js": "../frontend/js/mic.js", "melody.js": "../frontend/js/melody.js",
+  "voicegate.js": "../frontend/js/voicegate.js", "roll.js": "../frontend/js/roll.js" };
 const sources = Object.fromEntries(Object.entries(micFiles).map(([name, path]) => [name, strip(read(path))]));
 for (const [file, code] of Object.entries(sources)) {
   for (const [name, pattern] of FORBIDDEN) check(`${file}: ${name} YOK`, !pattern.test(code));
@@ -60,7 +61,12 @@ for (const [name, pattern] of FORBIDDEN.filter(([name]) => !["localStorage", "co
 check("antrenör bölümünde console / diag yok", !/console\.|\bdiag\./.test(region));
 const storageLines = region.split("\n").filter((line) => /localStorage/.test(line));
 check("localStorage yalnız antrenör TERCİHLERİ için (TRAINER_PREFS_KEY), başka anahtar yok", storageLines.length === 2 && storageLines.every((line) => /TRAINER_PREFS_KEY/.test(line)), storageLines.join(" | "));
-check("saklanan tek şey { octave, latencyMs }", /JSON\.stringify\(\{ octave: trainer\.octave, latencyMs: trainer\.latencyTouched \? trainer\.latencyMs : undefined \}\)/.test(region));
+check("saklanan tek şey { octave, latencyMs, sensitivity } (tercihler)", /JSON\.stringify\(\{ octave: trainer\.octave, latencyMs: trainer\.latencyTouched \? trainer\.latencyMs : undefined, sensitivity: trainer\.sensitivityTouched \? trainer\.sensitivity : undefined \}\)/.test(region));
+// --- ses süzgeci: eşik altı / süzgeçten geçmeyen ses perde, rulo ya da puan üretmez
+check("kare önce validHz(eşik) ile süzülür, sonra düzgünleştirici, sonra VoiceGate; judge yalnız kapı olayında", /smoother\.push\(validHz\(frame, trainer\.thresholdDb\)\)/.test(region) && /trainer\.gate\.push\(midi,/.test(region) && (region.match(/\bjudge\(/g) || []).length === 1 && /function handleGateEvent[\s\S]*?judge\(/.test(region));
+check("rulo izine yalnız kabul edilen perde girer (midi !== null koşulu)", /if \(midi !== null\) \{\s*const plotted[\s\S]*?trainer\.trail\.push/.test(region) && (region.match(/trail\.push\(/g) || []).length === 1);
+check("kalibrasyon yalnız seviye SAYILARI (rmsDb) toplar; ses örneği yok", /trainer\.calib\.values\.push\(frame\.rmsDb\)/.test(region));
+check("gürültü bastırma / yankı / otomatik kazanç KAPALI kalır (perdeyi bozar)", /noiseSuppression: \{ exact: false \}|noiseSuppression: false/.test(sources["mic.js"]) && !/noiseSuppression: (true|\{ exact: true)/.test(sources["mic.js"]));
 const apiCalls = [...new Set([...region.matchAll(/\bapi\.(\w+)/g)].map((m) => m[1]))].sort().join();
 check("ağ çağrıları yalnız getMelody / startMelody / getSong (mikrofon verisi taşıyan çağrı yok)", apiCalls === "getMelody,getSong,startMelody", apiCalls);
 check("mikrofon yalnız hazırlanan DAHİLİ aygıtla açılır (trainerMic.start(..., prepared.device))", /trainerMic\.start\(engine\.ctx, onTrainerFrame, prepared\.device\)/.test(region)
@@ -80,8 +86,8 @@ check("sunucu API istemcisinde mikrofon verisi gönderen yöntem yok (yalnız st
 
 // --- service worker kabuğu
 const sw = strip(read("../frontend/sw.js"));
-for (const file of ["pitch.js", "pitch-processor.js", "mic.js", "melody.js", "melodycache.js"]) check(`sw.js kabuğunda js/${file} var`, sw.includes(`./js/${file}`));
-check("SW sürümü >= 58", Number((sw.match(/const VERSION = "v(\d+)"/) || [])[1]) >= 58);
+for (const file of ["pitch.js", "pitch-processor.js", "mic.js", "melody.js", "melodycache.js", "voicegate.js", "roll.js"]) check(`sw.js kabuğunda js/${file} var`, sw.includes(`./js/${file}`));
+check("SW sürümü >= 59", Number((sw.match(/const VERSION = "v(\d+)"/) || [])[1]) >= 59);
 
 if (failed) {
   console.error(`\n${failed} test başarısız`);

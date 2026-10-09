@@ -217,10 +217,10 @@
       </div>
     </section>
 
-    <!-- şarkı söyleme antrenörü (Mikrofon paketi 9): GEÇİCİ görünüm (2. oturum); piyano rulosu 3. oturumda -->
+    <!-- şarkı söyleme antrenörü (Mikrofon paketi 9): piyano rulosu + sözler + isabet yüzdesi; ses süzgeci (kalibrasyon + hassasiyet) -->
     <section class="trainer" id="trainer" aria-label="Şarkı söyleme" hidden>
       <div class="trainer-head">
-        <strong>Şarkı söyleme (deneme)</strong>
+        <strong>Şarkı söyleme</strong>
         <button type="button" class="chip" id="trainer-close">Kapat</button>
       </div>
       <div class="trainer-line" id="trainer-melody">Hedef melodi: kontrol ediliyor…</div>
@@ -233,16 +233,33 @@
       </div>
       <div class="trainer-controls">
         <button type="button" class="chip chip-primary" id="trainer-mic">Mikrofonu aç</button>
+        <button type="button" class="chip" id="trainer-calibrate" disabled title="2 sn sessiz kal: ortam gürültü tabanı ölçülür (şarkı çalıyorsa kulaklıktan sızan müzik de tabana girer)">Kalibre et</button>
         <button type="button" class="chip" id="trainer-leak" disabled>Sızıntı testi</button>
       </div>
+      <div class="trainer-controls" role="group" aria-label="Karışım">
+        <button type="button" class="chip" id="tr-karaoke" aria-pressed="false">Karaoke (vokal kapalı)</button>
+        <button type="button" class="chip" id="tr-duck" aria-pressed="false">Vokali kıs</button>
+      </div>
       <div class="trainer-note" id="trainer-info"></div>
+      <div class="tr-roll-wrap" id="tr-roll-wrap">
+        <canvas class="tr-roll" id="tr-roll" aria-label="Piyano rulosu: hedef notalar ve senin perden"></canvas>
+      </div>
+      <div class="tr-lyrics" id="tr-lyrics" aria-live="off">
+        <div class="tr-prev"><span id="tr-prev-text"></span><b id="tr-prev-score"></b></div>
+        <div class="tr-cur"><span id="tr-cur-text">—</span><b id="tr-cur-score"></b></div>
+        <div class="tr-next" id="tr-next-text"></div>
+      </div>
       <div class="trainer-readout" id="trainer-readout" hidden>
         <div class="tr-row"><span class="tr-big" id="tr-note">—</span><span class="tr-dim" id="tr-hz"></span></div>
         <div class="tr-cents" aria-hidden="true"><i id="tr-cents-dot"></i></div>
         <div class="tr-row"><span id="tr-target">Hedef: —</span><span id="tr-diff" class="tr-diff"></span></div>
         <div class="tr-row"><span id="tr-score">İsabet: —</span></div>
-        <div class="tr-meter" aria-hidden="true"><i id="tr-level"></i></div>
+        <div class="tr-meter" aria-hidden="true"><i id="tr-level"></i><u id="tr-thr"></u></div>
+        <div class="tr-dim" id="tr-gate">Eşik: —</div>
       </div>
+      <label class="trainer-field">Hassasiyet <input type="range" id="tr-sens" min="0" max="100" step="1" value="50" aria-describedby="tr-sens-hint">
+        <span id="tr-sens-val">50</span></label>
+      <div class="tr-dim" id="tr-sens-hint">Ortam sesi tepki veriyorsa sola (eşik yükselir); sesin algılanmıyorsa sağa kaydır.</div>
       <label class="trainer-field">Gecikme <input type="range" id="tr-latency" min="-100" max="500" step="10" value="60">
         <span id="tr-latency-val">60 ms</span></label>
       <label class="trainer-field"><input type="checkbox" id="tr-octave" checked> Oktav farkı doğru sayılsın</label>
