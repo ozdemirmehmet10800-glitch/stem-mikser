@@ -215,6 +215,21 @@ export class Api {
     })).json();
   }
 
+  // Hedef melodi (Mikrofon paketi 9): ana vokalin perdesi (sunucuda pYIN). Dönen {state: "running" | "done" | "no_vocals", existing?, source?}.
+  // Durum `status.melody`'de (getSong). replace: yeniden üret (ana şarkı yeniden işlendiyse / alt parçalar sonradan ayrıldıysa).
+  async startMelody(id, { replace = false, source = "auto" } = {}) {
+    return (await this.#request(`/songs/${encodeURIComponent(id)}/melody`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ replace, source }),
+    })).json();
+  }
+
+  // melody.bin (ikili; biçim melody.js'te). Melodi yoksa ApiError(notfound). Mikrofon verisi sunucuya HİÇ gitmez: yalnız bu indirme var.
+  async getMelody(id) {
+    return (await this.#request(`/songs/${encodeURIComponent(id)}/melody`)).arrayBuffer();
+  }
+
   // Satır başlangıçlarını ELLE düzeltir (CPU, anında): set = [{i, t}], version = elimizdeki sürüm.
   // Dönen {version, changed: [{i, t, e}]}. Sıra bozulursa 400, başka yerden değişmişse 409.
   async setLyricTimes(id, { version, set }) {

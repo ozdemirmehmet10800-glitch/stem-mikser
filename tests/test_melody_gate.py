@@ -147,6 +147,15 @@ def main():
         except ValueError:
             check(f"bozuk dosya reddedilir: {name}", True)
 
+    # --- istemci ile ortak ornek dosya: sunucu kodlamasi tests/fixtures/melody_sample.bin ile BAYT BAYT ayni (node tests\melody_test.mjs okur)
+    fixture = (ROOT / "tests" / "fixtures" / "melody_sample.bin").read_bytes()
+    sample_frames = np.array([0, 0] + [6900] * 8 + [0] * 3 + [5700, 5710, 5690, 5700, 5705, 5695, 5700, 5700] + [0] + [6200, 6210] + [0] * 2
+                             + [7100] * 6 + [0] * 4, dtype=np.int16)
+    sample_header = {"v": 1, "method": "pyin", "source": "vocals", "sr": 22050, "hop": 512, "hop_s": 0.02321995, "frame": 2048,
+                     "n": int(len(sample_frames)), "unit": "midi_x100", "unvoiced": 0, "duration": 1.0, "synthetic": True}
+    check("istemci ornek dosyasi (fixtures/melody_sample.bin) sunucu kodlamasiyla birebir ayni",
+          app._melody_encode(sample_frames, sample_header) == fixture)
+
     # --- uctan uca is (gercek pYIN, sentetik ses)
     SONG, QUIET, LEADS, MISSING, PREV = "a" * 64, "b" * 64, "c" * 64, "d" * 64, "e" * 64
     audio = voice(4.0, 220.0, 330.0)

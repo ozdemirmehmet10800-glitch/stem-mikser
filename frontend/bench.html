@@ -35,7 +35,7 @@
 <body>
 
 <a class="back" href="./">&larr; uygulamaya dön</a>
-<br><a class="back" href="#mic-test">&darr; Mikrofon denemesi (0c)</a>
+<br><a class="back" href="#mic-test">&darr; Mikrofon denemesi (0c)</a> &nbsp; <a class="back" href="#pitch-bench">&darr; Perde algılama CPU (0d)</a>
 <h1>Esnetme ölçümü</h1>
 <p class="lede">
   Aşama 8'in ilk adımı: bu telefon 6 kanalı aynı anda gerçek zamanlı
@@ -72,6 +72,18 @@
 </div>
 
 <div id="message" class="message" hidden></div>
+
+<h2 id="pitch-bench" style="font-size:16px">0d. Mikrofon + perde algılama CPU ölçümü (Mikrofon paketi 9)</h2>
+<p class="lede">
+  Şarkı söyleme antrenörünün eklediği yük: en kötü ses grafiği (11 kanal, şerit + salon yankısı; tabana göre ölçülen artış önceki turda +0,078 idi,
+  eşik 0,10) üstüne <strong>perde algılama işlemcisi</strong> (mikrofon yerine sentetik ses; gerçek mikrofon KULLANILMAZ ve hiçbir ses kaydedilmez).
+  Altta algılayıcının saf JS maliyeti: 1 sn ses kaç ms sürüyor. Kabul: perde algılama toplam artışı en fazla ~0,02 ve (şerit + yankı + algılama) < 0,10.
+</p>
+<div class="controls"><button class="btn btn-primary" id="run-pitch">Mikrofon + perde algılama ölçümü</button></div>
+<table id="pitch-results">
+  <thead><tr><th>Durum</th><th class="num">Render (sn)</th><th class="num">Oran</th><th class="num">Tabana göre</th></tr></thead>
+  <tbody></tbody>
+</table>
 
 <h2 id="mic-test" style="font-size:16px">0c. Mikrofon denemesi (Mikrofon paketi, 0. adım: Bluetooth kulaklık fizibilitesi)</h2>
 <p class="lede">
@@ -211,6 +223,6 @@
 <pre id="env">…</pre>
 
 <!-- ?v=: service worker bench.js'i "önce cache" sunar; sorgu eki eski kopyanın yeni sayfayla karışmasını önler -->
-<script type="module" src="js/bench.js?v=mic1"></script>
+<script type="module" src="js/bench.js?v=pitch1"></script>
 </body>
 </html>

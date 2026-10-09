@@ -1308,6 +1308,30 @@ input[type="range"]::-moz-range-thumb {
 .lyric-sub { display: block; font-size: 0.8em; line-height: 1.3; font-weight: 400; color: var(--text-faint); opacity: 0.9; }
 .lyric-sub[hidden] { display: none; }
 
+
+/* ---------- şarkı söyleme antrenörü (geçici görünüm) ---------- */
+.trainer { margin: 8px 0; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); display: grid; gap: 8px; }
+.trainer[hidden], .trainer-note[hidden], .trainer-readout[hidden], #trainer-prepare[hidden] { display: none; }
+.trainer-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.trainer-line, .trainer-note { font-size: 13px; color: var(--text-dim); line-height: 1.4; }
+.trainer-note p { margin: 0 0 8px; }
+.trainer-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.trainer-readout { display: grid; gap: 6px; padding: 8px 0; }
+.tr-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.tr-big { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tr-dim { color: var(--text-faint); font-size: 13px; }
+.tr-diff { font-weight: 700; font-variant-numeric: tabular-nums; }
+.tr-diff.hit { color: var(--ok); }
+.tr-diff.miss { color: var(--warn); }
+.tr-cents { position: relative; height: 10px; background: var(--bg-2); border-radius: 5px; }
+.tr-cents::before { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 2px; background: var(--text-faint); }
+.tr-cents i { position: absolute; top: 50%; left: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: var(--text-faint); }
+.tr-cents i.on { background: var(--accent); }
+.tr-meter { height: 8px; background: var(--bg-2); border-radius: 4px; overflow: hidden; }
+.tr-meter i { display: block; height: 100%; width: 0; background: var(--ok); transition: width 60ms linear; }
+.trainer-field { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); }
+.trainer-field input[type="range"] { flex: 1; }
+
 /* ---------- akorlu söz sayfası (Kitaplık/Söz paketi 5) ---------- */
 .chords-note { display: block; margin-top: 4px; color: var(--text-faint); font-size: 12px; }
 .chords-note[hidden] { display: none; }

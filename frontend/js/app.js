@@ -50,6 +50,10 @@ import {
   PEAK_RATE, expectedBins, PeakJob, PeakSet, channelsOf, overviewHeights, laneHeights, encodePeaks, decodePeaks,
 } from "./peaks.js";
 import { PeaksCache } from "./peakscache.js";
+import { PitchSmoother, nearestNote, noteName, midiToHz } from "./pitch.js";
+import { decodeMelody, segmentNotes, NoteTrack, judge, Scoreboard } from "./melody.js";
+import { Mic, leakVerdict } from "./mic.js";
+import { MelodyCache } from "./melodycache.js";
 import { Timeline } from "./timeline.js";
 import {
   prepareChords, displayLabel, mapSheet, buildGrid, renderMain, renderGap, renderGrid, soundingAt,
@@ -726,6 +730,7 @@ function renderLibrary(songs) {
 // Açık şarkı silindiyse: çalmayı durdur, kütüphaneye dön.
 function closeCurrentSong() {
   currentSong = null;
+  trainerReset();
   resetPeaks();
   exportReset();
   refreshExportAvailability();
@@ -781,6 +786,7 @@ async function deleteSelected() {
     if (gone.length) {
       freed = await stemCache.removeSongs(gone);
       peaksCache.removeSongs(gone);       // dalga verisi de gitsin
+      melodyCache.removeSongs(gone);      // hedef melodi de gitsin
       dropMeta(gone);            // cihazdaki durum/akor kopyası da gitsin
       collection.removeSongs(gone);   // favori/etiket kayıtları ve liste öğeleri de HEMEN gitsin
       if (mixStorage()) removeMix(mixStorage(), gone);
@@ -1528,6 +1534,7 @@ async function openSong(song, opts = {}) {
   subStarting.clear();
   subBusy = false;
   mixer.groupSpecs.clear();
+  trainerReset();           // mikrofon kapanır, önceki şarkının hedef melodisi gider
   resetPeaks();             // önceki şarkının dalgası hemen gitsin
   resetLyrics();
   exportReset();
@@ -2067,7 +2074,7 @@ function setPlayIcon(playing) {
 // Tam ekran sözler açıkken ekran kilidi (Wake Lock) çalma bitse de tutulur; ekran kapanınca
 // (LyricsScreen.close) çalma da yoksa bırakılır.
 function releasePlaybackWake() {
-  if (!(lyricsScreen && lyricsScreen.isOpen)) wakeLock.release();
+  if (!(lyricsScreen && lyricsScreen.isOpen) && !trainerMicActive()) wakeLock.release();
 }
 
 function startLoop() {
@@ -3559,6 +3566,7 @@ function refreshLyricsUi() {
   show("lyrics-realign", view.canRealign);
   show("lyrics-fix", view.canFix);
   show("lyrics-full-open", Boolean(lyricsDoc));      // sözü olmayan şarkıda görünmez
+  refreshTrainerChip();
   refreshTranslateUi();
   for (const id of ["lyrics-extract", "lyrics-lang", "lyrics-paste", "lyrics-edit", "lyrics-realign", "lyrics-fix"]) {
     el(id).disabled = off;
@@ -5732,6 +5740,7 @@ on("clear-stems", "click", async () => {
   node.textContent = "Siliniyor…";
   await stemCache.clear();
   peaksCache.clear();
+  melodyCache.clear();
   await refreshStemCacheState();
 });
 
@@ -5799,6 +5808,402 @@ ${eventsText(diag)}`;
 });
 
 mixer = new Mixer(el("channels"), engine, scheduleMixSave, downloadStem);
+// ---------------------------------------------------------------- şarkı söyleme antrenörü (Mikrofon paketi 9, 2. oturum)
+// Mantık pitch.js (YIN), melody.js (hedef melodi + puanlama), mic.js (izin / aygıt / akış) içinde; burada yalnız bağlantı ve GEÇİCİ görünüm
+// (canlı nota, hedef nota, cent farkı, seviye; piyano rulosu 3. oturumda). KURALLAR:
+//  - Mikrofon HER ZAMAN Bluetooth olmayan dahili aygıttır (deviceId); varsayılan aygıt yalnız ilk İZİN adımında, kısaca ve açıklamayla açılır.
+//  - Mikrofon sesi hiçbir koşulda diske, loga ya da sunucuya gitmez: bu bölüm yalnız worklet'ten gelen SAYILARI ({t, hz, clarity, rmsDb}) görür.
+//    Burada saklanan tek şey kullanıcı tercihleri (oktav, gecikme); ses, perde ya da puan DEPOLANMAZ.
+// TRAINER-BAŞLANGIÇ
+const TRAINER_PREFS_KEY = "stem-mikser.trainer";
+const melodyCache = new MelodyCache();
+const trainerMic = new Mic();
+const trainer = {
+  songId: null, version: 0, notes: null, track: null, method: "", source: "",
+  smoother: new PitchSmoother(), board: new Scoreboard(),
+  latencyMs: 60, octave: true, latencyTouched: false,
+  collect: null, level: -120, lastPaint: 0, busy: false, pollTimer: 0, message: "", info: null,
+};
+(function readTrainerPrefs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(TRAINER_PREFS_KEY) || "{}");
+    if (typeof saved.octave === "boolean") trainer.octave = saved.octave;
+    if (Number.isFinite(saved.latencyMs)) {
+      trainer.latencyMs = Math.min(Math.max(Math.round(saved.latencyMs), -100), 500);
+      trainer.latencyTouched = true;
+    }
+  } catch { /* tercihler bu oturumda varsayılan kalır */ }
+}());
+
+function saveTrainerPrefs() {
+  try {
+    localStorage.setItem(TRAINER_PREFS_KEY, JSON.stringify({ octave: trainer.octave, latencyMs: trainer.latencyTouched ? trainer.latencyMs : undefined }));
+  } catch { /* tercih bu oturumda kalır */ }
+}
+
+function trainerSupported() {
+  return trainerMic.supported && typeof AudioWorkletNode !== "undefined";
+}
+
+function trainerMicActive() {
+  return trainerMic.active;
+}
+
+function melodyStatus() {
+  return currentSong && currentSong.status ? currentSong.status.melody : undefined;
+}
+
+// Ton kayması: bağımsız kipte kaydırıcı, "Plak gibi"de oranın TAM (kesirli) perdesi: kullanıcı duyduğu detune'lu müzikle söylüyor.
+function trainerShift() {
+  return vinylMode ? vinylPitch(currentRate()) : pitchSemis;
+}
+
+function trainerText(id, text) {
+  const node = el(id);
+  if (node && node.textContent !== text) node.textContent = text;
+}
+
+function refreshTrainerChip() {
+  const chip = el("trainer-open");
+  if (!chip) return;
+  const melody = melodyStatus();
+  const noVocals = Boolean(melody && melody.state === "no_vocals");
+  chip.hidden = !(trainerSupported() && currentSong);
+  chip.disabled = noVocals;
+  chip.title = noVocals ? "Bu şarkıda vokal yok" : "Şarkıyla birlikte söyle: canlı perden ve hedef melodi";
+}
+
+async function refreshTrainerUi() {
+  const panel = el("trainer");
+  if (!panel || panel.hidden) return;
+  const melody = melodyStatus();
+  const line = el("trainer-melody");
+  const prepare = el("trainer-prepare");
+  prepare.hidden = true;
+  if (!melody) {
+    line.textContent = "Hedef melodi: henüz hazırlanmadı.";
+    prepare.hidden = false;
+  } else if (melody.state === "running") {
+    line.textContent = "Hedef melodi hazırlanıyor… (bu ekranda kalabilirsin)";
+  } else if (melody.state === "no_vocals") {
+    line.textContent = "Bu şarkıda vokal yok: hedef melodi çıkarılamaz.";
+  } else if (melody.state === "error") {
+    line.textContent = `Hedef melodi hazırlanamadı (${melody.message || "hata"}).`;
+    prepare.hidden = false;
+  } else if (melody.state === "done") {
+    const stale = melody.parent_stems_version !== currentSong.status.stems_version;
+    const source = melody.source === "lead" ? "ana vokal" : "vokal stem'i";
+    line.textContent = trainer.notes
+      ? `Hedef melodi hazır: ${trainer.notes.length} nota · ${melody.method || trainer.method} · ${source}${stale ? " · şarkı sonradan yeniden işlendi (eski olabilir)" : ""}`
+      : "Hedef melodi indiriliyor…";
+    if (stale) {
+      prepare.hidden = false;
+      prepare.textContent = "Hedef melodiyi yenile";
+    }
+  }
+  const active = trainerMic.active;
+  trainerText("trainer-mic", active ? "Mikrofonu kapat" : "Mikrofonu aç");
+  el("trainer-leak").disabled = !active;
+  el("trainer-readout").hidden = !active;
+  const permission = await trainerMic.permissionState();
+  const permissionText = { granted: "verildi", prompt: "sorulacak", denied: "reddedildi (Chrome > site ayarları > mikrofon)" }[permission] || "bilinmiyor";
+  const mic = trainerMic.info;
+  const parts = [`Mikrofon izni: ${permissionText}`];
+  if (mic) {
+    parts.push(`açık: ${mic.label || "dahili"} · ${mic.sampleRate || "?"} Hz`);
+    parts.push(`yankı/gürültü/kazanç kapalı: ${mic.echoCancellation === false && mic.noiseSuppression === false && mic.autoGainControl === false ? "evet ✓" : "UYGULANMADI ✗"}`);
+  }
+  if (engine.ctx && Number.isFinite(engine.ctx.outputLatency)) {
+    parts.push(`çıkış gecikmesi ${Math.round(engine.ctx.outputLatency * 1000)} ms (şarkı konumuna zaten uygulanıyor; kaydırıcı = EK gecikme)`);
+  }
+  if (trainer.message) parts.push(trainer.message);
+  trainerText("trainer-info", parts.join(" · "));
+  el("tr-latency").value = String(trainer.latencyMs);
+  trainerText("tr-latency-val", `${trainer.latencyMs} ms`);
+  el("tr-octave").checked = trainer.octave;
+}
+
+async function loadTrainerMelody() {
+  const melody = melodyStatus();
+  if (!currentSong || !melody || melody.state !== "done") return;
+  const id = currentSong.id;
+  if (trainer.songId === id && trainer.version === melody.version && trainer.notes) return;
+  let buffer = await melodyCache.get(id, melody.version);
+  if (!buffer) {
+    try {
+      buffer = await api.getMelody(id);
+    } catch (error) {
+      trainer.message = isOffline() ? "Hedef melodi cihazda yok ve internet yok." : `Hedef melodi indirilemedi: ${describeError(error)}`;
+      refreshTrainerUi();
+      return;
+    }
+    melodyCache.put(id, melody.version, buffer.slice(0));
+  }
+  if (!currentSong || currentSong.id !== id) return;
+  const decoded = decodeMelody(buffer);
+  if (!decoded) {
+    trainer.message = "Hedef melodi dosyası bozuk; yeniden hazırlamayı dene.";
+    refreshTrainerUi();
+    return;
+  }
+  trainer.songId = id;
+  trainer.version = melody.version;
+  trainer.notes = segmentNotes(decoded);
+  trainer.track = new NoteTrack(trainer.notes);
+  trainer.method = decoded.method;
+  trainer.source = decoded.source;
+  trainer.message = "";
+  trainer.board.reset();
+  refreshTrainerUi();
+}
+
+async function prepareTrainerMelody() {
+  if (!currentSong || trainer.busy) return;
+  if (!requireOnline(el("player-message"), "Hedef melodiyi hazırlamak")) return;
+  const id = currentSong.id;
+  const stale = Boolean(melodyStatus() && melodyStatus().state === "done");
+  trainer.busy = true;
+  try {
+    await api.startMelody(id, { replace: stale || (melodyStatus() && melodyStatus().state === "error") });
+    adoptDetail(await api.getSong(id));
+  } catch (error) {
+    trainer.message = describeError(error);
+  } finally {
+    trainer.busy = false;
+  }
+  refreshTrainerUi();
+  pollTrainerMelody(id);
+}
+
+function pollTrainerMelody(id) {
+  clearInterval(trainer.pollTimer);
+  const started = Date.now();
+  trainer.pollTimer = setInterval(async () => {
+    if (!currentSong || currentSong.id !== id || Date.now() - started > 15 * 60 * 1000) {
+      clearInterval(trainer.pollTimer);
+      return;
+    }
+    const state = melodyStatus() && melodyStatus().state;
+    if (state !== "running") {
+      clearInterval(trainer.pollTimer);
+      await loadTrainerMelody();
+      refreshTrainerUi();
+      refreshTrainerChip();
+      return;
+    }
+    try {
+      adoptDetail(await api.getSong(id));
+    } catch { /* geçici ağ hatası: bir sonraki turda tekrar */ }
+  }, 3000);
+}
+
+function trainerPaint(midi, result) {
+  const now = performance.now();
+  if (now - trainer.lastPaint < 40) return;
+  trainer.lastPaint = now;
+  trainerText("tr-note", midi === null ? "—" : noteName(Math.round(midi)));
+  const dot = el("tr-cents-dot");
+  if (midi === null) {
+    trainerText("tr-hz", "");
+    dot.classList.remove("on");
+    dot.style.left = "50%";
+  } else {
+    const { cents } = nearestNote(midi);
+    trainerText("tr-hz", `${Math.round(midiToHz(midi))} Hz · ${cents >= 0 ? "+" : ""}${Math.round(cents)} cent`);
+    dot.classList.add("on");
+    dot.style.left = `${50 + Math.max(-50, Math.min(50, cents))}%`;
+  }
+  const diff = el("tr-diff");
+  if (!result || result.target === null) {
+    trainerText("tr-target", trainer.notes ? "Hedef: şu an nota yok" : "Hedef: melodi hazır değil");
+    trainerText("tr-diff", "");
+    diff.className = "tr-diff";
+  } else {
+    trainerText("tr-target", `Hedef: ${noteName(Math.round(result.target))}`);
+    if (result.diffCents === null) {
+      trainerText("tr-diff", "söyle!");
+      diff.className = "tr-diff miss";
+    } else {
+      const folded = result.folded ? " (oktav)" : "";
+      trainerText("tr-diff", `${result.diffCents >= 0 ? "+" : ""}${Math.round(result.diffCents)} cent${folded}`);
+      diff.className = `tr-diff ${result.hit ? "hit" : "miss"}`;
+    }
+  }
+  const total = trainer.board.all();
+  trainerText("tr-score", total.total ? `İsabet: %${total.percent} (${total.total} kare)` : "İsabet: —");
+  const fraction = Math.min(Math.max((trainer.level + 70) / 70, 0), 1);
+  el("tr-level").style.width = `${Math.round(fraction * 100)}%`;
+}
+
+// Worklet'ten gelen SAYILAR (t, hz, clarity, rmsDb). Ses örneği burada hiç yok.
+function onTrainerFrame(frame) {
+  if (trainerMic.ctx !== engine.ctx) {
+    stopTrainerMic("ses bağlamı değişti");
+    return;
+  }
+  trainer.level = frame.rmsDb;
+  if (trainer.collect) trainer.collect.push(frame.rmsDb);
+  const midi = trainer.smoother.push(frame.hz);
+  const lag = Math.max(engine.ctx.currentTime - frame.t, 0);
+  const rate = engine.playing ? engine.rate : 0;
+  const songTime = engine.visualTime - (lag + trainer.latencyMs / 1000) * rate;
+  const result = trainer.track ? judge(midi, trainer.track, songTime, { shift: trainerShift(), octave: trainer.octave }) : null;
+  if (engine.playing && result) trainer.board.add(songTime, result.hit);
+  trainerPaint(midi, result);
+}
+
+async function startTrainerMic() {
+  if (trainerMic.active || trainer.busy || !currentSong) return;
+  trainer.busy = true;
+  trainer.message = "";
+  try {
+    const prepared = await trainerMic.prepare();
+    if (prepared.status === "unsupported") {
+      trainer.message = "Bu tarayıcı mikrofonu / AudioWorklet'i desteklemiyor.";
+    } else if (prepared.status === "denied") {
+      trainer.message = "Mikrofon izni reddedilmiş. Chrome adres çubuğundaki kilit > İzinler > Mikrofon: İzin ver.";
+    } else if (prepared.status === "needs-permission") {
+      el("trainer-perm").hidden = false;            // önce AÇIKLAMA; izin adımı kullanıcının dokunuşuyla
+      return;
+    } else if (prepared.status === "no-internal") {
+      const list = prepared.candidates && prepared.candidates.length ? ` Görünen mikrofonlar: ${prepared.candidates.join(", ")}.` : "";
+      trainer.message = `Telefonun kendi mikrofonu bulunamadı; Bluetooth kulaklık mikrofonu müziği bozduğu için AÇILMADI.${list}`;
+    } else {
+      el("trainer-perm").hidden = true;
+      await engine.ensureContext();
+      const info = await trainerMic.start(engine.ctx, onTrainerFrame, prepared.device);
+      trainer.smoother.reset();
+      trainer.board.reset();
+      if (!trainer.latencyTouched) trainer.latencyMs = Math.min(Math.max(info.latencyMs === null ? 60 : info.latencyMs, -100), 500);
+      wakeLock.request();
+    }
+  } catch (error) {
+    const reason = error && error.message ? error.message : String(error);
+    trainer.message = reason === "mic-bluetooth" || reason === "mic-unexpected-device"
+      ? "Beklenmeyen (Bluetooth) mikrofon açıldı; hemen kapatıldı. Kulaklığı ayırıp yeniden bağlaman gerekebilir."
+      : `Mikrofon açılamadı (${reason}).`;
+  } finally {
+    trainer.busy = false;
+  }
+  refreshTrainerUi();
+}
+
+function stopTrainerMic(reason = "") {
+  trainer.collect = null;
+  if (trainerMic.active) trainerMic.stop();
+  trainer.smoother.reset();
+  if (reason) trainer.message = reason;
+  releasePlaybackWake();
+  refreshTrainerUi();
+}
+
+function trainerReset() {
+  stopTrainerMic();
+  clearInterval(trainer.pollTimer);
+  trainer.songId = null;
+  trainer.version = 0;
+  trainer.notes = null;
+  trainer.track = null;
+  trainer.board.reset();
+  trainer.message = "";
+  const panel = el("trainer");
+  if (panel) panel.hidden = true;
+}
+
+function openTrainer() {
+  el("trainer").hidden = false;
+  refreshTrainerUi();
+  loadTrainerMelody().then(() => refreshTrainerUi());
+  if (melodyStatus() && melodyStatus().state === "running") pollTrainerMelody(currentSong.id);
+}
+
+function closeTrainer() {
+  stopTrainerMic();
+  el("trainer").hidden = true;
+}
+
+const medianDb = (values) => {
+  if (!values.length) return -120;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+};
+
+// Sızıntı testi: kullanıcı SESSİZ kalır; müzik çalarken ve çalmazken mikrofon SEVİYESİ (dBFS sayıları) karşılaştırılır.
+async function trainerLeakTest() {
+  if (!trainerMic.active || trainer.busy) return;
+  trainer.busy = true;
+  el("trainer-leak").disabled = true;
+  const wasPlaying = engine.playing;
+  const measure = (ms) => new Promise((resolve) => {
+    trainer.collect = [];
+    setTimeout(() => {
+      const values = trainer.collect || [];
+      trainer.collect = null;
+      resolve(medianDb(values));
+    }, ms);
+  });
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  try {
+    trainer.message = "Sızıntı testi: sessiz kal…";
+    refreshTrainerUi();
+    let quiet;
+    let music;
+    if (wasPlaying) {
+      music = await measure(2000);
+      stopPlayback();
+      await wait(500);
+      quiet = await measure(1500);
+      await startPlayback();
+    } else {
+      quiet = await measure(1500);
+      await startPlayback();
+      await wait(600);
+      music = await measure(2000);
+      stopPlayback();
+    }
+    trainer.message = leakVerdict(quiet, music).text;
+  } catch (error) {
+    trainer.message = `Sızıntı testi yapılamadı (${error && error.message ? error.message : error}).`;
+  } finally {
+    trainer.collect = null;
+    trainer.busy = false;
+    refreshTrainerUi();
+  }
+}
+
+on("trainer-open", "click", openTrainer);
+on("trainer-close", "click", closeTrainer);
+on("trainer-prepare", "click", prepareTrainerMelody);
+on("trainer-mic", "click", () => (trainerMic.active ? stopTrainerMic() : startTrainerMic()));
+on("trainer-leak", "click", trainerLeakTest);
+on("trainer-perm-go", "click", async () => {
+  if (trainer.busy) return;
+  trainer.busy = true;
+  const result = await trainerMic.requestPermission();
+  trainer.busy = false;
+  el("trainer-perm").hidden = true;
+  if (!result.ok) {
+    trainer.message = result.error === "NotAllowedError" ? "Mikrofon izni verilmedi." : `İzin alınamadı (${result.error}).`;
+    refreshTrainerUi();
+    return;
+  }
+  startTrainerMic();                       // izin tamam: şimdi YALNIZ dahili mikrofon
+});
+on("tr-latency", "input", () => {
+  trainer.latencyMs = Number(el("tr-latency").value);
+  trainer.latencyTouched = true;
+  trainerText("tr-latency-val", `${trainer.latencyMs} ms`);
+  saveTrainerPrefs();
+});
+on("tr-octave", "change", () => {
+  trainer.octave = el("tr-octave").checked;
+  saveTrainerPrefs();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && trainerMic.active) stopTrainerMic("sayfa gizlendi: mikrofon kapatıldı");
+});
+// TRAINER-BİTİŞ
+
 // ---------------------------------------------------------------- dalga şeritleri (Söz ve görsel paketi 6)
 // Mantık peaks.js (tepe verisi, saf) ve timeline.js (zaman ekseni bileşeni) içinde; burada yalnız bağlantı. KURALLAR:
 //  - Tepe hesabı şarkı açılışını / liste geçişini UZATMAZ: açılış bittikten PEAK_START_DELAY_MS sonra, çözülmüş tamponlardan,

@@ -15,6 +15,7 @@ import { loadSettings, AUDIO_SAVE } from "./settings.js";
 import { MOBILE_SAMPLE_RATE, isMobile, nativeSampleRate } from "./engine.js";
 import { EQ_BANDS, impulseFor } from "./fx.js";
 import { PeakJob, expectedBins } from "./peaks.js";
+import { PitchTracker } from "./pitch.js";
 
 const el = (id) => document.getElementById(id);
 const CHANNEL_COUNTS = [1, 2, 3, 4, 6];
@@ -798,6 +799,112 @@ function showEnvironment() {
 }
 
 
+// ---------------------------------------------------------------- mikrofon + perde algılama CPU (Mikrofon paketi 9)
+// Sentetik ses; gerçek mikrofon YOK. Ses grafiğine perde işlemcisi (pitch-processor.js, uygulamadakiyle AYNI dosya) eklenir.
+
+async function renderPitchCase(seconds, rate, withPitch) {
+  const ctx = new OfflineAudioContext({ numberOfChannels: 2, length: Math.floor(seconds * rate), sampleRate: rate });
+  const master = ctx.createGain();
+  master.gain.value = 0.3;
+  master.connect(ctx.destination);
+  const sendBus = ctx.createGain();
+  const ir = impulseFor(1, 3, rate);                           // salon: en kötü yankı
+  const irBuffer = ctx.createBuffer(2, ir.left.length, rate);
+  irBuffer.copyToChannel(ir.left, 0);
+  irBuffer.copyToChannel(ir.right, 1);
+  const convolver = ctx.createConvolver();
+  convolver.normalize = false;
+  convolver.buffer = irBuffer;
+  sendBus.connect(convolver);
+  convolver.connect(master);
+  const signal = makeSignal(seconds, 2, rate);
+  for (let i = 0; i < 11; i += 1) {
+    const buffer = ctx.createBuffer(2, Math.floor(seconds * rate), rate);
+    for (let ch = 0; ch < 2; ch += 1) buffer.copyToChannel(signal[ch], ch);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    const gain = ctx.createGain();
+    gain.gain.value = 1 / 11;
+    source.connect(gain);
+    let last = gain;
+    for (const band of EQ_BANDS) {
+      const filter = ctx.createBiquadFilter();
+      filter.type = band.type;
+      filter.frequency.value = band.frequency;
+      if (band.q) filter.Q.value = band.q;
+      filter.gain.value = 3;
+      last.connect(filter);
+      last = filter;
+    }
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = (i % 5) / 2 - 1;
+    last.connect(panner);
+    panner.connect(master);
+    const send = ctx.createGain();
+    send.gain.value = 0.5;
+    panner.connect(send);
+    send.connect(sendBus);
+    source.start(0);
+  }
+  if (withPitch) {
+    await ctx.audioWorklet.addModule("js/pitch-processor.js");
+    const voice = ctx.createBuffer(1, Math.floor(seconds * rate), rate);
+    voice.copyToChannel(makeSignal(seconds, 1, rate)[0], 0);
+    const mic = ctx.createBufferSource();                      // mikrofon yerine sentetik ses
+    mic.buffer = voice;
+    const node = new AudioWorkletNode(ctx, "pitch-processor", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+    node.port.onmessage = () => {};                             // uygulamadaki gibi ~47 mesaj/sn alınır
+    const silent = ctx.createGain();
+    silent.gain.value = 0;
+    mic.connect(node);
+    node.connect(silent);
+    silent.connect(ctx.destination);
+    mic.start(0);
+  }
+  const started = performance.now();
+  const rendered = await ctx.startRendering();
+  const elapsed = (performance.now() - started) / 1000;
+  return { elapsed, peak: peakOf(rendered) };
+}
+
+async function runPitchBench() {
+  const picked = await resolveSampleRate();
+  const seconds = Math.min(Number(el("seconds").value) || 10, 20);
+  const body = el("pitch-results").querySelector("tbody");
+  body.innerHTML = "";
+  el("run-pitch").disabled = true;
+  say(`Mikrofon + perde algılama ölçülüyor (${picked.rate} Hz, ${seconds} sn, sentetik ses)… telefon başka iş yapmasın.`, "warn");
+  const addRow = (label, elapsed, ratio, base) => {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>${label}</td><td class="num">${elapsed === null ? "—" : elapsed.toFixed(2)}</td><td class="num">${ratio.toFixed(3)}</td>` +
+      `<td class="num">${base === null ? "taban" : `+${(ratio - base).toFixed(3)}`}</td>`;
+    body.append(row);
+    log(`perde: ${label}: oran ${ratio.toFixed(3)}${base === null ? "" : ` (taban ${base.toFixed(3)}, fark ${(ratio - base).toFixed(3)})`}`);
+  };
+  try {
+    await renderPitchCase(Math.min(seconds, 4), picked.rate, false);                 // ısınma
+    const base = await renderPitchCase(seconds, picked.rate, false);
+    const baseRatio = base.elapsed / seconds;
+    addRow("taban: en kötü grafik (11 kanal + şerit + salon yankısı)", base.elapsed, baseRatio, null);
+    await renderPitchCase(Math.min(seconds, 4), picked.rate, true);                  // ısınma (modül yükleme dahil)
+    const withPitch = await renderPitchCase(seconds, picked.rate, true);
+    addRow("+ perde algılama işlemcisi (1 mikrofon, ~47 analiz/sn)", withPitch.elapsed, withPitch.elapsed / seconds, baseRatio);
+    // saf JS: 1 sn ses kaç ms (ana iş parçacığında, 128'lik parçalarla; uygulamada bu iş ses iş parçacığında koşar)
+    const data = makeSignal(seconds, 1, picked.rate)[0];
+    const tracker = new PitchTracker(picked.rate);
+    const started = performance.now();
+    for (let i = 0; i < data.length; i += 128) tracker.push(data.subarray(i, Math.min(i + 128, data.length)));
+    const jsSeconds = (performance.now() - started) / 1000;
+    addRow("yalnız algılayıcı (saf JS, ana iş parçacığı)", jsSeconds, jsSeconds / seconds, null);
+    say("Ölçüm bitti. 'Tabana göre' sütunu perde algılamanın eklediği maliyet (oran birimi); toplam (şerit + yankı + algılama) < 0,10 olmalı.", "ok");
+  } catch (error) {
+    say(`Ölçüm hatası: ${error && error.message ? error.message : error}`, "error");
+    log(`perde ölçüm hatası: ${error && error.stack ? error.stack : error}`);
+  } finally {
+    el("run-pitch").disabled = false;
+  }
+}
+
 // ---------------------------------------------------------------- mikrofon denemesi (Mikrofon paketi, 0. adım)
 // AMAÇ: Bluetooth kulaklıkta mikrofon açılınca müzik bozuluyor mu (HFP/SCO'ya geçiş)? Antrenör kodu YOK.
 // GİZLİLİK: mikrofon örnekleri yalnız anlık seviye (RMS) için bir AnalyserNode'dan okunur; kaydedilmez, saklanmaz, gönderilmez,
@@ -1059,6 +1166,7 @@ el("test-tone").addEventListener("click", () => {
 el("run-offline").addEventListener("click", runOffline);
 el("run-fx").addEventListener("click", runFxBench);
 el("run-peaks").addEventListener("click", runPeaksBench);
+el("run-pitch").addEventListener("click", runPitchBench);
 el("run-single").addEventListener("click", runSingleNode);
 el("stop-single").addEventListener("click", stopSingleNode);
 el("run-realtime").addEventListener("click", runRealtime);
