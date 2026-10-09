@@ -1310,9 +1310,20 @@ input[type="range"]::-moz-range-thumb {
 
 
 /* ---------- şarkı söyleme antrenörü (geçici görünüm) ---------- */
-.trainer { margin: 8px 0; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); display: grid; gap: 8px; }
+/* Panel yüksek (rulo + sözler + kaydırıcılar): oynatıcı sütununda KALANA SIĞAR ve kendi içinde kaydırılır; yoksa alt çubuk (oynat / konum) ekran dışına itilirdi. */
+.trainer { margin: 8px 0; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); display: grid; gap: 8px;
+  flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; align-content: start; }
 .trainer[hidden], .trainer-note[hidden], .trainer-readout[hidden], #trainer-prepare[hidden], .tr-roll-wrap[hidden], .tr-lyrics[hidden] { display: none; }
-.trainer-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+/* Söyleme panelinde oynatıcı sütunu panele ayrılır: akor şeridi, söz bölümü, mikser ve döngü çubuğu geçici gizlenir (söz satırları, karışım
+   kısayolları ve oynat / duraklat panelin İÇİNDE; alt çubuk yerinde kalır). Panel kapanınca hepsi geri gelir. */
+#view-player.trainer-on .chordstrip, #view-player.trainer-on .lyrics, #view-player.trainer-on .mix-bar, #view-player.trainer-on .mix-notice,
+#view-player.trainer-on .channels, #view-player.trainer-on .loop-bar { display: none; }
+.trainer-head { display: flex; align-items: center; gap: 8px; position: sticky; top: -10px; z-index: 2; margin: -10px -12px 0; padding: 8px 12px; background: var(--panel); }
+.trainer-head strong { flex: 1; }
+.tr-state { font-size: 14px; font-weight: 600; padding: 8px 10px; border-radius: 8px; background: var(--bg-2); color: var(--text-dim); }
+.tr-state[hidden] { display: none; }
+.tr-state.measuring { background: rgba(251, 191, 36, 0.16); color: var(--warn); }
+.tr-state.ready { background: rgba(52, 211, 153, 0.16); color: var(--ok); }
 .trainer-line, .trainer-note { font-size: 13px; color: var(--text-dim); line-height: 1.4; }
 .trainer-note p { margin: 0 0 8px; }
 .trainer-controls { display: flex; flex-wrap: wrap; gap: 8px; }

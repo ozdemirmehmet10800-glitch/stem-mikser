@@ -87,7 +87,7 @@ check("sunucu API istemcisinde mikrofon verisi gönderen yöntem yok (yalnız st
 // --- service worker kabuğu
 const sw = strip(read("../frontend/sw.js"));
 for (const file of ["pitch.js", "pitch-processor.js", "mic.js", "melody.js", "melodycache.js", "voicegate.js", "roll.js"]) check(`sw.js kabuğunda js/${file} var`, sw.includes(`./js/${file}`));
-check("SW sürümü >= 59", Number((sw.match(/const VERSION = "v(\d+)"/) || [])[1]) >= 59);
+check("SW sürümü >= 60", Number((sw.match(/const VERSION = "v(\d+)"/) || [])[1]) >= 60);
 
 if (failed) {
   console.error(`\n${failed} test başarısız`);

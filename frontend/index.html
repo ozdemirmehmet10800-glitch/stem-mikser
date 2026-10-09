@@ -221,6 +221,7 @@
     <section class="trainer" id="trainer" aria-label="Şarkı söyleme" hidden>
       <div class="trainer-head">
         <strong>Şarkı söyleme</strong>
+        <button type="button" class="chip chip-primary" id="tr-play" aria-label="Oynat">▶ Çal</button>
         <button type="button" class="chip" id="trainer-close">Kapat</button>
       </div>
       <div class="trainer-line" id="trainer-melody">Hedef melodi: kontrol ediliyor…</div>
@@ -241,6 +242,7 @@
         <button type="button" class="chip" id="tr-duck" aria-pressed="false">Vokali kıs</button>
       </div>
       <div class="trainer-note" id="trainer-info"></div>
+      <div class="tr-state" id="tr-state" role="status" hidden></div>
       <div class="tr-roll-wrap" id="tr-roll-wrap">
         <canvas class="tr-roll" id="tr-roll" aria-label="Piyano rulosu: hedef notalar ve senin perden"></canvas>
       </div>

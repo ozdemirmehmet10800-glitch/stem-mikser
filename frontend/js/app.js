@@ -2071,6 +2071,7 @@ function setPlayIcon(playing) {
     : '<path d="M8 5v14l11-7z"/>';
   el("play").setAttribute("aria-label", playing ? "Duraklat" : "Oynat");
   if (lyricsScreen) lyricsScreen.setPlaying(playing);
+  paintTrainerPlay(playing);
 }
 
 // Tam ekran sözler açıkken ekran kilidi (Wake Lock) çalma bitse de tutulur; ekran kapanınca
@@ -5293,6 +5294,7 @@ async function startPlayback() {
   // kalsın, yoksa Chrome reddediyor ve kilit ekranı kontrolleri çıkmıyor.
   media.startKeeper();
   media.setPlaybackState(true);
+  watchTrainerPlayStart();
   await engine.play();
   metronome.resync();
   metronome.start();
@@ -5318,6 +5320,7 @@ async function togglePlayback() {
 }
 
 on("play", "click", togglePlayback);
+on("tr-play", "click", togglePlayback);
 
 on("reprocess", "click", async () => {
   if (!currentSong) return;
@@ -5920,6 +5923,7 @@ async function refreshTrainerUi() {
   el("trainer-readout").hidden = !active;
   el("tr-roll-wrap").hidden = !trainer.track;
   refreshTrainerMixChips();
+  paintTrainerPlay(engine.playing);
   const permission = await trainerMic.permissionState();
   const permissionText = { granted: "verildi", prompt: "sorulacak", denied: "reddedildi (Chrome > site ayarları > mikrofon)" }[permission] || "bilinmiyor";
   const mic = trainerMic.info;
@@ -6017,6 +6021,50 @@ function pollTrainerMelody(id) {
   }, 3000);
 }
 
+// Panel içi oynat / duraklat (söylerken aşağı kaydırmak gerekmesin) ve durum şeridi (ölçüm sürüyor / bitti).
+function paintTrainerPlay(playing) {
+  const button = el("tr-play");
+  if (!button) return;
+  trainerText("tr-play", playing ? "⏸ Duraklat" : "▶ Çal");
+  button.setAttribute("aria-label", playing ? "Duraklat" : "Oynat");
+  paintTrainerState();
+}
+
+function paintTrainerState() {
+  const box = el("tr-state");
+  if (!box) return;
+  let text = "";
+  let kind = "";
+  if (trainerMic.active) {
+    if (trainer.calib) {
+      const left = Math.max(0, Math.ceil((CALIBRATION_MS - (performance.now() - trainer.calib.started)) / 1000));
+      text = `Ortam ölçülüyor… ${left} sn sessiz kal`;
+      kind = "measuring";
+    } else if (trainer.floorDb === null) {
+      text = "Ölçüm yapılamadı: varsayılan eşik kullanılıyor (Kalibre et)";
+    } else if (engine.playing) {
+      text = "Ölçüm bitti ✓ · söyle!";
+      kind = "ready";
+    } else {
+      text = "Ölçüm bitti ✓ · şarkıyı başlat (▶ Çal) ve söyle";
+      kind = "ready";
+    }
+  }
+  box.hidden = !text;
+  trainerText("tr-state", text);
+  if (box.className !== `tr-state ${kind}`.trim()) box.className = `tr-state ${kind}`.trim();
+}
+
+// Çalma düğmesine basıldı ama 2,5 sn içinde başlamadıysa (mikrofon açıkken ses bağlamı askıda kalırsa) nedeni panelde söyle.
+function watchTrainerPlayStart() {
+  if (!trainerMicActive()) return;
+  setTimeout(() => {
+    if (engine.playing || !trainerMicActive()) return;
+    trainer.message = `Çalma başlamadı (ses bağlamı: ${engine.ctx ? engine.ctx.state : "yok"}). Mikrofonu kapatıp çalmayı başlat, sonra mikrofonu yeniden aç.`;
+    refreshTrainerUi();
+  }, 2500);
+}
+
 // Seviye çubuğu + eşik çizgisi (dBFS -70..0 -> %0..100) ve eşik yazısı.
 const levelFraction = (db) => Math.min(Math.max((db + 70) / 70, 0), 1);
 
@@ -6081,6 +6129,7 @@ function beginTrainerCalibration() {
   trainer.gate.reset();
   trainer.smoother.reset();
   trainer.message = engine.playing ? "Ortam ölçülüyor (müzik çalıyor: sızan müzik de tabana girer). Sessiz kal…" : "Ortam ölçülüyor. 2 sn sessiz kal…";
+  paintTrainerState();
   refreshTrainerUi();
 }
 
@@ -6094,6 +6143,7 @@ function finishTrainerCalibration() {
     trainer.message = `Ortam tabanı ${Math.round(floor)} dB ölçüldü; bunun üstündeki sesler sayılır.`;
   }
   setTrainerThreshold();
+  paintTrainerState();
   refreshTrainerUi();
 }
 
@@ -6122,6 +6172,7 @@ function onTrainerFrame(frame) {
   if (trainer.calib) {
     if (Number.isFinite(frame.rmsDb)) trainer.calib.values.push(frame.rmsDb);
     if (performance.now() - trainer.calib.started >= CALIBRATION_MS) finishTrainerCalibration();
+    else paintTrainerState();
     trainerPaint(null, null);
     return;
   }
@@ -6228,6 +6279,7 @@ function trainerDrawFrame(timestamp) {
   if (timestamp - trainer.lastText >= 100) {
     trainer.lastText = timestamp;
     trainerLyricsPaint(now);
+    paintTrainerState();
   }
 }
 
@@ -6339,10 +6391,12 @@ function trainerReset() {
   stopTrainerDraw();
   const panel = el("trainer");
   if (panel) panel.hidden = true;
+  el("view-player").classList.remove("trainer-on");
 }
 
 function openTrainer() {
   el("trainer").hidden = false;
+  el("view-player").classList.add("trainer-on");
   startTrainerDraw();
   refreshTrainerUi();
   loadTrainerMelody().then(() => refreshTrainerUi());
@@ -6353,6 +6407,7 @@ function closeTrainer() {
   stopTrainerMic();
   stopTrainerDraw();
   el("trainer").hidden = true;
+  el("view-player").classList.remove("trainer-on");
 }
 
 const medianDb = (values) => {
