@@ -264,8 +264,10 @@
           <label class="trainer-field">Hassasiyet <input type="range" id="tr-sens" min="0" max="100" step="1" value="50" aria-describedby="tr-sens-hint">
             <span id="tr-sens-val">50</span></label>
           <div class="tr-dim" id="tr-sens-hint">Ortam sesi tepki veriyorsa sola (eşik yükselir); sesin algılanmıyorsa sağa kaydır.</div>
-          <label class="trainer-field">Gecikme (toplam) <input type="range" id="tr-latency" min="-100" max="800" step="10" value="300" aria-describedby="tr-latency-hint">
+          <label class="trainer-field">Gecikme (toplam) <input type="range" id="tr-latency" min="-100" max="800" step="10" value="300" list="tr-latency-ticks" aria-describedby="tr-latency-hint">
             <span id="tr-latency-val">300 ms</span></label>
+          <datalist id="tr-latency-ticks"></datalist>
+          <div class="tr-dim" id="tr-auto-last" hidden><span id="tr-auto-last-text"></span> <button type="button" class="chip" id="tr-auto-restore">Buna dön</button></div>
           <div class="tr-dim" id="tr-latency-hint">Çizgin notaların SAĞINDA (geç) görünüyorsa SAĞA kaydır (çizgi sola kayar); SOLUNDA (erken) görünüyorsa SOLA. Ya da "Otomatik gecikme".</div>
           <div class="tr-dim" id="tr-latency-info"></div>
           <label class="trainer-field"><input type="checkbox" id="tr-octave" checked> Oktav farkı doğru sayılsın</label>

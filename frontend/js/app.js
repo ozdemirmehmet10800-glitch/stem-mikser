@@ -56,7 +56,7 @@ import { Mic, leakVerdict, isBluetoothLabel } from "./mic.js";
 import { MelodyCache } from "./melodycache.js";
 import { VoiceGate, validHz, calibrateFloor, thresholdDb, SENSITIVITY_DEFAULT } from "./voicegate.js";
 import {
-  songTimeAt, suggestTotalMs, LatencyMonitor, latencyVerdict, SampleRing, bestShift, PlayWatch, clampTotal, TOTAL_DEFAULT, MIN_SAMPLES,
+  songTimeAt, suggestTotalMs, LatencyMonitor, latencyVerdict, SampleRing, bestShift, decideAlign, PlayWatch, clampTotal, TOTAL_DEFAULT, MIN_SAMPLES,
 } from "./latency.js";
 import { drawRoll, targetRange, RangeEaser, Trail, ROLL_PAST, ROLL_FUTURE } from "./roll.js";
 import { Timeline } from "./timeline.js";
@@ -5856,6 +5856,7 @@ const trainer = {
   easer: new RangeEaser(), easerReady: false, rafId: 0, lastDraw: 0, lastText: 0, drawNow: 0, duckFrom: 1,
   latencyMs: TOTAL_DEFAULT, octave: true, latencyTouched: false,       // latencyMs = TOPLAM gecikme (çıkış + mikrofon + tepki), bkz. latency.js
   monitor: new LatencyMonitor(), samples: new SampleRing(), bluetooth: false, lastLatencyRead: 0,
+  alignHistory: [], lastAutoMs: null, lastAutoConfidence: "",
   sensitivity: SENSITIVITY_DEFAULT, sensitivityTouched: false, floorDb: null, thresholdDb: thresholdDb(null, SENSITIVITY_DEFAULT), calib: null,
   collect: null, level: -120, lastPaint: 0, busy: false, pollTimer: 0, message: "", info: null,
 };
@@ -5973,6 +5974,7 @@ async function refreshTrainerUi() {
   paintTrainerGate();
   el("trainer-align").disabled = !active || trainer.busy;
   paintLatencyInfo();
+  paintAutoMark();
   el("tr-latency").value = String(trainer.latencyMs);
   trainerText("tr-latency-val", `${trainer.latencyMs} ms`);
   el("tr-octave").checked = trainer.octave;
@@ -6130,18 +6132,54 @@ function trainerAutoAlign() {
   const found = bestShift(trainer.samples.items, trainer.track, {
     shift: trainerShift(), octave: trainer.octave, loop: engine.loop, duration: engine.duration, currentMs: trainer.latencyMs,
   });
-  if (!found.ok) {
-    trainer.message = found.reason === "few"
-      ? `Otomatik ayar için şarkıyla birlikte en az ~10 sn söyle (şu an ${trainer.samples.items.length} / ${MIN_SAMPLES} kare).`
-      : "Söylediğin perde hedef melodiyle eşleşmedi; şarkıyla birlikte söyleyip tekrar dene.";
-  } else {
-    trainer.latencyMs = found.totalMs;
+  const decision = decideAlign(found, { currentMs: trainer.latencyMs, history: trainer.alignHistory });
+  trainer.alignHistory = decision.history;
+  const current = trainer.latencyMs;
+  if (decision.apply) {
+    trainer.latencyMs = decision.totalMs;
     trainer.latencyTouched = true;
+    trainer.lastAutoMs = decision.totalMs;
+    trainer.lastAutoConfidence = decision.confidence;
     trainer.trail.clear();
     trainer.samples.clear();
     saveTrainerPrefs();
-    trainer.message = `Gecikme ${found.totalMs} ms (isabet ${found.currentHits} → ${found.hits} kare). Yeniden söyleyip kontrol et.`;
+    trainer.message = `Gecikme ${decision.totalMs} ms (güven: ${decision.confidence}; isabet ${found.currentHits} → ${found.hits} kare). Yeniden söyleyip kontrol et.`;
+  } else {
+    trainer.message = {
+      few: `Otomatik ayar için şarkıyla birlikte en az ~10 sn söyle (şu an ${trainer.samples.items.length} / ${MIN_SAMPLES} kare).`,
+      nomatch: "Söylediğin perde hedef melodiyle eşleşmedi; şarkıyla birlikte söyleyip tekrar dene.",
+      lowconf: `Emin olamadım (güven: düşük); mevcut değer korunuyor (${current} ms). Şarkıyla birlikte daha net söyleyip tekrar dene.`,
+      nogain: `Mevcut değer (${current} ms) zaten uygun; değişmedi.`,
+      jump: `Büyük değişiklik (${current} → ${decision.candidateMs} ms): bir kez daha ölç; tutarlıysa uygularım. Mevcut değer korunuyor.`,
+    }[decision.reason] || "Otomatik ayar yapılamadı; mevcut değer korunuyor.";
   }
+  refreshTrainerUi();
+}
+
+// Kaydırıcıda son başarılı otomatik değer işaretli (datalist çentiği) + "Buna dön".
+function paintAutoMark() {
+  const list = el("tr-latency-ticks");
+  const row = el("tr-auto-last");
+  if (!list || !row) return;
+  list.textContent = "";
+  if (trainer.lastAutoMs === null) {
+    row.hidden = true;
+    return;
+  }
+  const option = document.createElement("option");
+  option.value = String(trainer.lastAutoMs);
+  list.append(option);
+  row.hidden = false;
+  trainerText("tr-auto-last-text", `Son otomatik değer: ${trainer.lastAutoMs} ms (güven: ${trainer.lastAutoConfidence})${trainer.lastAutoMs === trainer.latencyMs ? " · şu an bu" : ""}`);
+  el("tr-auto-restore").hidden = trainer.lastAutoMs === trainer.latencyMs;
+}
+
+function restoreAutoLatency() {
+  if (trainer.lastAutoMs === null) return;
+  trainer.latencyMs = trainer.lastAutoMs;
+  trainer.latencyTouched = true;
+  trainer.trail.clear();
+  saveTrainerPrefs();
   refreshTrainerUi();
 }
 
@@ -6460,6 +6498,7 @@ async function startTrainerMic() {
 function stopTrainerMic(reason = "") {
   trainer.collect = null;
   trainer.calib = null;
+  trainer.alignHistory = [];
   trainerPlayWatch.cancel();
   if (trainerMic.active) trainerMic.stop();
   trainer.smoother.reset();
@@ -6481,6 +6520,8 @@ function trainerReset() {
   trainer.easerReady = false;
   trainer.floorDb = null;
   trainer.duckFrom = 1;
+  trainer.lastAutoMs = null;
+  trainer.alignHistory = [];
   setTrainerThreshold();
   trainer.message = "";
   stopTrainerDraw();
@@ -6561,6 +6602,7 @@ on("trainer-mic", "click", () => (trainerMic.active ? stopTrainerMic() : startTr
 on("trainer-leak", "click", trainerLeakTest);
 on("trainer-calibrate", "click", beginTrainerCalibration);
 on("trainer-align", "click", trainerAutoAlign);
+on("tr-auto-restore", "click", restoreAutoLatency);
 on("tr-karaoke", "click", trainerKaraoke);
 on("tr-duck", "click", trainerDuck);
 on("tr-sens", "input", () => {
@@ -6586,6 +6628,7 @@ on("trainer-perm-go", "click", async () => {
 on("tr-latency", "input", () => {
   trainer.latencyMs = Number(el("tr-latency").value);
   trainer.latencyTouched = true;
+  paintAutoMark();
   trainerText("tr-latency-val", `${trainer.latencyMs} ms`);
   saveTrainerPrefs();
 });

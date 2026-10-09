@@ -5,7 +5,7 @@
 
 import { readFileSync } from "node:fs";
 import {
-  songTimeAt, suggestTotalMs, LatencyMonitor, latencyVerdict, SampleRing, bestShift, PlayWatch, clampTotal,
+  songTimeAt, suggestTotalMs, LatencyMonitor, latencyVerdict, SampleRing, bestShift, decideAlign, PlayWatch, clampTotal,
   TOTAL_MIN, TOTAL_MAX, MIN_SAMPLES, SUSPICIOUS_MS, BLUETOOTH_GUESS_MS,
 } from "../frontend/js/latency.js";
 import { NoteTrack } from "../frontend/js/melody.js";
@@ -107,6 +107,88 @@ function singer({ totalTrueMs, from = 10, seconds = 14, noise = 0, octave = 0, r
   const none = bestShift(rubbish.items, track, { octave: false });
   check("hiç eşleşme yoksa reddeder (nomatch)", !none.ok && none.reason === "nomatch", JSON.stringify(none));
   check("melodi yoksa reddeder", !bestShift(singer({ totalTrueMs: 300 }).items, null).ok);
+}
+
+// --- sağlamlık (SW v63): kısmen yanlış söyleyen şarkıcı, tekrar eden melodi, ardışık basışlar
+function trackOf(pattern, { grid = 0.6, length = 0.45, count = 70 } = {}) {
+  const notes = [];
+  for (let i = 0; i < count; i += 1) notes.push({ t0: 1 + i * grid, t1: 1 + i * grid + length, midi: pattern[i % pattern.length], frames: 20 });
+  return new NoteTrack(notes);
+}
+function singerOn(tr, { truthMs, from, seconds = 14, wrong = 0, seed = 1 }) {
+  const ring = new SampleRing();
+  let state = seed * 7919 + 13;
+  const rand = () => { state = (state * 1103515245 + 12345) & 0x7fffffff; return state / 0x7fffffff; };
+  let wrongNote = false;
+  let lastNote = null;
+  for (let r = from; r < from + seconds; r += 0.0213) {
+    const near = tr.near(r - truthMs / 1000, 0);
+    if (!near.length) continue;
+    if (near[0] !== lastNote) { lastNote = near[0]; wrongNote = rand() < wrong; }     // nota başına: bu notayı tutturamadı
+    let midi = near[0].midi + (rand() - 0.5) * 0.3;
+    if (wrongNote) midi += (rand() < 0.5 ? -1 : 1) * (2 + Math.floor(rand() * 5));
+    ring.push(r, 1, midi);
+  }
+  return ring;
+}
+const MOTIF = [57, 62, 60, 65];                                     // 4 notalık tekrar eden motif (2,4 sn'de bir)
+function pressSequence(tr, { truthMs, wrong, startMs, presses = 8 }) {
+  let currentMs = startMs;
+  let history = [];
+  const applied = [];
+  const reasons = [];
+  for (let k = 0; k < presses; k += 1) {
+    const ring = singerOn(tr, { truthMs, from: 6 + k * 3.1, wrong, seed: k + 1 });
+    const found = bestShift(ring.items, tr, { currentMs });
+    const decision = decideAlign(found, { currentMs, history });
+    history = decision.history;
+    reasons.push(decision.reason);
+    if (decision.apply) { currentMs = decision.totalMs; applied.push(decision.totalMs); }
+  }
+  return { currentMs, applied, reasons };
+}
+{
+  const tr = trackOf(MOTIF);
+  const run = pressSequence(tr, { truthMs: 170, wrong: 0.35, startMs: 300 });
+  check("%35 yanlış nota + tekrar eden motif: 8 basışta UYGULANAN her değer gerçeğe ±60 ms yakın", run.applied.length > 0 && run.applied.every((v) => Math.abs(v - 170) <= 60), `${run.applied.join(",")} | ${run.reasons.join(",")}`);
+  check("...ve sonuç kararlı: son değer gerçeğe ±60 ms", Math.abs(run.currentMs - 170) <= 60, String(run.currentMs));
+  const hard = pressSequence(tr, { truthMs: 170, wrong: 0.6, startMs: 300 });
+  check("%60 yanlış nota: ya hiç uygulamaz ya da yalnız doğru yakınına (800 / alakasız değer YOK)", hard.applied.every((v) => Math.abs(v - 170) <= 80), `${hard.applied.join(",")} | ${hard.reasons.join(",")}`);
+  const awful = pressSequence(tr, { truthMs: 250, wrong: 0.85, startMs: 250 });
+  check("%85 yanlış: mevcut değer korunur ya da gerçeğe yakın kalır (sıçrama yok)", awful.applied.every((v) => Math.abs(v - 250) <= 80) && Math.abs(awful.currentMs - 250) <= 80, `${awful.applied.join(",")} | ${awful.reasons.join(",")} | ${awful.currentMs}`);
+  const far = pressSequence(tr, { truthMs: 700, wrong: 0.7, startMs: 250 });
+  check("gerçek 700 ms ama %70 yanlış: uç değer (>400) zayıf kanıtla KABUL EDİLMEZ", far.applied.every((v) => v <= 400 || Math.abs(v - 700) <= 60), `${far.applied.join(",")} | ${far.reasons.join(",")}`);
+}
+{
+  const tr = trackOf([60]);                                         // her nota aynı perde: 0,6 sn'de bir tekrar (eş tepeler)
+  const ring = singerOn(tr, { truthMs: 200, from: 8 });
+  const found = bestShift(ring.items, tr, { currentMs: 300 });
+  const decision = decideAlign(found, { currentMs: 300, history: [] });
+  check("tekrar eden (eş tepeli) melodi: güven DÜŞÜK, uygulanmaz, mevcut korunur", found.ok && found.confidence === "düşük" && !decision.apply && decision.reason === "lowconf", `${found.secondRatio} ${decision.reason}`);
+  const fast = trackOf([62, 62], { grid: 0.3, length: 0.2, count: 140 });
+  const f2 = bestShift(singerOn(fast, { truthMs: 150, from: 8 }).items, fast, { currentMs: 300 });
+  check("çok hızlı tekrar (0,3 sn): güven düşük", f2.ok && f2.confidence === "düşük" && !decideAlign(f2, { currentMs: 300 }).apply);
+}
+{
+  const tr = trackOf(MOTIF);
+  const good = bestShift(singerOn(tr, { truthMs: 170, from: 8 }).items, tr, { currentMs: 300 });
+  check("temiz şarkıcı: güven YÜKSEK, ikinci tepe belirgin düşük, isabet payı yüksek", good.ok && good.confidence === "yüksek" && good.secondRatio < 0.8 && good.hitShare > 0.8 && Math.abs(good.totalMs - 170) <= 30, `${good.secondRatio.toFixed(2)} ${good.hitShare.toFixed(2)} ${good.totalMs}`);
+  check("sonuç, mevcut değerle zaten uyumluysa (artış küçük) UYGULANMAZ ('nogain')", (() => { const d = decideAlign(bestShift(singerOn(tr, { truthMs: 170, from: 8 }).items, tr, { currentMs: 170 }), { currentMs: 170 }); return !d.apply && d.reason === "nogain"; })());
+}
+{
+  const f = (totalMs, gain = 0.5, confidence = "yüksek") => ({ ok: true, totalMs, confidence, gain });
+  check("karar: küçük değişim (170 -> 200) tek güvenilir ölçümle uygulanır", (() => { const d = decideAlign(f(200), { currentMs: 170, history: [] }); return d.apply && d.totalMs === 200; })());
+  const jump1 = decideAlign(f(520), { currentMs: 170, history: [] });
+  check("karar: büyük sıçrama (170 -> 520) tek ölçümle UYGULANMAZ, aday saklanır", !jump1.apply && jump1.reason === "jump" && jump1.history.length === 1);
+  const jump2 = decideAlign(f(530), { currentMs: 170, history: jump1.history });
+  check("karar: ikinci tutarlı ölçüm (±60 ms) sıçramayı onaylar; değer ortanca", jump2.apply && Math.abs(jump2.totalMs - 530) <= 10, JSON.stringify(jump2));
+  const mixed = decideAlign(f(520), { currentMs: 170, history: [200, 300] });
+  check("karar: tutarsız geçmiş (200, 300) büyük sıçramayı onaylamaz", !mixed.apply && mixed.reason === "jump");
+  check("karar: büyük sıçrama için artış < %20 ise doğrulanmış olsa da uygulanmaz", !decideAlign(f(520, 0.1), { currentMs: 170, history: [510] }).apply);
+  check("karar: düşük güven / küçük artış / eşleşmesiz uygulanmaz", !decideAlign(f(200, 0.5, "düşük"), { currentMs: 170 }).apply && decideAlign(f(200, 0.02), { currentMs: 170 }).reason === "nogain" && decideAlign({ ok: false, reason: "few" }, { currentMs: 170 }).reason === "few");
+  const median = decideAlign(f(180), { currentMs: 170, history: [160, 200] });
+  check("karar: uygulanan değer yakın adayların ortancası (160, 180, 200 -> 180)", median.apply && median.totalMs === 180 && median.history.length === 3, JSON.stringify(median));
+  check("geçmiş en çok 3 aday tutar", decideAlign(f(180), { currentMs: 170, history: [1, 2, 170] }).history.length === 3);
 }
 
 // --- örnek halkası
