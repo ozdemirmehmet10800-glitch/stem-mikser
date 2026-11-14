@@ -5088,6 +5088,9 @@ function renderListsScreen() {
 // Veri collection belgesinde (yedeğe dahil). Bağlantılara İSTEK ATILMAZ, hiçbir şey indirilmez: bağlantı yalnız kullanıcı dokununca açılır.
 
 let wishFilter = "pending";            // "pending" | "done" | "all" (yalnız bellekte)
+// Takeout binlerce kayıt getirebilir: hepsini birden çizmek telefonda ekranı saniyelerce dondurur. Sayfa sayfa çizilir.
+const WISH_PAGE = 150;
+let wishLimit = WISH_PAGE;
 
 function wishMessage(text, tone = "warn") {
   const node = el("wishes-message");
@@ -5138,6 +5141,7 @@ function renderWishFilters(counts) {
     chip.textContent = label;
     chip.addEventListener("click", () => {
       wishFilter = key;
+      wishLimit = WISH_PAGE;
       renderWishes();
     });
     box.append(chip);
@@ -5171,7 +5175,7 @@ function renderWishes() {
     return;
   }
   const map = librarySongMap();
-  for (const wish of shown) {
+  for (const wish of shown.slice(0, wishLimit)) {
     const row = document.createElement("li");
     row.className = `list-row wish-row${wish.done ? " done" : ""}`;
     row.dataset.id = wish.id;
@@ -5241,9 +5245,26 @@ function renderWishes() {
     row.append(doneButton, remove);
     box.append(row);
   }
+  if (shown.length > wishLimit) {
+    const more = document.createElement("li");
+    more.className = "wish-more";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn btn-small";
+    button.textContent = `Daha fazla göster (${shown.length - wishLimit} kaldı)`;
+    button.addEventListener("click", () => {
+      const scroll = box.scrollTop;
+      wishLimit += WISH_PAGE;
+      renderWishes();
+      box.scrollTop = scroll;
+    });
+    more.append(button);
+    box.append(more);
+  }
 }
 
 function openWishesScreen() {
+  wishLimit = WISH_PAGE;
   wishMessage("");
   el("wish-add").hidden = true;
   el("wish-add-open").setAttribute("aria-expanded", "false");

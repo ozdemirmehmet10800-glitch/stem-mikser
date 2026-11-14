@@ -181,3 +181,11 @@ check("wishlist.js / zipread.js: ağ isteği yok (fetch, XMLHttpRequest, sendBea
 
 if (failed) { console.error(`\n${failed} test başarısız`); process.exit(1); }
 console.log("\ntümü geçti");
+
+// arayüz: uzun liste sayfa sayfa çizilir (Takeout binlerce kayıt getirebilir)
+{
+  const app = readFileSync(new URL("../frontend/js/app.js", import.meta.url), "utf8");
+  const ok = /const WISH_PAGE = \d+;/.test(app) && /shown\.slice\(0, wishLimit\)/.test(app) && /Daha fazla göster/.test(app);
+  console.log(`${ok ? "ok  " : "FAIL"} Eklenecekler ekranı sayfalı çizilir (hepsi birden değil)`);
+  if (!ok) process.exit(1);
+}

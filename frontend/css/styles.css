@@ -1505,3 +1505,4 @@ button.cc.more {
 .list-row .list-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .list-row a.list-btn { text-decoration: none; }
 .list-row .wish-done[aria-pressed="true"] { background: var(--accent-dim); border-color: var(--accent); color: var(--text); }
+.wish-more { list-style: none; display: flex; justify-content: center; padding: 12px 0; }

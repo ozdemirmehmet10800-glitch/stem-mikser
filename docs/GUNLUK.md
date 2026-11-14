@@ -27,14 +27,22 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v69, son kod commit'i `a1ed891`. 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
+- **Son sürüm:** SW v70 (son kod commit'i GUNLUK'taki 6. kayıtta). 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
-- **Yapılmadı (Aşama 4'ten kalan):** bellek ve yavaş açılış ölçümü, antrenörde otomatik gecikmenin kararlılığı, kod sadeleştirme. Sözlü -> sözsüz geçiş hatasını
+- **Yapılmadı (Aşama 4'ten kalan):** bellek ve yavaş açılış ölçümü (telefon gerekir), kod sadeleştirme. Antrenörün otomatik gecikmesine baktım:
+  v63'te zaten güven ölçütü, makul aralık, sıçrama direnci ve ortanca eklenmiş, 62 testle korunuyor; telefondan yeni ölçüm olmadan değiştirmedim. Sözlü -> sözsüz geçiş hatasını
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 6. Eklenecekler: uzun liste sayfa sayfa
+
+- **Ne:** Takeout binlerce kayıt getirebilir; hepsini birden çizmek telefonda ekranı saniyelerce dondururdu. Artık 150'şer kayıt çiziliyor, altta "Daha fazla göster (N kaldı)".
+  Bilgisayarda 1200 kayıtla denendi: ekran 11 ms'de açılıyor, sonraki 150 kayıt 74 ms.
+- **SW:** v70.
+- **Telefonda kontrol:** Takeout içe aktardıktan sonra Eklenecekler hızlı açılmalı; listenin sonunda "Daha fazla göster" çıkmalı.
 
 ### 5. Yeni görünüm düzeltmeleri ve sözlü -> sözsüz geçiş (Aşama 4)
 
