@@ -18,16 +18,32 @@
 <meta name="apple-mobile-web-app-title" content="Stem Mikser">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 
+<!-- Görünüm tercihi boyamadan ÖNCE uygulanır (yeni/klasik; ?klasik=1 kurtarma yolu). Bkz. docs/TASARIM.md -->
+<script src="js/look.js"></script>
 <link rel="stylesheet" href="css/styles.css">
+<link rel="stylesheet" href="css/modern.css">
 </head>
 <body>
+
+<!-- Yeni görünümün simge seti (docs/TASARIM.md): 24x24, çizgi 2, yuvarlak uç, currentColor. Bu projede çizildi. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="i-library" viewBox="0 0 24 24"><path d="M4 6h10M4 12h10M4 18h6"/><path d="M18 16.5V8l3-1"/><circle cx="16.3" cy="17.2" r="1.8"/></symbol>
+  <symbol id="i-lists" viewBox="0 0 24 24"><path d="M4 7h12M4 12h8M4 17h8"/><path d="M16 13.5v6l5-3z"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h7M17 7h3M4 17h3M13 17h7"/><circle cx="14" cy="7" r="2.4"/><circle cx="10" cy="17" r="2.4"/></symbol>
+  <symbol id="i-note" viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="7" cy="18" r="2.2"/><circle cx="17" cy="16" r="2.2"/></symbol>
+  <symbol id="i-wish" viewBox="0 0 24 24"><path d="M7 4h10v16l-5-3.5L7 20z"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M16 16l4 4"/></symbol>
+</svg>
 
 <div id="app">
 
   <!-- ============ KİTAPLIK ============ -->
   <section class="view" id="view-library">
     <header class="topbar">
-      <h1>Şarkı</h1>
+      <h1>Kitaplık</h1>
       <button class="icon-btn" id="open-settings" title="Ayarlar" aria-label="Ayarlar">
         <svg viewBox="0 0 24 24"><path d="M12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5zm7.4-2.6l1.8-1.4-1.9-3.3-2.1.8a7.4 7.4 0 0 0-1.6-.9L15.2 6h-3.8l-.4 2.1a7.4 7.4 0 0 0-1.6.9l-2.1-.8-1.9 3.3 1.8 1.4a7.6 7.6 0 0 0 0 1.8l-1.8 1.4 1.9 3.3 2.1-.8c.5.4 1 .7 1.6.9l.4 2.1h3.8l.4-2.1c.6-.2 1.1-.5 1.6-.9l2.1.8 1.9-3.3-1.8-1.4a7.6 7.6 0 0 0 0-1.8z"/></svg>
       </button>
@@ -479,6 +495,12 @@
         <small id="stem-cache-state">Çevrimdışı kopyalar hesaplanıyor…</small>
       </div>
 
+      <div class="field look-field">
+        <span>Görünüm</span>
+        <label class="check"><span>Yeni görünüm</span><input type="checkbox" id="setting-look" role="switch"></label>
+        <small>Alt sekme çubuğu, küçük oynatıcı ve yeni renkler. Kapatırsan eski görünüm gelir; veriler (şarkılar, listeler, mikser ayarları) hiç değişmez. Sorun olursa adres çubuğuna <b>?klasik=1</b> ekleyerek eski görünüme dönebilirsin.</small>
+      </div>
+
       <div class="field">
         <span>Şarkı söyleme antrenörü (deneysel)</span>
         <label class="check"><input type="checkbox" id="setting-trainer"> Etkin (mikrofon kullanır; kapalıyken "Söyle" düğmesi görünmez)</label>
@@ -730,6 +752,28 @@
       <div class="spinner"></div>
       <div class="overlay-text" id="overlay-text">Yükleniyor…</div>
       <div class="overlay-bars" id="overlay-bars"></div>
+    </div>
+  </div>
+
+  <!-- alt gezinti (yalnız yeni görünümde): küçük oynatıcı + sekme çubuğu; mikser (oynatıcı) ekranında gizli -->
+  <div class="dock" id="dock" hidden>
+    <div class="dock-inner">
+      <div class="mini" id="mini" hidden>
+        <button type="button" class="mini-open" id="mini-open" aria-label="Mikseri aç">
+          <span class="mini-cover" id="mini-cover" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-note"/></svg></span>
+          <span class="mini-text"><span class="mini-title" id="mini-title">—</span><span class="mini-sub" id="mini-sub"></span></span>
+        </button>
+        <button type="button" class="mini-play" id="mini-play" aria-label="Oynat">
+          <svg class="i-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          <svg class="i-pause" viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>
+        </button>
+        <div class="mini-progress-line" aria-hidden="true"><i id="mini-progress"></i></div>
+      </div>
+      <nav class="tabbar" id="tabbar" aria-label="Ana gezinti">
+        <button type="button" class="tab" id="tab-library" data-tab="library" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-library"/></svg><span>Kitaplık</span></button>
+        <button type="button" class="tab" id="tab-lists" data-tab="lists"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-lists"/></svg><span>Listeler</span></button>
+        <button type="button" class="tab" id="tab-settings" data-tab="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-settings"/></svg><span>Ayarlar</span></button>
+      </nav>
     </div>
   </div>
 

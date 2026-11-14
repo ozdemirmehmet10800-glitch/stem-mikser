@@ -15,7 +15,10 @@ function check(name, ok, detail = "") {
 }
 
 const html = readFileSync(new URL("../frontend/index.html", import.meta.url), "utf8");
-const css = readFileSync(new URL("../frontend/css/styles.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+// Yeni görünümün kuralları (modern.css) da sayılır: `html.ui-new ` kapsam öneki atılır, geri kalan seçici aynı işlevi görür.
+const stripComments = (text) => text.replace(/\/\*[\s\S]*?\*\//g, "");
+const css = stripComments(readFileSync(new URL("../frontend/css/styles.css", import.meta.url), "utf8"))
+  + "\n" + stripComments(readFileSync(new URL("../frontend/css/modern.css", import.meta.url), "utf8")).replace(/html\.ui-new\s+/g, "");
 
 // --- CSS kuralları: [{selectors: [...], body}]
 const rules = [];

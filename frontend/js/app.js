@@ -81,6 +81,9 @@ import {
 import { Collection, safeStorage } from "./collection.js";
 import { filterSongs, isFiltering, separatorIndex } from "./songfilter.js";
 import {
+  tabForView, tabPlan, miniModel, keepPlayingOnLeave, needsMiniLoop, MINI_TICK_MS,
+} from "./shell.js";
+import {
   itemState, startIndex, anyPlayable, totalDuration, alreadyInList, nextPlayable, previousAction, indexOfItem, skipNote,
   positionLabel,
 } from "./playlist.js";
@@ -160,9 +163,124 @@ let stretchGen = 0;           // geciken ölçümün bayat sonucunu atmak için
 
 // ---------------------------------------------------------------- yardımcı
 
+let currentView = "library";
+
 function showView(name) {
   for (const [key, node] of Object.entries(views)) {
     node.hidden = key !== name;
+  }
+  currentView = name;
+  document.body.dataset.view = name;
+  syncDock();
+}
+
+// ---------------------------------------------------------------- yeni görünümün kabuğu (alt sekme çubuğu + küçük oynatıcı)
+// Saf mantık js/shell.js'te. Yeni görünüm kapalıyken (klasik) hiçbir şey çizilmez, zamanlayıcı kurulmaz.
+
+function isNewLook() {
+  return document.documentElement.classList.contains("ui-new");
+}
+
+function syncDock() {
+  const dock = document.getElementById("dock");
+  if (!dock) return;
+  const tab = tabForView(currentView);
+  dock.hidden = tab === null || !isNewLook();
+  for (const button of dock.querySelectorAll(".tab")) {
+    if (button.dataset.tab === tab) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  }
+  syncMini();
+  syncMiniLoop();
+}
+
+function syncMini() {
+  const mini = document.getElementById("mini");
+  if (!mini) return;
+  const model = miniModel({
+    song: isNewLook() ? currentSong : null,
+    loaded: engine.channels.size > 0,
+    playing: engine.playing,
+    view: currentView,
+    position: engine.visualTime,
+    duration: engine.duration,
+  });
+  mini.hidden = !model.visible;
+  document.body.classList.toggle("has-mini", model.visible);
+  if (!model.visible) return;
+  el("mini-title").textContent = model.title;
+  el("mini-sub").textContent = model.sub;
+  mini.classList.toggle("playing", model.playing);
+  el("mini-play").setAttribute("aria-label", model.playing ? "Duraklat" : "Oynat");
+  el("mini-progress").style.transform = `scaleX(${model.progress.toFixed(4)})`;
+}
+
+let miniTimer = 0;
+
+function syncMiniLoop() {
+  const need = needsMiniLoop({ newLook: isNewLook(), playing: engine.playing, view: currentView, hasSong: Boolean(currentSong) });
+  if (need && !miniTimer) {
+    miniTimer = setInterval(miniTick, MINI_TICK_MS);
+  } else if (!need && miniTimer) {
+    clearInterval(miniTimer);
+    miniTimer = 0;
+  }
+}
+
+// Mikser kapalıyken çalmaya devam eden şarkı: rAF döngüsü (oynatıcı arayüzü) çalışmıyor; ilerleme çizgisi, şarkı sonu ve kilit ekranı
+// konumu burada saniyede 2 kez yoklanıyor (ses motoruna ek yük yok).
+function miniTick() {
+  if (!engine.playing) {
+    syncMiniLoop();
+    return;
+  }
+  engine.checkEnded();
+  syncMini();
+  const time = engine.visualTime;
+  if (time - lastPositionSync > 1 || time < lastPositionSync) {
+    lastPositionSync = time;
+    media.updatePosition();
+  }
+}
+
+// Sekme geçişi: önce kök katmanlara kadar geri (history üzerinden, navstack ile eşleşsin), sonra hedef ekranı aç.
+// history.go(-n) TEK popstate üretir ve yığını bozar; bu yüzden geri'ler tek tek ve popstate beklenerek atılır.
+let tabBusy = false;
+
+function nextPopstate(timeoutMs = 700) {
+  return new Promise((resolve) => {
+    const done = () => {
+      window.removeEventListener("popstate", done);
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(done, timeoutMs);
+    window.addEventListener("popstate", done);
+  });
+}
+
+async function goTab(target) {
+  if (tabBusy || nav.blocked) return;
+  const plan = tabPlan(currentView, target, nav.layers);
+  if (!plan) return;
+  if (plan.same) {
+    if (target === "library") {
+      const list = el("song-list");
+      if (list) list.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    return;
+  }
+  tabBusy = true;
+  try {
+    for (let i = 0; i < plan.pops; i += 1) {
+      const wait = nextPopstate();
+      history.back();
+      await wait;
+    }
+    if (plan.open === "lists") openListsScreen();
+    else if (plan.open === "settings") el("open-settings").click();
+  } finally {
+    tabBusy = false;
   }
 }
 
@@ -486,7 +604,17 @@ const layerClosers = {
       if (isConfigured(settings)) refreshLibrary();
       return;
     }
-    stopPlayback();
+    // Yeni görünümde çalan şarkı KİTAPLIKTA SÜRER (küçük oynatıcı gösterir/durdurur); klasikte, liste modunda ve mikrofon açıkken
+    // eskisi gibi durur (kural: js/shell.js keepPlayingOnLeave). Oynatıcı arayüz döngüsü her durumda kapanır.
+    const keep = keepPlayingOnLeave({
+      newLook: isNewLook(), playing: engine.playing, hasSong: Boolean(currentSong), inPlaylist: Boolean(playlistCtx),
+      micActive: trainerMicActive(), trainerOpen: views.player.classList.contains("trainer-on"),
+    });
+    if (keep) {
+      releasePlaybackWake();      // ekran açık kalmasın; ses sürüyor
+    } else {
+      stopPlayback();
+    }
     stopLoop();
     // Oynatıcı bir listeden açıldıysa geri liste ekranına dönülür (liste bağlamı bellekte kalır).
     if (playlistCtx) {
@@ -1495,6 +1623,7 @@ async function openSong(song, opts = {}) {
     if (lyricsScreen && lyricsScreen.isOpen) lyricsScreen.setTitle(song.title || "");
     lastPositionSync = -1;
     startLoop();
+    if (engine.playing) wakeLock.request();   // küçük oynatıcıdan dönüş: çalma sürüyordu, ekran kilidi yeniden tutulsun
     refreshSubUi();
     ensureSubPolling();
     initLyrics();
@@ -1508,6 +1637,8 @@ async function openSong(song, opts = {}) {
     return true;
   }
 
+  // Küçük oynatıcıdan çalarken BAŞKA şarkı açılıyorsa eskisi önce durur (simge, sessiz öğe, metronom da kapansın).
+  if (engine.playing) stopPlayback();
   showView("player");
   pushLayer("view");
   el("player-title").textContent = song.title || song.id.slice(0, 12);
@@ -2088,6 +2219,8 @@ function setPlayIcon(playing) {
   el("play").setAttribute("aria-label", playing ? "Duraklat" : "Oynat");
   if (lyricsScreen) lyricsScreen.setPlaying(playing);
   safeHook("icon", playing);
+  syncMini();
+  syncMiniLoop();
 }
 
 // Tam ekran sözler açıkken ekran kilidi (Wake Lock) çalma bitse de tutulur; ekran kapanınca
@@ -4436,6 +4569,7 @@ async function refreshSwVersion() {
 }
 
 on("open-settings", "click", () => {
+  el("setting-look").checked = isNewLook();
   refreshSwVersion();
   refreshStemCacheState();
   refreshCollectionState();
@@ -5408,6 +5542,28 @@ async function togglePlayback() {
 
 on("play", "click", togglePlayback);
 on("tr-play", "click", togglePlayback);
+
+// Yeni görünümün alt gezintisi: sekmeler ve küçük oynatıcı (js/shell.js)
+for (const button of document.querySelectorAll("#tabbar .tab")) {
+  button.addEventListener("click", () => goTab(button.dataset.tab));
+}
+on("mini-play", "click", togglePlayback);
+on("mini-open", "click", () => {
+  if (!currentSong) return;
+  // Hızlı yol: aynı şarkı + sürüm + kalite kipi bellekteyse hiçbir şey indirilmez/çözülmez, çalma kesilmez.
+  const row = librarySongs.find((song) => song.id === currentSong.id);
+  openSong(row ? { ...currentSong, ...row } : currentSong);
+});
+
+// Ayarlar > Görünüm: yeni/klasik. Yalnız kendi anahtarını yazar (ayarlar JSON'una, koleksiyona dokunmaz).
+on("setting-look", "change", () => {
+  const look = globalThis.StemLook;
+  if (!look) return;
+  let store = null;
+  try { store = localStorage; } catch { /* depolama yok: tercih bu oturumda uygulanır, kaydedilmez */ }
+  look.set(el("setting-look").checked ? look.NEW : look.CLASSIC, store, document);
+  syncDock();
+});
 
 on("reprocess", "click", async () => {
   if (!currentSong) return;

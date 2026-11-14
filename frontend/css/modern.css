@@ -1,0 +1,373 @@
+/* Stem Mikser: "Yeni görünüm". Rehber: docs/TASARIM.md.
+   Bu dosya styles.css'in ÜSTÜNE biner ve HEPSİ `html.ui-new` kapsamındadır: sınıf kalkınca (Ayarlar > Görünüm ya da ?klasik=1)
+   uygulama eski görünümüne birebir döner. Hareket eden her şey YALNIZ transform + opacity. */
+
+/* ================= jetonlar ================= */
+
+html.ui-new {
+  --bg: #090b10;
+  --bg-2: #0e1118;
+  --panel: #141821;
+  --panel-2: #1b202b;
+  --panel-3: #242a37;
+  --line: rgba(255, 255, 255, 0.09);
+  --text: #f2f4f9;
+  --text-dim: #aab3c5;
+  --text-faint: #8991a6;
+  --accent: #52d9f2;
+  --accent-2: #9a7cff;
+  --accent-dim: #1f5f73;
+  --grad: linear-gradient(135deg, #46d3f0, #8f7bff);
+  --on-grad: #06121a;
+  --danger: #ff7b7b;
+  --warn: #ffc24d;
+  --ok: #43d9a0;
+  --radius: 16px;
+  --radius-sm: 12px;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dock-h: 64px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  color-scheme: dark;
+}
+html.ui-new body { background: var(--bg); }
+html.ui-new body.has-mini { --dock-h: 132px; }
+
+/* ================= ortak: düğme, giriş, çip ================= */
+
+html.ui-new .btn {
+  min-height: 48px; padding: 0 20px; border: 0; border-radius: 16px; background: var(--panel-2); color: var(--text);
+  font-weight: 600; transition: transform 0.12s var(--ease), background-color 0.12s var(--ease);
+  -webkit-tap-highlight-color: transparent;
+}
+html.ui-new .btn:hover { background: var(--panel-3); }
+html.ui-new .btn:active { transform: scale(0.97); }
+html.ui-new .btn-primary { background: var(--grad); color: var(--on-grad); font-weight: 700; }
+html.ui-new .btn-primary:hover { background: var(--grad); filter: none; }
+html.ui-new .btn-primary .plus { fill: var(--on-grad); }
+html.ui-new .btn-primary:disabled { background: var(--panel-2); color: var(--text-faint); }
+html.ui-new .btn-small { min-height: 44px; padding: 0 16px; font-size: 14px; font-weight: 600; }
+html.ui-new .btn-danger { background: rgba(255, 123, 123, 0.12); color: var(--danger); border: 0; }
+html.ui-new .btn-danger:not(:disabled):hover { background: rgba(255, 123, 123, 0.2); }
+html.ui-new .export-sheet .btn-primary { background: var(--grad); color: var(--on-grad); }
+html.ui-new .export-sheet .btn-primary:disabled { background: var(--panel); color: var(--text-faint); }
+
+html.ui-new .icon-btn { width: 44px; height: 44px; padding: 0; transition: transform 0.12s var(--ease), background-color 0.12s var(--ease); }
+html.ui-new .icon-btn:active { transform: scale(0.92); }
+html.ui-new .icon-btn:hover { background: var(--panel-2); }
+html.ui-new .export-sheet .icon-btn, html.ui-new .fx-head .icon-btn { width: 44px; height: 44px; }
+
+/* Çipler: görsel 36 px, dokunma alanı görünmez ::after ile 44 px */
+html.ui-new .chip, html.ui-new .lib-chip, html.ui-new .tag-chip, html.ui-new .topbar-link, html.ui-new .toggle,
+html.ui-new .tune-reset, html.ui-new .sub-arrow, html.ui-new .bg-actions .chip, html.ui-new .fx-rooms .chip { position: relative; }
+html.ui-new .chip::after, html.ui-new .lib-chip::after, html.ui-new .tag-chip::after, html.ui-new .topbar-link::after,
+html.ui-new .toggle::after, html.ui-new .tune-reset::after, html.ui-new .sub-arrow::after,
+html.ui-new .bg-actions .chip::after, html.ui-new .fx-rooms .chip::after {
+  content: ""; position: absolute; left: -2px; right: -2px; top: 50%; height: 44px; margin-top: -22px;
+}
+html.ui-new .mix-bar .chip, html.ui-new .loop-bar .chip, html.ui-new .sub-ctl .chip, html.ui-new .lyrics .chip {
+  min-height: 36px; border-radius: 999px; border: 0; background: var(--panel-2); color: var(--text); font-weight: 500;
+}
+html.ui-new .chip { transition: transform 0.12s var(--ease), background-color 0.12s var(--ease); }
+html.ui-new .chip:active { transform: scale(0.95); }
+html.ui-new .chip-primary, html.ui-new .loop-bar .chip[aria-pressed="true"], html.ui-new .lyrics-actions .chip[aria-pressed="true"],
+html.ui-new .trainer [aria-pressed="true"], html.ui-new .lyrics-actions .chip[aria-pressed="true"]#lyrics-tr-toggle,
+html.ui-new .lyrics-actions .chip[aria-pressed="true"]#lyrics-ro-toggle, html.ui-new .fx-rooms .chip[aria-pressed="true"],
+html.ui-new .lib-chip[aria-pressed="true"], html.ui-new .tag-chip[aria-pressed="true"], html.ui-new #list-edit[aria-pressed="true"] {
+  background: var(--accent-dim); box-shadow: inset 0 0 0 1px var(--accent); color: var(--text); border-color: transparent;
+}
+html.ui-new .lib-chip, html.ui-new .tag-chip, html.ui-new .topbar-link {
+  min-height: 36px; border: 0; background: var(--panel-2); border-radius: 999px; font-weight: 500;
+}
+html.ui-new .lyrics-follow, html.ui-new .lf-follow { background: var(--grad); color: var(--on-grad); border: 0; font-weight: 700; }
+
+html.ui-new input[type="text"], html.ui-new input[type="url"], html.ui-new input[type="password"], html.ui-new input[type="search"],
+html.ui-new .field input, html.ui-new .list-create input, html.ui-new .tag-add input, html.ui-new .tag-row input,
+html.ui-new .lyrics-editor textarea, html.ui-new .field select, html.ui-new .quality-pick select, html.ui-new .lyrics-lang {
+  background: var(--panel-2); border: 1px solid transparent; color: var(--text); border-radius: 12px;
+}
+html.ui-new .field input, html.ui-new .field select, html.ui-new .list-create input, html.ui-new .tag-add input { min-height: 48px; }
+html.ui-new input:focus-visible, html.ui-new select:focus-visible, html.ui-new textarea:focus-visible,
+html.ui-new button:focus-visible, html.ui-new [role="slider"]:focus-visible, html.ui-new [tabindex]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+html.ui-new .field input:focus, html.ui-new .library-search input:focus { border-color: var(--accent); outline: none; }
+
+/* Anahtar (role=switch): 52x32, açıkken gradyan */
+html.ui-new input[type="checkbox"][role="switch"] {
+  -webkit-appearance: none; appearance: none; flex: 0 0 52px; width: 52px; height: 32px; margin: 0; border-radius: 999px;
+  background: var(--panel-3); position: relative; cursor: pointer; transition: background-color 0.18s var(--ease);
+}
+html.ui-new input[type="checkbox"][role="switch"]::before {
+  content: ""; position: absolute; left: 4px; top: 4px; width: 24px; height: 24px; border-radius: 50%; background: #fff;
+  transition: transform 0.18s var(--ease);
+}
+html.ui-new input[type="checkbox"][role="switch"]:checked { background: var(--grad); }
+html.ui-new input[type="checkbox"][role="switch"]:checked::before { transform: translateX(20px); background: var(--on-grad); }
+html.ui-new input[type="checkbox"][role="switch"]:disabled { opacity: 0.5; }
+html.ui-new .tune-vinyl input[role="switch"] { width: 52px; height: 32px; margin: 0; }
+
+/* Aralık kaydırıcıları: kalın iz, yuvarlak topuz */
+html.ui-new input[type="range"] { height: 28px; }
+html.ui-new input[type="range"]::-webkit-slider-runnable-track { height: 4px; background: var(--panel-3); border-radius: 2px; }
+html.ui-new input[type="range"]::-moz-range-track { height: 4px; background: var(--panel-3); border-radius: 2px; }
+html.ui-new input[type="range"]::-webkit-slider-thumb { width: 20px; height: 20px; margin-top: -8px; background: #fff; box-shadow: 0 0 0 4px rgba(82, 217, 242, 0.18); }
+html.ui-new input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; background: #fff; box-shadow: 0 0 0 4px rgba(82, 217, 242, 0.18); }
+/* seek çubuğu kendi geometrisini kullanıyor (timeline.js): onun kuralları aşağıda ayrıca */
+
+/* ================= ekran geçişi ================= */
+
+@keyframes ui-view-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes ui-sheet-in { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
+@keyframes ui-pop-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: none; } }
+html.ui-new .view:not([hidden]) { animation: ui-view-in 0.2s var(--ease); }
+html.ui-new .export-box, html.ui-new .fx-box { animation: ui-sheet-in 0.22s var(--ease); }
+html.ui-new .tempo-panel:not([hidden]), html.ui-new .metro-panel:not([hidden]), html.ui-new .dl-menu:not([hidden]) { animation: ui-pop-in 0.16s var(--ease); }
+
+/* ================= üst çubuk ve kitaplık ================= */
+
+html.ui-new .view { padding: 0 16px; }
+html.ui-new .topbar { padding: 20px 0 12px; gap: 8px; min-height: 64px; }
+html.ui-new .topbar h1 { font-size: 30px; font-weight: 800; letter-spacing: -0.03em; }
+html.ui-new #open-settings, html.ui-new #open-lists { display: none; }   /* artık alttaki sekme çubuğundan */
+html.ui-new #lists-back, html.ui-new #close-settings { display: none; }   /* sekme çubuğu zaten dönüş yolu */
+
+html.ui-new .library-actions { gap: 8px; margin-bottom: 12px; align-items: stretch; }
+html.ui-new .library-actions .btn { flex: 1 1 auto; }
+html.ui-new .library-actions .btn:last-child { flex: 0 0 auto; }
+html.ui-new #upload-label { flex: 1 1 0; min-width: 0; }
+html.ui-new #refresh-list { flex: 0 0 auto; padding: 0 16px; }
+html.ui-new #view-library .quality-pick { flex: 0 0 auto; }
+html.ui-new #view-library .quality-pick > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+html.ui-new .quality-pick select { min-height: 48px; padding: 0 12px; font-weight: 600; }
+
+html.ui-new .library-search { margin-bottom: 10px; }
+html.ui-new .library-search input {
+  min-height: 48px; padding: 0 44px 0 18px; border-radius: 999px; background: var(--panel-2); border: 1px solid transparent;
+}
+html.ui-new .library-search input::placeholder { color: var(--text-faint); }
+html.ui-new .library-filters { margin-bottom: 10px; padding: 2px 0; }
+
+html.ui-new .select-bar { border: 0; border-radius: 16px; background: var(--panel-2); padding: 6px 8px; }
+html.ui-new .library-empty { border: 1px dashed var(--line); border-radius: 16px; }
+html.ui-new .message { border-radius: 14px; }
+
+/* şarkı satırları: kart yok, 56 px kapak, yumuşak basış */
+html.ui-new .song-list { padding: 0 0 12px; }
+html.ui-new .song-row { gap: 14px; padding: 8px 8px; margin-bottom: 2px; min-height: 72px; border-radius: 16px; transition: background-color 0.12s var(--ease); -webkit-tap-highlight-color: transparent; }
+html.ui-new .song-row:hover { background: var(--panel); }
+html.ui-new .song-row:active { background: var(--panel-2); }
+html.ui-new .song-row.after-favs { border-top: 1px solid var(--line); border-radius: 16px; margin-top: 10px; padding-top: 12px; }
+html.ui-new .song-thumb {
+  width: 56px; height: 56px; flex: 0 0 56px; border-radius: 12px; background: var(--panel-2); overflow: hidden; position: relative;
+}
+html.ui-new .song-thumb svg { width: 24px; height: 24px; fill: var(--text-faint); }
+html.ui-new .song-name { font-size: 16px; font-weight: 600; }
+html.ui-new .song-sub { font-size: 13px; color: var(--text-dim); margin-top: 3px; }
+html.ui-new .song-sub.busy { color: var(--accent); }
+html.ui-new .song-sub.error { color: var(--danger); }
+html.ui-new .song-tag { background: var(--panel-2); border: 0; color: var(--text-dim); }
+html.ui-new .mini-progress { height: 3px; background: var(--panel-3); }
+html.ui-new .mini-progress i { background: var(--grad); }
+html.ui-new .mini-progress.prefetch i { background: var(--text-faint); }
+html.ui-new .quality-tag { background: var(--panel-2); color: var(--text-dim); }
+html.ui-new .quality-tag.hifi { background: rgba(82, 217, 242, 0.14); color: var(--accent); }
+html.ui-new .song-star { color: var(--text-faint); }
+html.ui-new .song-star[aria-pressed="true"] { color: var(--warn); }
+html.ui-new .song-list.select-mode .song-check { border-color: var(--text-faint); background: transparent; }
+html.ui-new .song-list.select-mode .song-row.selected .song-check { background: var(--accent); border-color: var(--accent); }
+html.ui-new .song-list.select-mode .song-row.selected { background: var(--panel); }
+
+/* listeler */
+html.ui-new .list-row { border-bottom: 0; border-radius: 16px; padding: 12px 8px; min-height: 64px; margin-bottom: 2px; }
+html.ui-new .list-row:hover { background: var(--panel); }
+html.ui-new .list-row .list-btn, html.ui-new .list-bar-btn { background: var(--panel-2); border: 0; }
+html.ui-new .plist-choice { background: var(--panel-2); border: 0; border-radius: 14px; min-height: 48px; }
+html.ui-new .share-card { background: var(--panel); border: 0; border-radius: 20px; box-shadow: inset 0 0 0 1px rgba(82, 217, 242, 0.35); padding: 16px; }
+html.ui-new .share-title { color: var(--accent); }
+
+/* ================= ayarlar: gruplu kartlar ================= */
+
+html.ui-new .settings-form { max-width: 560px; gap: 12px; padding-bottom: calc(var(--dock-h) + var(--safe-b) + 16px); }
+html.ui-new .settings-form .field { background: var(--panel); border-radius: 20px; padding: 16px; gap: 8px; }
+html.ui-new .settings-form .field > span:first-child { font-size: 15px; font-weight: 700; color: var(--text); }
+html.ui-new .settings-form .field small { color: var(--text-dim); line-height: 1.45; }
+html.ui-new .settings-form .settings-buttons { flex-wrap: wrap; }
+html.ui-new .settings-form > .settings-buttons { background: transparent; }
+html.ui-new .check { min-height: 48px; font-size: 15px; justify-content: space-between; }
+html.ui-new .check input[type="checkbox"]:not([role="switch"]) { width: 22px; height: 22px; }
+html.ui-new .field.look-field .check { padding: 0; }
+
+/* ================= oynatıcı / mikser ================= */
+
+html.ui-new .player-topbar { padding: 12px 0 8px; min-height: 56px; }
+html.ui-new .player-title { font-size: 16px; font-weight: 700; }
+html.ui-new .chordstrip { border-radius: 16px; background: var(--bg-2); }
+html.ui-new .chordstrip-playhead { background: var(--grad); width: 3px; border-radius: 2px; }
+html.ui-new .chord-cell { background: var(--panel-2); border-radius: 8px; color: var(--text-dim); }
+html.ui-new .chord-cell.active { background: var(--grad); color: var(--on-grad); box-shadow: none; }
+
+html.ui-new .lyrics-list, html.ui-new .chord-grid { background: var(--bg-2); border-radius: 16px; }
+html.ui-new .lyric-line { color: var(--text-dim); font-weight: 500; }
+html.ui-new .lyric-line.active, html.ui-new .lyric-line.low.active { color: var(--text); font-weight: 800; }
+html.ui-new .lyric-line.pressing { background: rgba(82, 217, 242, 0.12); }
+html.ui-new .lyrics-editor textarea { border-radius: 14px; }
+html.ui-new .cc.now { background: var(--grad); color: var(--on-grad); box-shadow: none; }
+html.ui-new .grid-bar { background: var(--panel-2); }
+
+/* kanallar */
+html.ui-new .channel { padding: 8px 4px; }
+html.ui-new .channel-name { color: var(--text-dim); font-weight: 500; }
+html.ui-new .channel.audible .channel-name { color: var(--text); font-weight: 600; }
+html.ui-new .fader-track { height: 4px; margin-top: -2px; background: var(--panel-3); border-radius: 2px; }
+html.ui-new .fader-fill { background: #5b6579; border-radius: 2px; }
+html.ui-new .channel.audible .fader-fill { background: var(--grad); }
+html.ui-new .fader-knob { width: 20px; height: 20px; margin: -10px 0 0 -10px; background: #c9d0de; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5); }
+html.ui-new .channel.audible .fader-knob { background: #fff; }
+html.ui-new .fader:focus-visible .fader-knob { box-shadow: 0 0 0 4px rgba(82, 217, 242, 0.35); }
+html.ui-new .toggle { border: 0; background: var(--panel-2); color: var(--text-dim); border-radius: 12px; height: 36px; font-size: 12px; font-weight: 700; }
+html.ui-new .toggle:hover { background: var(--panel-3); }
+html.ui-new .toggle.on-solo { background: var(--accent); color: var(--on-grad); }
+html.ui-new .toggle.on-mute { background: var(--danger); color: #2b0b0b; }
+html.ui-new .channel .lane { background: var(--bg-2); border-radius: 8px; }
+html.ui-new .mix-notice button { color: var(--accent); }
+
+/* alt çubuk (mikser) */
+html.ui-new .transport { border-top: 1px solid var(--line); padding: 12px 0 calc(16px + var(--safe-b)); background: var(--bg); }
+html.ui-new .seek-wrap { background: var(--bg-2); border-radius: 12px; }
+html.ui-new .seek-wrap .seek::-webkit-slider-runnable-track { background: transparent; }
+html.ui-new .seek-wrap .seek::-moz-range-track { background: transparent; }
+html.ui-new .seek-wrap .seek::-webkit-slider-thumb { width: 13px; height: 40px; margin-top: 2px; border-radius: 0; box-shadow: none; background: linear-gradient(90deg, transparent 5px, #fff 5px, #fff 8px, transparent 8px); }
+html.ui-new .seek-wrap .seek::-moz-range-thumb { width: 13px; height: 40px; border-radius: 0; box-shadow: none; background: linear-gradient(90deg, transparent 5px, #fff 5px, #fff 8px, transparent 8px); }
+html.ui-new .tl-played { background: rgba(82, 217, 242, 0.16); }
+html.ui-new .loop-region { background: rgba(154, 124, 255, 0.4); }
+html.ui-new .time { color: var(--text-dim); }
+html.ui-new .play-btn { width: 64px; height: 64px; background: var(--grad); color: var(--on-grad); transition: transform 0.12s var(--ease); -webkit-tap-highlight-color: transparent; }
+html.ui-new .play-btn:active { transform: scale(0.94); }
+html.ui-new .play-btn:disabled { background: var(--panel-2); color: var(--text-faint); }
+html.ui-new .play-btn svg { width: 30px; height: 30px; }
+html.ui-new .metro-btn, html.ui-new .tempo-btn { width: 44px; height: 44px; border-radius: 14px; background: var(--panel-2); border: 0; color: var(--text); }
+html.ui-new .metro-btn[aria-pressed="true"], html.ui-new .tempo-btn[aria-pressed="true"] { background: var(--grad); color: var(--on-grad); }
+html.ui-new .tempo-btn.changed { color: var(--accent); }
+html.ui-new .tempo-btn[aria-pressed="true"].changed { color: var(--on-grad); }
+html.ui-new .tempo-panel, html.ui-new .metro-panel, html.ui-new .dl-menu { background: var(--panel-2); border: 0; border-radius: 20px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6); }
+html.ui-new .tune-step { background: var(--panel-3); border: 0; border-radius: 14px; }
+html.ui-new .tune-reset { color: var(--accent); }
+html.ui-new .metro-sub { background: var(--panel-3); border: 0; border-radius: 12px; }
+html.ui-new .metro-sub.on { background: var(--grad); color: var(--on-grad); }
+html.ui-new .dl-item:hover { background: var(--panel-3); }
+
+/* Dar ekranda alt çubuk TAŞMASIN: akış + sarma. "Başa sar" simge olur (metin erişilebilir adı olarak kalır); "Hi-Fi'a yükselt" görünürse alt satıra iner. */
+html.ui-new .transport-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+html.ui-new .transport-left { flex: 0 0 auto; order: 1; }
+html.ui-new .master { flex: 1 1 96px; min-width: 96px; max-width: none; order: 2; }
+html.ui-new .play-btn { order: 3; flex: 0 0 auto; }
+html.ui-new .transport-right { order: 4; flex: 0 0 auto; margin-left: auto; }
+html.ui-new .master-value { display: none; }
+html.ui-new #rewind { position: relative; width: 44px; padding: 0; font-size: 0; background: var(--panel-2); }
+html.ui-new #rewind::before {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; background: var(--text);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 6h2v12H6zm3.5 6 8.5 6V6z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 6h2v12H6zm3.5 6 8.5 6V6z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+html.ui-new #reprocess { flex: 0 0 auto; }
+
+/* ================= alt sayfalar (dışa aktar, etiketler, kanal ayarı) ================= */
+
+html.ui-new .export-backdrop { background: rgba(4, 5, 8, 0.72); }
+html.ui-new .export-box, html.ui-new .fx-box {
+  background: var(--panel-2); border: 0; border-radius: 24px 24px 0 0; box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.55);
+}
+html.ui-new .export-box::before, html.ui-new .fx-box::before {
+  content: ""; align-self: center; flex: 0 0 4px; width: 40px; height: 4px; border-radius: 2px; background: var(--panel-3); margin: -4px 0 2px;
+}
+html.ui-new .export-head h2, html.ui-new .fx-head h2 { font-size: 20px; font-weight: 800; }
+html.ui-new .export-summary { background: var(--panel); border: 0; border-radius: 14px; }
+html.ui-new .export-seg span { background: var(--panel); border: 0; border-radius: 14px; }
+html.ui-new .export-seg input:checked + span { background: var(--accent-dim); box-shadow: inset 0 0 0 1px var(--accent); }
+html.ui-new .export-bar { background: var(--panel); }
+html.ui-new .export-bar i { background: var(--grad); }
+html.ui-new .tag-row { background: var(--panel); border: 0; border-radius: 14px; }
+html.ui-new .fx-rooms .chip { background: var(--panel); border: 0; }
+html.ui-new .overlay { background: rgba(6, 8, 12, 0.88); }
+html.ui-new .spinner { border-color: var(--panel-3); border-top-color: var(--accent); }
+html.ui-new .overlay-bar .bar-track { background: var(--panel-3); }
+html.ui-new .overlay-bar .bar-track i { background: var(--grad); }
+
+/* tam ekran sözler */
+html.ui-new .lf-btn { background: rgba(255, 255, 255, 0.12); }
+html.ui-new .lf-play { background: var(--grad); color: var(--on-grad); border: 0; width: 64px; height: 64px; }
+html.ui-new .lf-line { font-weight: 800; letter-spacing: -0.01em; }
+html.ui-new .lf-panel { background: rgba(20, 24, 33, 0.97); border: 0; border-radius: 20px; }
+
+/* ================= alt gezinti: küçük oynatıcı + sekme çubuğu ================= */
+
+.dock { display: none; }
+html.ui-new .dock {
+  display: block; position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+  background: var(--bg); border-top: 1px solid var(--line); padding-bottom: var(--safe-b);
+}
+html.ui-new .dock[hidden] { display: none; }
+html.ui-new .dock-inner { max-width: 1100px; margin: 0 auto; }
+
+/* Dock sabit, içerik altında kalmasın: kaydırılan listelere alttan boşluk */
+html.ui-new #view-library, html.ui-new #view-lists, html.ui-new #view-list { padding-bottom: calc(var(--dock-h) + var(--safe-b)); }
+
+.mini[hidden] { display: none; }
+html.ui-new .mini[hidden] { display: none; }   /* html.ui-new .mini { display:flex } özgüllüğü [hidden]'ı ezerdi */
+html.ui-new .mini {
+  position: relative; display: flex; align-items: center; gap: 12px; height: 64px; margin: 8px 8px 0; padding: 0 8px 0 8px;
+  background: var(--panel-2); border-radius: 16px; overflow: hidden; animation: ui-pop-in 0.18s var(--ease);
+}
+html.ui-new .mini-open {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 12px; height: 100%; padding: 0; background: none; border: 0;
+  color: var(--text); font: inherit; text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+html.ui-new .mini-cover {
+  flex: 0 0 48px; width: 48px; height: 48px; border-radius: 10px; background: var(--panel-3); display: grid; place-items: center; overflow: hidden;
+}
+html.ui-new .mini-cover svg { width: 22px; height: 22px; fill: none; stroke: var(--text-dim); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+html.ui-new .mini-text { min-width: 0; flex: 1; }
+html.ui-new .mini-title { display: block; font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html.ui-new .mini-sub { display: block; font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+html.ui-new .mini-play {
+  flex: 0 0 48px; width: 48px; height: 48px; border-radius: 50%; border: 0; background: var(--grad); color: var(--on-grad);
+  display: grid; place-items: center; cursor: pointer; padding: 0; transition: transform 0.12s var(--ease); -webkit-tap-highlight-color: transparent;
+}
+html.ui-new .mini-play:active { transform: scale(0.92); }
+html.ui-new .mini-play svg { width: 24px; height: 24px; fill: currentColor; stroke: none; }
+html.ui-new .mini-play .i-pause { display: none; }
+html.ui-new .mini.playing .mini-play .i-play { display: none; }
+html.ui-new .mini.playing .mini-play .i-pause { display: block; }
+html.ui-new .mini-progress-line { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: rgba(255, 255, 255, 0.08); }
+html.ui-new .mini-progress-line i { display: block; height: 100%; width: 100%; background: var(--grad); transform-origin: 0 50%; transform: scaleX(0); will-change: transform; }
+
+html.ui-new .tabbar { display: flex; max-width: 1100px; margin: 0 auto; height: 64px; }
+html.ui-new .tab {
+  flex: 1 1 0; position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  min-height: 56px; background: none; border: 0; color: var(--text-faint); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  -webkit-tap-highlight-color: transparent; transition: color 0.15s var(--ease);
+}
+html.ui-new .tab svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.18s var(--ease); }
+html.ui-new .tab[aria-current="page"] { color: var(--accent); }
+html.ui-new .tab[aria-current="page"] svg { transform: translateY(-1px) scale(1.06); }
+html.ui-new .tab::before {
+  content: ""; position: absolute; top: 0; left: 50%; width: 28px; height: 3px; margin-left: -14px; border-radius: 0 0 3px 3px; background: var(--grad);
+  opacity: 0; transform: scaleX(0.4); transition: opacity 0.18s var(--ease), transform 0.18s var(--ease);
+}
+html.ui-new .tab[aria-current="page"]::before { opacity: 1; transform: none; }
+html.ui-new .tab:active svg { transform: scale(0.9); }
+
+/* Eklenecekler satırı (Listeler ekranı) ve istek satırları: js/wishlist arayüzü bu sınıfları kullanır */
+html.ui-new .list-row.wish-entry { background: var(--panel); }
+
+@media (min-width: 721px) {
+  html.ui-new .tabbar { max-width: 520px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.ui-new .view:not([hidden]), html.ui-new .export-box, html.ui-new .fx-box, html.ui-new .mini,
+  html.ui-new .tempo-panel:not([hidden]), html.ui-new .metro-panel:not([hidden]), html.ui-new .dl-menu:not([hidden]) { animation: none; }
+  html.ui-new .btn, html.ui-new .chip, html.ui-new .play-btn, html.ui-new .tab, html.ui-new .tab svg, html.ui-new .tab::before,
+  html.ui-new .mini-play, html.ui-new .song-row, html.ui-new input[type="checkbox"][role="switch"],
+  html.ui-new input[type="checkbox"][role="switch"]::before { transition: none; }
+}
