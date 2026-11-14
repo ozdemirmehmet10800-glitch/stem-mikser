@@ -371,3 +371,14 @@ html.ui-new .list-row.wish-entry { background: var(--panel); }
   html.ui-new .mini-play, html.ui-new .song-row, html.ui-new input[type="checkbox"][role="switch"],
   html.ui-new input[type="checkbox"][role="switch"]::before { transition: none; }
 }
+
+/* ================= kapaklar (Görsel yenileme 2) ================= */
+html.ui-new .song-thumb.auto-cover { font-size: 24px; }
+html.ui-new .player-cover { flex-basis: 40px; border-radius: 10px; margin: 0 2px; }
+html.ui-new .mini-cover.has-cover, html.ui-new .mini-cover.auto-cover { background-size: cover; background-position: center; background-repeat: no-repeat; }
+html.ui-new .mini-cover.auto-cover { color: rgba(255, 255, 255, 0.92); font-size: 20px; font-weight: 700; line-height: 1; }
+html.ui-new .mini-cover.has-cover { color: transparent; }
+html.ui-new .info-cover { border-radius: 20px; }
+html.ui-new .cover-fields input { background: var(--panel); border: 1px solid transparent; border-radius: 12px; min-height: 48px; }
+html.ui-new .cover-cand { background: var(--panel); border: 0; border-radius: 14px; }
+html.ui-new .info-text span { color: var(--text-dim); }

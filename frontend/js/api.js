@@ -182,6 +182,14 @@ export class Api {
     return (await this.#request(`/songs/${id}`)).json();
   }
 
+  // Dosyanın gömülü kapağı (Görsel yenileme 2): resim Blob'u, dosyada kapak yoksa null (sunucu 204). Salt okunur, GPU yok.
+  // Sunucu bu ucu bilmiyorsa (eski sürüm) ApiError(notfound) atar: çağıran bunu "kapak yok" saymamalı.
+  async getCover(id, signal = null) {
+    const response = await this.#request(`/songs/${encodeURIComponent(id)}/cover`, { signal });
+    if (response.status === 204) return null;
+    return response.blob();
+  }
+
   async stemBuffer(id, name, onProgress, signal = null) {
     return this.#fetchAudio(`/songs/${id}/stems/${name}.m4a`, onProgress, signal);
   }

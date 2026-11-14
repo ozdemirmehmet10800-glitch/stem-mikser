@@ -84,6 +84,11 @@ import {
   tabForView, tabPlan, miniModel, keepPlayingOnLeave, needsMiniLoop, MINI_TICK_MS,
 } from "./shell.js";
 import {
+  CoverManager, autoCoverModel, autoCoverCss, drawAutoCover, fitSize, COVER_PX, searchTerms, mbSearchUrl, parseCandidates,
+  caaFrontUrl, Throttle,
+} from "./cover.js";
+import { coverStore } from "./coverstore.js";
+import {
   itemState, startIndex, anyPlayable, totalDuration, alreadyInList, nextPlayable, previousAction, indexOfItem, skipNote,
   positionLabel,
 } from "./playlist.js";
@@ -209,6 +214,11 @@ function syncMini() {
   document.body.classList.toggle("has-mini", model.visible);
   if (!model.visible) return;
   el("mini-title").textContent = model.title;
+  const coverKey = `${currentSong.id}|${covers.urlFor(currentSong.id) || ""}`;
+  if (mini.dataset.cover !== coverKey) {
+    mini.dataset.cover = coverKey;
+    paintCover(el("mini-cover"), currentSong.id, model.title);
+  }
   el("mini-sub").textContent = model.sub;
   mini.classList.toggle("playing", model.playing);
   el("mini-play").setAttribute("aria-label", model.playing ? "Duraklat" : "Oynat");
@@ -322,8 +332,318 @@ function setOverlay(visible, text = "") {
   else nav.unblock("overlay");
   el("overlay").hidden = !visible;
   if (text) el("overlay-text").textContent = text;
-  if (!visible) el("overlay-bars").innerHTML = "";
+  if (!visible) {
+    el("overlay-bars").innerHTML = "";
+    covers.resume();          // şarkı açılırken duran kapak sorguları sürsün
+  }
 }
+
+// ---------------------------------------------------------------- kapaklar (Görsel yenileme 2; mantık js/cover.js)
+// Sıra: kullanıcının seçtiği / onayladığı resim > dosyanın gömülü kapağı > şarkı adından üretilen renkli kapak. Resimler YALNIZ bu
+// telefonda (IndexedDB); sunucuya yüklenmez. Gömülü kapak sunucudan salt okunur GET ile (GPU yok) ve şarkı başına bir kez istenir.
+
+/** Resmi COVER_PX'e küçültüp JPEG yapar (kayıt ve kilit ekranı için yeter). Çözülemezse atar. */
+async function shrinkImage(blob) {
+  const bitmap = await createImageBitmap(blob);
+  try {
+    const { w, h } = fitSize(bitmap.width, bitmap.height, COVER_PX);
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+    const out = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.86));
+    if (!out) throw new Error("resim kodlanamadı");
+    return out;
+  } finally {
+    if (bitmap.close) bitmap.close();
+  }
+}
+
+const covers = new CoverManager({
+  store: coverStore,
+  fetchEmbedded: async (id) => {
+    try {
+      const blob = await api.getCover(id);          // null: dosyada kapak yok (204)
+      if (!blob) return null;
+      return blob.size > 150000 ? await shrinkImage(blob).catch(() => blob) : blob;
+    } catch {
+      return undefined;                              // ağ hatası / eski sunucu (404): "kapak yok" DİYE KAYDEDİLMEZ
+    }
+  },
+  canFetch: () => isConfigured(settings) && !isOffline() && !document.hidden && el("overlay").hidden,
+  onChange: (ids) => repaintCovers(ids),
+});
+
+/** Kapağı bir düğüme çizer: resim varsa o, yoksa şarkı adından üretilen renkli kapak (senkron, bellekten). */
+function paintCover(node, id, title) {
+  if (!node) return;
+  const url = covers.urlFor(id);
+  if (url) {
+    node.classList.remove("auto-cover");
+    node.classList.add("has-cover");
+    node.style.backgroundImage = `url("${url}")`;
+    node.textContent = "";
+    return;
+  }
+  const model = autoCoverModel(title);
+  node.classList.remove("has-cover");
+  node.classList.add("auto-cover");
+  node.style.backgroundImage = autoCoverCss(model);
+  node.textContent = model.letter;
+}
+
+function songTitleOf(id) {
+  const row = librarySongs.find((song) => song.id === id);
+  if (row) return row.title || id.slice(0, 12);
+  return currentSong && currentSong.id === id ? (currentSong.title || id.slice(0, 12)) : id.slice(0, 12);
+}
+
+function kickCovers(songs) {
+  covers.load(songs.map((song) => song.id)).then(() => covers.want(songs)).catch(() => {});
+}
+
+function repaintCovers(ids) {
+  for (const id of ids) {
+    const title = songTitleOf(id);
+    for (const thumb of document.querySelectorAll(`.song-row[data-id="${CSS.escape(id)}"] .song-thumb`)) paintCover(thumb, id, title);
+  }
+  if (currentSong && ids.includes(currentSong.id)) {
+    syncCoverUi();
+    refreshArtwork();
+  }
+}
+
+/** Açık şarkının kapağı: oynatıcı başlığı, küçük oynatıcı, bilgi sayfası. */
+function syncCoverUi() {
+  if (!currentSong) return;
+  const title = currentSong.title || currentSong.id.slice(0, 12);
+  paintCover(el("player-cover"), currentSong.id, title);
+  if (!el("mini").hidden) paintCover(el("mini-cover"), currentSong.id, title);
+  if (!el("info-sheet").hidden) {
+    paintCover(el("info-cover"), currentSong.id, title);
+    refreshInfoSource();
+  }
+}
+
+// Kilit ekranı resmi: kapak resmi varsa o, yoksa otomatik kapak PNG'ye çizilir (şarkı adı başına bir kez).
+const autoArtwork = new Map();
+let artworkGen = 0;
+
+async function autoArtworkUrl(title) {
+  const key = String(title);
+  if (autoArtwork.has(key)) return autoArtwork.get(key);
+  const size = 512;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  drawAutoCover(ctx, size, autoCoverModel(title));
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  const url = blob ? URL.createObjectURL(blob) : null;
+  autoArtwork.set(key, url);
+  return url;
+}
+
+async function refreshArtwork() {
+  if (!currentSong || !media) return;
+  const gen = (artworkGen += 1);
+  const song = currentSong;
+  let src = covers.urlFor(song.id);
+  let size = COVER_PX;
+  if (!src) {
+    try { src = await autoArtworkUrl(song.title || song.id); } catch { src = null; }
+    size = 512;
+  }
+  if (!src || gen !== artworkGen || !currentSong || currentSong.id !== song.id) return;
+  media.setArtwork([{ src, sizes: `${size}x${size}` }]);
+}
+
+window.addEventListener("online", () => covers.resume());
+document.addEventListener("visibilitychange", () => { if (!document.hidden) covers.resume(); });
+
+// --- şarkı bilgisi ve kapak sayfası (oynatıcı başlığındaki kapağa dokununca)
+const mbThrottle = new Throttle();
+let coverSearchGen = 0;
+const COVER_SOURCE_TEXT = {
+  user: "Kapak: senin seçtiğin resim",
+  found: "Kapak: internetten bulundu (onayınla)",
+  embedded: "Kapak: dosyanın içinden",
+};
+
+function infoMessage(text, tone = "warn") {
+  if (!text) hideMessage(el("info-message"));
+  else showMessage(el("info-message"), text, tone);
+}
+
+function refreshInfoSource() {
+  if (!currentSong) return;
+  const source = covers.sourceOf(currentSong.id);
+  el("info-source").textContent = COVER_SOURCE_TEXT[source] || "Kapak: otomatik (şarkı adından)";
+  el("cover-reset").hidden = !(source === "user" || source === "found");
+}
+
+function renderInfoSheet() {
+  const song = currentSong;
+  const title = song.title || song.id.slice(0, 12);
+  el("info-name").textContent = title;
+  const status = song.status || {};
+  const bits = [];
+  const duration = Number(song.duration || status.duration || 0);
+  if (duration > 0) bits.push(formatTime(duration));
+  const badge = badgeOf({ ...song, ...status });
+  if (badge) bits.push(badge.text);
+  el("info-meta").textContent = bits.join(" · ");
+  refreshInfoSource();
+  paintCover(el("info-cover"), song.id, title);
+  const terms = searchTerms(title);
+  el("cover-q-title").value = terms.title;
+  el("cover-q-artist").value = terms.artist;
+  el("cover-find-box").hidden = true;
+  el("cover-find").setAttribute("aria-expanded", "false");
+  el("cover-results").innerHTML = "";
+  infoMessage("");
+}
+
+function openInfoSheet() {
+  if (!currentSong) return;
+  renderInfoSheet();
+  el("info-sheet").hidden = false;
+  pushLayer("info");
+}
+
+function closeInfoDom() {
+  el("info-sheet").hidden = true;
+  coverSearchGen += 1;          // süren arama sonucu artık çizilmesin
+}
+
+function renderCoverCandidates(candidates) {
+  const box = el("cover-results");
+  box.innerHTML = "";
+  if (!candidates.length) {
+    box.textContent = "Eşleşen kayıt bulunamadı. Adı ya da sanatçıyı değiştirip yeniden dene.";
+    return;
+  }
+  let alive = candidates.length;
+  for (const candidate of candidates) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "cover-cand";
+    const image = document.createElement("img");
+    image.alt = "";
+    image.loading = "lazy";
+    image.referrerPolicy = "no-referrer";       // sayfa adresi (kullanıcı bilgisi) hiçbir yere gitmesin
+    image.src = caaFrontUrl(candidate.releaseId, 250);
+    image.addEventListener("error", () => {      // bu sürümün kapak resmi yok
+      button.remove();
+      alive -= 1;
+      if (alive <= 0) box.textContent = "Bu kayıtlar için kapak resmi bulunamadı.";
+    });
+    const text = document.createElement("span");
+    text.className = "cover-cand-text";
+    const line1 = document.createElement("b");
+    line1.textContent = candidate.release || candidate.title;
+    const line2 = document.createElement("small");
+    line2.textContent = [candidate.artist, candidate.date].filter(Boolean).join(" · ");
+    text.append(line1, line2);
+    button.append(image, text);
+    button.addEventListener("click", () => applyCoverCandidate(candidate, button));
+    box.append(button);
+  }
+}
+
+async function applyCoverCandidate(candidate, button) {
+  if (!currentSong) return;
+  const songId = currentSong.id;
+  button.disabled = true;
+  infoMessage("Kapak indiriliyor…", "ok");
+  try {
+    const response = await fetch(caaFrontUrl(candidate.releaseId, 500), { referrerPolicy: "no-referrer", credentials: "omit" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const small = await shrinkImage(await response.blob());
+    await covers.setImage(songId, small, "found");
+    refreshInfoSource();
+    infoMessage("Kapak kaydedildi (yalnız bu telefonda).", "ok");
+  } catch {
+    button.disabled = false;
+    infoMessage("Kapak indirilemedi. Başka bir sonuç ya da sonra dene.");
+  }
+}
+
+async function searchCover() {
+  if (!currentSong) return;
+  if (isOffline()) {
+    infoMessage("İnternet yok.");
+    return;
+  }
+  const url = mbSearchUrl({ title: el("cover-q-title").value, artist: el("cover-q-artist").value });
+  if (!url) {
+    infoMessage("Şarkı adını yaz.");
+    return;
+  }
+  const gen = (coverSearchGen += 1);
+  const box = el("cover-results");
+  box.textContent = "Aranıyor…";
+  infoMessage("");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    await mbThrottle.wait();                    // MusicBrainz: saniyede en çok 1 istek
+    const response = await fetch(url, {
+      headers: { Accept: "application/json" }, referrerPolicy: "no-referrer", credentials: "omit", signal: controller.signal,
+    });
+    if (gen !== coverSearchGen) return;
+    if (response.status === 503 || response.status === 429) {
+      box.textContent = "";
+      infoMessage("MusicBrainz şu an meşgul. Biraz sonra yeniden dene.");
+      return;
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const candidates = parseCandidates(await response.json());
+    if (gen !== coverSearchGen) return;
+    renderCoverCandidates(candidates);
+  } catch {
+    if (gen !== coverSearchGen) return;
+    box.textContent = "";
+    infoMessage("Arama yapılamadı (internet ya da servis).");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+on("player-cover", "click", openInfoSheet);
+on("info-close", "click", () => requestBack("info"));
+on("info-backdrop", "click", () => requestBack("info"));
+on("cover-pick", "click", () => el("cover-file").click());
+on("cover-file", "change", async () => {
+  const input = el("cover-file");
+  const file = input.files && input.files[0];
+  input.value = "";
+  if (!file || !currentSong) return;
+  if (!file.type.startsWith("image/")) {
+    infoMessage("Bir resim dosyası seç.");
+    return;
+  }
+  try {
+    await covers.setImage(currentSong.id, await shrinkImage(file), "user");
+    refreshInfoSource();
+    infoMessage("Kapak kaydedildi (yalnız bu telefonda).", "ok");
+  } catch {
+    infoMessage("Resim okunamadı. Başka bir dosya dene.");
+  }
+});
+on("cover-reset", "click", async () => {
+  if (!currentSong) return;
+  await covers.clear(currentSong.id);
+  refreshInfoSource();
+  infoMessage("Kapak sıfırlandı.", "ok");
+});
+on("cover-find", "click", () => {
+  const box = el("cover-find-box");
+  box.hidden = !box.hidden;
+  el("cover-find").setAttribute("aria-expanded", String(!box.hidden));
+});
+on("cover-search", "click", searchCover);
 
 // ---------------------------------------------------------------- kitaplık
 
@@ -595,6 +915,7 @@ const layerClosers = {
     renderListsScreen();
   },
   fx: () => closeFxDom(),
+  info: () => closeInfoDom(),
   "lyrics-full": () => { if (lyricsScreen) lyricsScreen.close(); },
   select: closeSelectModeDom,
   view: () => {
@@ -684,6 +1005,7 @@ function handleBack() {
 function renderLibrary(songs) {
   const list = el("song-list");
   librarySongs = songs;
+  kickCovers(songs);
   // Silinen ya da listeden düşen kimlikler seçimde kalmasın.
   const present = new Set(songs.map((song) => song.id));
   for (const id of [...selectedIds]) {
@@ -749,7 +1071,8 @@ function renderLibrary(songs) {
     const busy = song.state !== "done" && song.state !== "error";
     const thumb = document.createElement("div");
     thumb.className = "song-thumb";
-    thumb.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 3v10.6A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>';
+    thumb.setAttribute("aria-hidden", "true");
+    paintCover(thumb, song.id, song.title || song.id);
 
     const info = document.createElement("div");
     info.className = "song-info";
@@ -921,6 +1244,7 @@ async function deleteSelected() {
       freed = await stemCache.removeSongs(gone);
       peaksCache.removeSongs(gone);       // dalga verisi de gitsin
       melodyCache.removeSongs(gone);      // hedef melodi de gitsin
+      covers.drop(gone).catch(() => {});  // kapak resmi de gitsin
       dropMeta(gone);            // cihazdaki durum/akor kopyası da gitsin
       collection.removeSongs(gone);   // favori/etiket kayıtları ve liste öğeleri de HEMEN gitsin
       if (mixStorage()) removeMix(mixStorage(), gone);
@@ -1809,6 +2133,8 @@ async function openSong(song, opts = {}) {
       title: song.title || song.id.slice(0, 12),
       artist: chords ? `${chords.key || ""} · ${Math.round(chords.bpm || 0)} BPM` : "",
     });
+    syncCoverUi();
+    refreshArtwork();
     // Standart -> "Hi-Fi'a yükselt", Hi-Fi v1 -> "v2'ye yükselt"; v2'de düğme yok.
     refreshMethodUi();
     if (el("reprocess")) el("reprocess").disabled = false;

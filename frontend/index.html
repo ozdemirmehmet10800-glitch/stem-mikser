@@ -177,6 +177,7 @@
       <button class="icon-btn" id="back-to-library" title="Listeye dön" aria-label="Listeye dön">
         <svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4-4.6-4.6z"/></svg>
       </button>
+      <button type="button" class="player-cover song-thumb" id="player-cover" aria-label="Şarkı bilgisi ve kapak" title="Şarkı bilgisi ve kapak"></button>
       <div class="player-title" id="player-title">—</div>
       <div class="player-meta" id="player-meta"></div>
     </header>
@@ -650,6 +651,43 @@
       <div class="tag-list" id="tag-list"></div>
       <div class="message" id="tag-message" hidden></div>
       <button type="button" class="btn btn-small" id="tag-mode">Etiketleri yönet</button>
+    </div>
+  </div>
+
+  <!-- şarkı bilgisi ve kapak (Görsel yenileme 2): resim seç, "Kapak bul" (yalnız dokununca; şarkı adı MusicBrainz'e gider) -->
+  <div class="export-sheet" id="info-sheet" hidden>
+    <div class="export-backdrop" id="info-backdrop"></div>
+    <div class="export-box" role="dialog" aria-modal="true" aria-labelledby="info-title">
+      <div class="export-head">
+        <h2 id="info-title">Şarkı bilgisi</h2>
+        <button type="button" class="icon-btn" id="info-close" aria-label="Kapat">
+          <svg viewBox="0 0 24 24"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
+        </button>
+      </div>
+      <div class="info-hero">
+        <div class="info-cover song-thumb" id="info-cover" aria-hidden="true"></div>
+        <div class="info-text">
+          <b id="info-name"></b>
+          <span id="info-meta"></span>
+          <span id="info-source"></span>
+        </div>
+      </div>
+      <div class="info-actions">
+        <button type="button" class="btn btn-small" id="cover-pick">Resim seç</button>
+        <button type="button" class="btn btn-small" id="cover-find" aria-expanded="false">Kapak bul</button>
+        <button type="button" class="btn btn-small" id="cover-reset" hidden>Kapağı sıfırla</button>
+      </div>
+      <input type="file" id="cover-file" accept="image/*" hidden>
+      <div class="cover-find" id="cover-find-box" hidden>
+        <p class="tag-sub">"Ara"ya basınca şarkı adı ve sanatçı, açık müzik veritabanı MusicBrainz'e gönderilir; kapaklar Cover Art Archive'dan gelir. Başka hiçbir bilgi gitmez. Seçtiğin kapak yalnız bu telefonda saklanır.</p>
+        <div class="cover-fields">
+          <input type="text" id="cover-q-title" placeholder="Şarkı adı" maxlength="120" autocomplete="off" spellcheck="false" aria-label="Aranacak şarkı adı">
+          <input type="text" id="cover-q-artist" placeholder="Sanatçı (isteğe bağlı)" maxlength="120" autocomplete="off" spellcheck="false" aria-label="Aranacak sanatçı">
+        </div>
+        <button type="button" class="btn btn-small btn-primary" id="cover-search">Ara</button>
+        <div class="cover-results" id="cover-results" aria-live="polite"></div>
+      </div>
+      <div class="message" id="info-message" hidden></div>
     </div>
   </div>
 

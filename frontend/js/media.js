@@ -49,6 +49,11 @@ function silentWavUrl(seconds = KEEPER_SECONDS) {
   return URL.createObjectURL(new Blob([silentWavBytes(seconds)], { type: "audio/wav" }));
 }
 
+const DEFAULT_ARTWORK = [
+  { src: "icons/icon-192.png", sizes: "192x192", type: "image/png" },
+  { src: "icons/icon-512.png", sizes: "512x512", type: "image/png" },
+];
+
 export class MediaBridge {
   constructor(engine, { onSeek } = {}) {
     this.engine = engine;
@@ -92,19 +97,24 @@ export class MediaBridge {
     if (this.keeper) this.keeper.pause();
   }
 
-  setMetadata({ title, artist, album }) {
+  // artwork verilmezse uygulama simgesi; kapak (Görsel yenileme 2) hazır olunca setArtwork ile değişir.
+  setMetadata({ title, artist, album, artwork }) {
     if (!this.supported || !window.MediaMetadata) return;
+    this.lastMeta = { title, artist, album };
     navigator.mediaSession.metadata = new window.MediaMetadata({
       title: title || "Stem Mikser",
       artist: artist || "",
       album: album || "Stem Mikser",
-      artwork: [
-        { src: "icons/icon-192.png", sizes: "192x192", type: "image/png" },
-        { src: "icons/icon-512.png", sizes: "512x512", type: "image/png" },
-      ],
+      artwork: artwork && artwork.length ? artwork : DEFAULT_ARTWORK,
     });
     // Her yeni şarkıda (otomatik geçiş dahil) önceki/sonraki kilit ekranında DOĞRU bağlı kalsın.
     this.#applyTrackActions();
+  }
+
+  /** Kilit ekranı resmini değiştirir (kapak sonradan geldiyse); başlık/sanatçı aynı kalır. */
+  setArtwork(artwork) {
+    if (!this.supported || !window.MediaMetadata || !this.lastMeta) return;
+    this.setMetadata({ ...this.lastMeta, artwork });
   }
 
   #set(action, handler) {

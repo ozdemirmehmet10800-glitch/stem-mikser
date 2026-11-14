@@ -561,6 +561,22 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"songs": songs})
             return
 
+        # Gomulu kapak taklidi: out/<kimlik>/cover.jpg (elle konan SENTETIK resim; out/ gitignore'lu) varsa onu, yoksa 204 ("kapak yok").
+        match = re.fullmatch(r"/songs/([^/]+)/cover", path)
+        if match:
+            if not self._authorized():
+                return
+            song = self._song(match.group(1))
+            if not song:
+                self._json(404, {"detail": "Sarki bulunamadi"})
+                return
+            cover = song["dir"] / "cover.jpg"
+            if cover.exists():
+                self._send(200, cover.read_bytes(), "image/jpeg")
+            else:
+                self._send(204)
+            return
+
         match = re.fullmatch(r"/songs/([^/]+)/translation", path)
         if match:
             if not self._authorized():
