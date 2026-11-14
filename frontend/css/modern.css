@@ -271,6 +271,25 @@ html.ui-new #rewind::before {
 }
 html.ui-new #reprocess { flex: 0 0 auto; }
 
+/* ================= mikser: dar ekranda kanallara yer aç ================= */
+/* "Hi-Fi'a yükselt" yeni görünümde bilgi satırının sağında (app.js placeReprocess) */
+html.ui-new .player-method-row { display: flex; align-items: center; gap: 8px; min-height: 0; }
+html.ui-new .player-method-row .player-method { flex: 1 1 auto; min-width: 0; padding: 0 0 6px; }
+html.ui-new .player-method-row #reprocess { flex: 0 0 auto; min-height: 32px; padding: 0 12px; font-size: 12px; border-radius: 999px; margin-bottom: 6px; position: relative; }
+html.ui-new .player-method-row #reprocess::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 44px; margin-top: -22px; }
+/* Çip satırları sarmak yerine yana kayar: döngü çubuğu ve söz düğmeleri tek satır */
+html.ui-new .loop-row { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding: 4px 0; }
+html.ui-new .loop-row::-webkit-scrollbar { display: none; }
+html.ui-new .loop-range { flex: 0 0 auto; white-space: nowrap; }
+html.ui-new .loop-bars { flex: 0 0 auto; margin-left: auto; }
+html.ui-new .lyrics-actions { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; scrollbar-width: none; padding: 4px 0; }
+html.ui-new .lyrics-actions::-webkit-scrollbar { display: none; }
+html.ui-new .lyrics-actions .chip, html.ui-new .lyrics-actions .lyrics-lang { flex: 0 0 auto; }
+@media (max-width: 720px) {
+  html.ui-new .chordstrip { height: 64px; margin-bottom: 10px; }
+  html.ui-new .chordstrip .bar { top: 10px; bottom: 10px; }
+}
+
 /* ================= alt sayfalar (dışa aktar, etiketler, kanal ayarı) ================= */
 
 html.ui-new .export-backdrop { background: rgba(4, 5, 8, 0.72); }
@@ -390,3 +409,34 @@ html.ui-new .wish-add input { background: var(--panel-2); border: 1px solid tran
 html.ui-new .list-row .wish-done[aria-pressed="true"] { background: var(--accent-dim); box-shadow: inset 0 0 0 1px var(--accent); }
 html.ui-new #view-wishes { padding-bottom: calc(var(--dock-h) + var(--safe-b)); }
 html.ui-new #wishes-back, html.ui-new #lists-back { margin-left: -4px; }
+
+/* ================= mikser: sözler açıkken de kanallar görünsün ================= */
+/* Söz listesi sabit yükseklik yerine ESNEK: kanallara en az ~2,5 satır kalır, söz listesi gerektiğinde kısalır (alt çubuk ekran dışına itilmez). */
+html.ui-new .lyrics { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; }
+html.ui-new .lyrics[hidden] { display: none; }
+html.ui-new .lyrics-head { flex: 0 0 auto; }
+html.ui-new .lyrics-body { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; }
+html.ui-new .lyrics-body[hidden] { display: none; }
+html.ui-new .lyrics-list, html.ui-new .chord-grid { height: auto; max-height: clamp(8rem, 26vh, 15rem); min-height: 4.5rem; flex: 0 1 auto; }
+html.ui-new .chord-grid[hidden] { display: none; }
+html.ui-new .channels { flex: 1 1 132px; min-height: 88px; }   /* taban 132: yer daralınca söz listesiyle PAYLAŞARAK kısalır, en az ~2 kanal */
+html.ui-new #view-player.trainer-on .channels { min-height: 0; }
+html.ui-new .master input { min-width: 0; width: 100%; }
+/* Yalnız söz listesi ve kanallar esner; diğer oynatıcı parçaları ezilmez (akor şeridi 49 px'e sıkışıyordu). */
+html.ui-new #view-player > .topbar, html.ui-new .player-method-row, html.ui-new .chordstrip, html.ui-new .mix-bar, html.ui-new .mix-notice,
+html.ui-new .loop-bar, html.ui-new .transport, html.ui-new #player-message { flex-shrink: 0; }
+html.ui-new .lyrics-list, html.ui-new .chord-grid { min-height: 3rem; }
+/* Kısa ekranlar: en az yükseklikler küçülür; çok kısa ekranda (yatay telefon) eski davranış (kanallar sıfıra kadar kısalabilir, alt çubuk ekranda kalır). */
+@media (max-height: 720px) {
+  html.ui-new .channels { min-height: 56px; }
+  html.ui-new .lyrics-list, html.ui-new .chord-grid { min-height: 2.6rem; }
+}
+@media (max-height: 640px) {
+  html.ui-new .channels { flex-basis: 0; min-height: 0; }
+  html.ui-new .lyrics-list, html.ui-new .chord-grid { min-height: 0; }
+}
+/* .song-thumb (56 px) kuralı bu özel kapakları eziyordu: boyutlar açıkça */
+html.ui-new .player-cover { width: 40px; height: 40px; flex: 0 0 40px; font-size: 18px; }
+html.ui-new .info-cover { width: 96px; height: 96px; flex: 0 0 96px; font-size: 44px; }
+html.ui-new .wish-row .song-thumb { width: 48px; height: 48px; flex: 0 0 48px; font-size: 20px; }
+html.ui-new #wish-manage { margin-top: 8px; }

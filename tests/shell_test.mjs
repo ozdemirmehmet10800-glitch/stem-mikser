@@ -64,5 +64,12 @@ const html = readFileSync(new URL("../frontend/index.html", import.meta.url), "u
 check("index.html: dock ve mini hidden başlıyor, sekme düğmeleri 3 adet",
   /id="dock" hidden/.test(html) && /id="mini" hidden/.test(html) && (html.match(/class="tab"/g) || []).length === 3);
 
+// İlk kurulum: Ayarlar katmansız gösterilir ve yeni görünümde "geri" düğmesi gizlidir; Kitaplık sekmesi yine de çıkış yolu olmalı.
+const appSrc = readFileSync(new URL("../frontend/js/app.js", import.meta.url), "utf8").replaceAll(String.fromCharCode(13), "");
+const goTabSrc = appSrc.slice(appSrc.indexOf("async function goTab("), appSrc.indexOf("async function goTab(") + 1800);
+check("goTab: geri atılacak katman yokken kitaplık doğrudan gösterilir (ilk kurulumda Ayarlar'da kilitlenme yok)",
+  /else if \(currentView !== "library"\) \{[\s\S]*?showView\("library"\);/.test(goTabSrc));
+check("tabPlan: katmansız Ayarlar'dan kitaplığa plan = 0 geri, açılacak yok", JSON.stringify(tabPlan("settings", "library", [])) === JSON.stringify({ pops: 0, open: null, same: false }));
+
 if (failed) { console.error(`\n${failed} test başarısız`); process.exit(1); }
 console.log("\ntümü geçti");

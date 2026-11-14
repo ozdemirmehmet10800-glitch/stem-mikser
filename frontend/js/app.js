@@ -200,8 +200,22 @@ function syncDock() {
     if (button.dataset.tab === tab) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   }
+  placeReprocess();
   syncMini();
   syncMiniLoop();
+}
+
+// "Hi-Fi'a yükselt" düğmesi: klasik görünümde alt çubukta (eski yeri), yeni görünümde şarkı bilgisi satırının sağında. Dar ekranda alt
+// çubuğun ikinci satıra taşmasını önler (miksere bir satır daha yer kalır). Düğmenin kendisi ve davranışı aynı; yalnız DOM'daki yeri değişir.
+function placeReprocess() {
+  const button = document.getElementById("reprocess");
+  const row = document.getElementById("player-method-row");
+  const right = document.querySelector(".transport-right");
+  if (!button || !row || !right) return;
+  const target = isNewLook() ? row : right;
+  if (button.parentElement === target) return;
+  if (target === right) right.prepend(button);
+  else row.append(button);
 }
 
 function syncMini() {
@@ -294,6 +308,12 @@ async function goTab(target) {
     }
     if (plan.open === "lists") openListsScreen();
     else if (plan.open === "settings") el("open-settings").click();
+    else if (currentView !== "library") {
+      // Katmansız açılmış ekran (ilk kurulumda Ayarlar doğrudan gösterilir; yeni görünümde "geri" düğmesi gizli): geri atılacak katman
+      // yok, kitaplık doğrudan gösterilir. Yoksa ilk kurulumdan sonra Ayarlar'dan çıkılamazdı.
+      showView("library");
+      refreshLibrary();
+    }
   } finally {
     tabBusy = false;
   }
@@ -2012,6 +2032,9 @@ async function openSong(song, opts = {}) {
   mixer.groupSpecs.clear();
   trainerReset();           // mikrofon kapanır, önceki şarkının hedef melodisi gider
   resetPeaks();             // önceki şarkının dalgası hemen gitsin
+  // ŞARKI DEĞİŞİYOR: currentSong yeni şarkıya geçene kadar (bilgi ağdan geliyorsa saniyeler sürebilir) eski şarkı için geç gelen bir
+  // tazeleme / yoklama sözleri YENİDEN yükleyip tam ekrana eski sözleri geri koymasın (sözlü -> sözsüz geçişte eski sözlerin kalması).
+  lyricsHold = true;
   resetLyrics();
   exportReset();
   closeFxDom();
@@ -2039,6 +2062,7 @@ async function openSong(song, opts = {}) {
       timer.mark("bilgi");
     }
     currentSong = { ...song, ...detail };
+    lyricsHold = false;       // artık yeni şarkı: sözleri yüklenebilir
     const stems = (detail.status && detail.status.stems) || STEM_ORDER;
     // Alt parçalar (Aşama 10): sunucuda yoksa (ana şarkı yeniden işlendi) cihazdaki
     // lead/backing bayat kalmasın. Arayüz oturum 3'te.
@@ -2191,6 +2215,7 @@ async function openSong(song, opts = {}) {
     engine.releaseStems();
     loadedState = null;
     currentSong = null;
+    lyricsHold = false;
     resetLyrics();
     exportReset();
     refreshExportAvailability();
@@ -4689,6 +4714,9 @@ function bindLyricsList() {
 
 // ---- yükleme / önbellek / yoklama
 
+// Şarkı değişimi sürerken true: openSong, eski şarkıyı sıfırladıktan sonra currentSong'u yeni şarkıya çevirene kadar söz yüklemesini tutar.
+let lyricsHold = false;
+
 function resetLyrics() {
   resetTranslation();
   clearInterval(lyricsPollTimer);
@@ -4706,7 +4734,7 @@ function resetLyrics() {
 // Cihazdaki kopya sürümle eşleşiyorsa ağa çıkılmaz; çevrimdışıyken (ya da ağ
 // hatasında) eldeki kopya kullanılır.
 async function loadLyricsDoc() {
-  if (!currentSong) return;
+  if (!currentSong || lyricsHold) return;
   const id = currentSong.id;
   const generation = ++lyricsLoadGen;
   const lyr = lyricsStatus();
@@ -6438,6 +6466,7 @@ on("setting-audio", "change", async () => {
     metronome.dispose();
     await engine.rebuildContext();
     currentSong = null;
+    syncDock();               // küçük oynatıcı kapatılan şarkıyı göstermesin
     showMessage(
       el("settings-message"),
       "Ses motoru yeniden kuruldu. Açık şarkı kapatıldı; kütüphaneden "
