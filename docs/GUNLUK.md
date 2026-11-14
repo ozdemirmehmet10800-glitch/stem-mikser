@@ -24,11 +24,33 @@
 
 ## Genel özet
 
-Oturum kullanım sınırına takılıp erken bitti. YAPILDI: Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar, sunucu ucu canlıda),
-Aşama 3 (Eklenecekler, paylaş menüsü metin/bağlantı, Takeout zip/CSV), Aşama 4'ten iki iş (mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme).
-YAPILMADI: Aşama 4'ün geri kalanı (sözlü -> sözsüz geçiş, konsol/bellek taraması, ek test/sadeleştirme). Modal'a hiçbir GPU işi eklenmedi, hiçbir şarkı verisine dokunulmadı.
+- **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
+  metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
+  geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
+- **Son sürüm:** SW v69, son kod commit'i `a1ed891`. 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
+  sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
+- **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
+  Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
+- **Yapılmadı (Aşama 4'ten kalan):** bellek ve yavaş açılış ölçümü, antrenörde otomatik gecikmenin kararlılığı, kod sadeleştirme. Sözlü -> sözsüz geçiş hatasını
+  sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 5. Yeni görünüm düzeltmeleri ve sözlü -> sözsüz geçiş (Aşama 4)
+
+- **İlk kurulum hatası (önemli, düzeltildi):** Yeni görünümde Ayarlar'ın "geri" düğmesini gizlemiştim; uygulama ilk kez kurulduğunda (adres/token yokken) Ayarlar'dan
+  çıkış yolu kalmıyordu, Kitaplık sekmesi tepki vermiyordu. Senin telefonun zaten ayarlı olduğu için görmezdin; v65-v68 arasında yeni kurulumu etkilerdi. Artık Kitaplık sekmesi çalışıyor.
+- **Mikser dar ekranda:** Sözler açıkken kanallara neredeyse hiç yer kalmıyordu (20 piksel). Artık söz listesi esniyor, en az ~2 kanal satırı görünüyor. "Hi-Fi'a yükselt" düğmesi
+  alt çubuktan şarkı bilgisi satırına taşındı (alt çubuk tek satır). Döngü ve söz düğmeleri alt satıra sarmak yerine yana kayıyor.
+- **Sözlü -> sözsüz geçiş:** Sahte sunucuda liste modunda, tam ekran sözler açıkken denedim: "Bu şarkıda söz yok" doğru çıkıyor, hatayı yeniden üretemedim. Kodda bir boşluk buldum:
+  şarkı değişirken yeni şarkının bilgisi ağdan gelene kadar eski şarkı için geç gelen bir tazeleme eski sözleri geri koyabiliyordu. Bunu kapattım (şarkı değişimi bitene kadar söz yüklemesi tutulur).
+  Canlıda OMORI'nin söz durumuna da baktım (salt okunur): "vokal yok", önceki kayıt yok; yani veri tarafında bir tuhaflık yok.
+- **Commit:** `a1ed891`. **SW:** v69.
+- **Telefonda kontrol (4 adım):**
+  1. Ayarlar'da "Sürüm: SW v69" yazmalı.
+  2. Sözü olan bir şarkıyı aç: sözler açıkken en az iki kanal (Vokal, Davul) görünmeli, alt çubuk tek satır olmalı.
+  3. Listede sözlü bir şarkıdan sonra OMORI olsun; tam ekran sözler açıkken sonraki şarkıya geç: "Bu şarkıda söz yok" yazmalı, eski sözler kalmamalı.
+  4. Hi-Fi olmayan bir şarkıda "Hi-Fi'a yükselt" düğmesi başlığın altındaki satırın sağında görünmeli.
 
 ### 4. Küçük iyileştirmeler (Aşama 4, kısmen)
 
