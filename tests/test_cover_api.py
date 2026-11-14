@@ -120,6 +120,10 @@ def main():
     os.environ["API_TOKEN"] = "test-token"
     os.environ["SIGNING_KEY"] = "test-key"
     os.environ["ALLOWED_ORIGINS"] = "http://localhost:8000"
+    # backend/coverart.py AYRI modül (app.py'nin satir sayisi Modal imaj onbellegine giriyor: bkz. coverart.py basligi). Konteynerde /root
+    # sys.path'te; burada backend/ eklenir ve api() icindeki `import coverart` ayni modulu bulur.
+    sys.path.insert(0, str(ROOT / "backend"))
+    import coverart as cover
     spec = importlib.util.spec_from_file_location("app_cover_api", ROOT / "backend" / "app.py")
     app = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(app)
@@ -130,14 +134,14 @@ def main():
     def extract(name, content):
         path = work / name
         path.write_bytes(content)
-        return app._embedded_cover(path)
+        return cover._embedded_cover(path)
 
     # ---------------- bicim ayrıştırıcıları (saf)
     check("jpeg/png/webp/gif sihirli baytlari taninir",
-          app._image_kind(JPEG) == "image/jpeg" and app._image_kind(PNG) == "image/png"
-          and app._image_kind(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "image/webp" and app._image_kind(b"GIF89a....") == "image/gif")
-    check("bilinmeyen baytlar resim sayilmaz", app._image_kind(b"%PDF-1.4") is None and app._image_kind(b"") is None)
-    check("syncsafe", app._syncsafe(syncsafe(123456)) == 123456)
+          cover._image_kind(JPEG) == "image/jpeg" and cover._image_kind(PNG) == "image/png"
+          and cover._image_kind(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "image/webp" and cover._image_kind(b"GIF89a....") == "image/gif")
+    check("bilinmeyen baytlar resim sayilmaz", cover._image_kind(b"%PDF-1.4") is None and cover._image_kind(b"") is None)
+    check("syncsafe", cover._syncsafe(syncsafe(123456)) == 123456)
 
     check("mp3 ID3v2.3 APIC (jpeg)", extract("a.mp3", id3([("TIT2", b"\x00Sentetik"), ("APIC", apic_body(JPEG))], 3)) == JPEG)
     check("mp3 ID3v2.3 APIC (png)", extract("b.mp3", id3([("APIC", apic_body(PNG, b"image/png"))], 3)) == PNG)
@@ -156,7 +160,7 @@ def main():
     check("mp3 bozuk/kesik etiket cokmez", extract("l.mp3", b"ID3\x03\x00\x00\x00\x00\x00\x40APIC\x00\x00") is None)
     check("mp3 etiketsiz (ham cerceve) -> None", extract("m.mp3", b"\xff\xfb\x90\x00" + b"\x00" * 200) is None)
     check("ID3 surum 5 (gecersiz) -> None", extract("n.mp3", b"ID3\x05\x00\x00\x00\x00\x00\x10" + b"\x00" * 32) is None)
-    check("ID3 boyutu savunma siniri uzeri -> None", extract("o.mp3", b"ID3\x03\x00\x00" + syncsafe(app.COVER_ID3_MAX_BYTES + 1) + b"\x00" * 8) is None)
+    check("ID3 boyutu savunma siniri uzeri -> None", extract("o.mp3", b"ID3\x03\x00\x00" + syncsafe(cover.COVER_ID3_MAX_BYTES + 1) + b"\x00" * 8) is None)
     # senkronizasyonsuz (unsync) etiket: 0xFF 0x00 -> 0xFF
     plain = id3([("APIC", apic_body(JPEG))], 3)
     frames_len = (plain[6] << 21) | (plain[7] << 14) | (plain[8] << 7) | plain[9]
@@ -179,15 +183,15 @@ def main():
     check("bos dosya -> None", extract("e.mp3", b"") is None)
 
     # ---------------- küçültme: ffmpeg yoksa ham resim
-    real_which = app.shutil.which
-    app.shutil.which = lambda name: None
-    check("ffmpeg yoksa kucultme ham resmi doner", app._scale_cover(JPEG) is JPEG)
-    app.shutil.which = real_which
+    real_which = cover.shutil.which
+    cover.shutil.which = lambda name: None
+    check("ffmpeg yoksa kucultme ham resmi doner", cover._scale_cover(JPEG) is JPEG)
+    cover.shutil.which = real_which
 
     # ---------------- uç nokta (TestClient)
     app.DATA_DIR = tmp
     app.volume = FakeVolume()
-    app.shutil.which = lambda name: None      # ffmpeg'e bagimli degil: ham resim
+    cover.shutil.which = lambda name: None      # ffmpeg'e bagimli degil: ham resim
     from fastapi.testclient import TestClient
     client = TestClient(app.api.get_raw_f()())
     H = {"Authorization": "Bearer test-token"}
@@ -197,7 +201,7 @@ def main():
     make_song(tmp, M4A, "input.m4a", m4a(PNG, 14))
     make_song(tmp, NOCOVER, "input.mp3", id3([("TIT2", b"\x00x")], 3))
     make_song(tmp, NOINPUT, None, b"")
-    make_song(tmp, HUGE, "input.mp3", id3([("APIC", apic_body(JPEG + b"\x00" * (app.COVER_RAW_MAX_BYTES + 10)))], 3))
+    make_song(tmp, HUGE, "input.mp3", id3([("APIC", apic_body(JPEG + b"\x00" * (cover.COVER_RAW_MAX_BYTES + 10)))], 3))
 
     before = snapshot(base_mp3)
     check("auth yok -> 401", client.get(f"/songs/{MP3}/cover").status_code == 401)
@@ -219,6 +223,8 @@ def main():
           client.get("/songs/..%2f..%2fweights/cover", headers=H).status_code in (400, 404)
           and client.get("/songs/not-a-hash/cover", headers=H).status_code == 400)
     check("SALT OKUNUR: sarki klasoru ayni (dosya eklenmedi/degismedi)", snapshot(base_mp3) == before)
+    # app.py'nin satir sayisi DEGISMEMELI: _SELF_CHECK_LINES Modal imaj onbellek anahtarina giriyor (satir eklemek GPU imajini yeniden kurar)
+    check("app.py satir sayisi 9296 (son deploy ile ayni: imaj yeniden kurulmaz)", app._SELF_CHECK_LINES == 9296, str(app._SELF_CHECK_LINES))
     check("kimlik deseni kapak ucunda da zorunlu", client.get(f"/songs/{MP3.upper()}/cover", headers=H).status_code == 400)
 
     print()
