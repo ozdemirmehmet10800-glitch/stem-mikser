@@ -129,6 +129,12 @@
       </button>
       <h1>Listeler</h1>
     </header>
+    <!-- Eklenecekler: yüklemek istediğin şarkıların listesi (paylaşılan bağlantılar, Takeout) -->
+    <button type="button" class="wish-card" id="open-wishes">
+      <span class="wish-card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-wish"/></svg></span>
+      <span class="wish-card-text"><b>Eklenecekler</b><small id="wish-card-sub">Yüklemek istediğin şarkılar</small></span>
+      <span class="list-chevron" aria-hidden="true">›</span>
+    </button>
     <div class="library-actions">
       <button class="btn btn-primary" id="lists-new">+ Yeni liste</button>
     </div>
@@ -169,6 +175,43 @@
     </div>
     <div id="list-message" class="message" hidden></div>
     <ol class="song-list plain-list" id="list-items"></ol>
+  </section>
+
+  <!-- ============ EKLENECEKLER (istek listesi) ============ -->
+  <section class="view" id="view-wishes" hidden>
+    <header class="topbar">
+      <button class="icon-btn" id="wishes-back" title="Listelere dön" aria-label="Listelere dön">
+        <svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4-4.6-4.6z"/></svg>
+      </button>
+      <h1>Eklenecekler</h1>
+    </header>
+    <div class="library-actions">
+      <button class="btn btn-primary" id="wish-import" type="button">Takeout'tan al</button>
+      <button class="btn" id="wish-add-open" type="button" aria-expanded="false">Elle ekle</button>
+    </div>
+    <input type="file" id="wish-file" accept=".zip,.csv,application/zip,application/x-zip-compressed,text/csv" multiple hidden>
+    <details class="wish-help">
+      <summary>Nasıl çalışır? Takeout nasıl alınır?</summary>
+      <p>Buradaki şarkılar kitaplığa yüklemek istediklerin. Bağlantılara hiçbir istek atılmaz, hiçbir şey indirilmez; veriler yalnız bu telefonda kalır.
+      Bir şarkıyı yükleyince adı eşleşirse kendiliğinden "eklendi" olur.</p>
+      <p>takeout.google.com'da yalnız "YouTube ve YouTube Music"i seçip dışa aktar; inen zip dosyasını açmadan buradan seç (zip'in içindeki CSV dosyalarını da tek tek seçebilirsin).
+      Dosya yalnız bu telefonda açılır, sunucuya gitmez. Beğenilen şarkılar ve listeler "Eklenecekler"e eklenir.</p>
+    </details>
+    <div class="wish-add" id="wish-add" hidden>
+      <input type="text" id="wish-add-title" placeholder="Şarkı adı" maxlength="160" autocomplete="off" spellcheck="false" aria-label="Şarkı adı">
+      <input type="text" id="wish-add-artist" placeholder="Sanatçı (isteğe bağlı)" maxlength="120" autocomplete="off" spellcheck="false" aria-label="Sanatçı">
+      <input type="url" id="wish-add-url" placeholder="Bağlantı (isteğe bağlı)" maxlength="500" autocomplete="off" spellcheck="false" aria-label="Bağlantı">
+      <div class="wish-add-row">
+        <button type="button" class="btn btn-small btn-primary" id="wish-add-go">Ekle</button>
+        <button type="button" class="btn btn-small" id="wish-add-cancel">İptal</button>
+      </div>
+    </div>
+    <div class="library-filters wish-filters" id="wish-filters" role="group" aria-label="Eklenecekler süzmesi"></div>
+    <div id="wishes-message" class="message" hidden></div>
+    <ul class="song-list plain-list" id="wishes-list"></ul>
+    <div class="list-manage" id="wish-manage" hidden>
+      <button type="button" class="btn btn-small btn-danger" id="wish-clear-done">Eklendi olanları temizle</button>
+    </div>
   </section>
 
   <!-- ============ OYNATICI ============ -->
@@ -550,7 +593,7 @@
       <div class="field">
         <span>Etiket ve favori yedeği</span>
         <small id="collection-state">Hesaplanıyor…</small>
-        <small>Favoriler ve etiketler yalnız bu telefonda saklanır (site verisini silersen ya da uygulamayı kaldırırsan gider). Yedek bir JSON dosyasıdır; sözler ve çeviriler içermez. Yüklerken var olanla BİRLEŞTİRİR, üzerine yazmaz.</small>
+        <small>Favoriler, etiketler, çalma listeleri ve Eklenecekler yalnız bu telefonda saklanır (site verisini silersen ya da uygulamayı kaldırırsan gider). Yedek bir JSON dosyasıdır; sözler ve çeviriler içermez. Yüklerken var olanla BİRLEŞTİRİR, üzerine yazmaz.</small>
         <div class="settings-buttons">
           <button type="button" class="btn btn-small" id="collection-export">Yedeği indir</button>
           <button type="button" class="btn btn-small" id="collection-import">Yedeği yükle</button>

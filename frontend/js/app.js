@@ -89,6 +89,10 @@ import {
 } from "./cover.js";
 import { coverStore } from "./coverstore.js";
 import {
+  findMatches, wishesFromCsv, importSummary, cleanUrl,
+} from "./wishlist.js";
+import { readCsvEntries, looksLikeZip, ZipError } from "./zipread.js";
+import {
   itemState, startIndex, anyPlayable, totalDuration, alreadyInList, nextPlayable, previousAction, indexOfItem, skipNote,
   positionLabel,
 } from "./playlist.js";
@@ -115,6 +119,7 @@ const views = {
   library: el("view-library"),
   lists: el("view-lists"),
   list: el("view-list"),
+  wishes: el("view-wishes"),
   player: el("view-player"),
   settings: el("view-settings"),
 };
@@ -753,6 +758,7 @@ async function refreshLibrary() {
       writeLibraryCache(songs);       // çevrimdışı açılış için cihazda dursun
       // Sunucudan TAZE ve boş olmayan liste: listede olmayan şarkıların favori/etiket kaydına "kayıp" damgası (30 gün sonra silinir).
       if (songs.length) collection.sweep(new Set(songs.map((song) => song.id)));
+      matchWishes(songs);             // yüklenen şarkı Eklenecekler'dekiyle eşleşiyorsa "eklendi" olur
       renderLibrary(songs);
       // Biten ayrıştırmaları / Hi-Fi yükseltmelerini yakala ve sesi önceden
       // indirmeye başla.
@@ -911,6 +917,10 @@ const layerClosers = {
   lists: () => showView("library"),
   list: () => {
     playlistCtx = null;
+    showView("lists");
+    renderListsScreen();
+  },
+  wishes: () => {
     showView("lists");
     renderListsScreen();
   },
@@ -1442,7 +1452,12 @@ async function handleShareLaunch() {
       return;
     }
     const verdict = classify(pending);
-    if (verdict.action === "card") {
+    if (verdict.action === "wish") {
+      // YouTube Music vb. metin/bağlantı paylaşımı: Eklenecekler'e yazılır. Bağlantıya İSTEK ATILMAZ, hiçbir şey indirilmez.
+      say(addSharedWish(verdict.entry), "ok");
+      matchWishes(librarySongs);
+      await clearPending(window.caches);
+    } else if (verdict.action === "card") {
       await showShareCard(pending, verdict.note);
       if (!isConfigured(settings)) {
         say("Paylaşılan dosya bekliyor. API adresini ve token'ı girip kaydet, sonra kitaplıkta yükleyebilirsin.", "warn");
@@ -5005,6 +5020,7 @@ function openListsScreen() {
 }
 
 function renderListsScreen() {
+  refreshWishCard();
   const box = el("lists-list");
   const map = librarySongMap();
   const lists = collection.listSummaries();
@@ -5039,6 +5055,289 @@ function renderListsScreen() {
     box.append(row);
   }
 }
+
+// ---------------------------------------------------------------- Eklenecekler (istek listesi; mantık js/wishlist.js)
+// Veri collection belgesinde (yedeğe dahil). Bağlantılara İSTEK ATILMAZ, hiçbir şey indirilmez: bağlantı yalnız kullanıcı dokununca açılır.
+
+let wishFilter = "pending";            // "pending" | "done" | "all" (yalnız bellekte)
+
+function wishMessage(text, tone = "warn") {
+  const node = el("wishes-message");
+  if (!text) hideMessage(node);
+  else showMessage(node, text, tone);
+}
+
+function refreshWishCard() {
+  const node = el("wish-card-sub");
+  if (!node) return;
+  const { pending, done } = collection.wishCounts();
+  node.textContent = pending ? `${pending} bekliyor${done ? ` · ${done} eklendi` : ""}` : (done ? `${done} eklendi` : "Yüklemek istediğin şarkılar");
+}
+
+/** Kitaplık yenilenince: bekleyen istekler şarkı adıyla eşleşiyorsa "eklendi" olur (otomatik; elle geri alınabilir). */
+function matchWishes(songs) {
+  try {
+    const pending = collection.wishList().filter((wish) => !wish.done);
+    if (!pending.length || !songs.length) return;
+    const found = findMatches(pending, songs);
+    if (!found.length) return;
+    const result = collection.applyWishMatches(found);
+    if (result.ok && result.marked) {
+      const first = collection.wishList().find((wish) => wish.id === found[0].id);
+      pendingLibraryNote = pendingLibraryNote
+        || `${result.marked} şarkı Eklenecekler'de "eklendi" oldu${first && first.title ? ` (ör. ${first.title})` : ""}.`;
+      if (!views.wishes.hidden) renderWishes();
+    }
+  } catch (error) {
+    console.warn("[eklenecekler] eşleştirme", error);
+  }
+}
+
+function wishCoverFor(wish) {
+  const id = typeof wish.done === "string" ? wish.done : "";
+  return { id, hasCover: Boolean(id && covers.urlFor(id)) };
+}
+
+function renderWishFilters(counts) {
+  const box = el("wish-filters");
+  box.replaceChildren();
+  const defs = [["pending", `Bekleyen (${counts.pending})`], ["done", `Eklendi (${counts.done})`], ["all", `Hepsi (${counts.total})`]];
+  for (const [key, label] of defs) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "lib-chip";
+    chip.setAttribute("aria-pressed", String(wishFilter === key));
+    chip.textContent = label;
+    chip.addEventListener("click", () => {
+      wishFilter = key;
+      renderWishes();
+    });
+    box.append(chip);
+  }
+}
+
+function wishHost(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function renderWishes() {
+  const counts = collection.wishCounts();
+  renderWishFilters(counts);
+  el("wish-manage").hidden = counts.done === 0;
+  const box = el("wishes-list");
+  box.replaceChildren();
+  const all = collection.wishList();
+  const shown = all.filter((wish) => wishFilter === "all" || (wishFilter === "done" ? wish.done : !wish.done));
+  if (!shown.length) {
+    const none = document.createElement("li");
+    none.className = "list-row";
+    none.style.cursor = "default";
+    none.textContent = !all.length
+      ? "Henüz bir şey yok. Başka uygulamadan (ör. YouTube Music) bir şarkıyı bu uygulamaya paylaş, Takeout dosyanı al ya da elle ekle."
+      : (wishFilter === "done" ? "Henüz eklendi olan yok." : "Bekleyen yok.");
+    box.append(none);
+    return;
+  }
+  const map = librarySongMap();
+  for (const wish of shown) {
+    const row = document.createElement("li");
+    row.className = `list-row wish-row${wish.done ? " done" : ""}`;
+    row.dataset.id = wish.id;
+    row.style.cursor = "default";
+    const title = wish.title || "Başlıksız bağlantı";
+    const thumb = document.createElement("div");
+    thumb.className = "song-thumb wish-thumb";
+    thumb.setAttribute("aria-hidden", "true");
+    const matched = wishCoverFor(wish);
+    paintCover(thumb, matched.id || `wish-${wish.id}`, title);
+    const info = document.createElement("div");
+    info.className = "list-info";
+    const name = document.createElement("div");
+    name.className = "list-name";
+    name.textContent = title;
+    const sub = document.createElement("div");
+    sub.className = "list-sub";
+    const bits = [];
+    if (wish.artist) bits.push(wish.artist);
+    if (wish.done) {
+      const song = typeof wish.done === "string" ? map.get(wish.done) : null;
+      bits.push(song ? `Eklendi: ${song.title || song.id.slice(0, 8)}` : "Eklendi");
+    } else if (!wish.title && wish.url) {
+      bits.push(wishHost(wish.url));
+    }
+    if (wish.from) bits.push(wish.from);
+    else if (wish.src === "share") bits.push("Paylaşıldı");
+    sub.textContent = bits.filter(Boolean).join(" · ");
+    info.append(name, sub);
+    row.append(thumb, info);
+    if (wish.url) {
+      const link = document.createElement("a");
+      link.className = "list-btn wish-link";
+      link.href = wish.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.title = "Bağlantıyı aç";
+      link.setAttribute("aria-label", `Bağlantıyı aç: ${title}`);
+      link.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-link"/></svg>';
+      row.append(link);
+    }
+    const doneButton = document.createElement("button");
+    doneButton.type = "button";
+    doneButton.className = "list-btn wish-done";
+    doneButton.setAttribute("aria-pressed", String(Boolean(wish.done)));
+    doneButton.setAttribute("aria-label", wish.done ? `Geri al: ${title}` : `Eklendi olarak işaretle: ${title}`);
+    doneButton.title = wish.done ? "Geri al" : "Eklendi olarak işaretle";
+    doneButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+    doneButton.addEventListener("click", () => {
+      const result = collection.setWishDone(wish.id, !wish.done);
+      if (!result.ok) wishMessage(collectionError(result));
+      renderWishes();
+      refreshWishCard();
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "list-btn remove wish-remove";
+    remove.title = "Sil";
+    remove.setAttribute("aria-label", `Sil: ${title}`);
+    remove.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"/></svg>';
+    remove.addEventListener("click", () => {
+      const result = collection.removeWish(wish.id);
+      if (!result.ok) wishMessage(collectionError(result));
+      renderWishes();
+      refreshWishCard();
+    });
+    row.append(doneButton, remove);
+    box.append(row);
+  }
+}
+
+function openWishesScreen() {
+  wishMessage("");
+  el("wish-add").hidden = true;
+  el("wish-add-open").setAttribute("aria-expanded", "false");
+  renderWishes();
+  showView("wishes");
+  pushLayer("wishes");
+}
+
+/** Paylaşılan metin/bağlantıyı Eklenecekler'e yazar (ağ isteği YOK). Dönen: kullanıcıya söylenecek metin. */
+function addSharedWish(entry) {
+  const result = collection.addWishes([entry], { src: "share" });
+  if (!result.ok) return collectionError(result);
+  const label = entry.title ? `"${entry.title}"` : "Bağlantı";
+  if (result.added) return `${label} Eklenecekler'e eklendi. Listeler > Eklenecekler.`;
+  return `${label} zaten Eklenecekler'de.`;
+}
+
+function addWishManually() {
+  const title = el("wish-add-title").value.trim();
+  const artist = el("wish-add-artist").value.trim();
+  const rawUrl = el("wish-add-url").value.trim();
+  const url = cleanUrl(rawUrl);
+  if (rawUrl && !url) {
+    wishMessage("Bağlantı geçerli bir http/https adresi olmalı.");
+    return;
+  }
+  if (!title && !url) {
+    wishMessage("Şarkı adı ya da bağlantı gir.");
+    return;
+  }
+  const result = collection.addWishes([{ title, artist, url }], { src: "manual" });
+  if (!result.ok) {
+    wishMessage(collectionError(result));
+    return;
+  }
+  wishMessage(result.added ? "Eklendi." : "Bu şarkı zaten listede.", result.added ? "ok" : "warn");
+  if (result.added) {
+    el("wish-add-title").value = "";
+    el("wish-add-artist").value = "";
+    el("wish-add-url").value = "";
+  }
+  matchWishes(librarySongs);
+  renderWishes();
+  refreshWishCard();
+}
+
+/** Seçilen dosyalar (zip ya da csv) -> tarayıcıda açılır, sütunlardan şarkı/sanatçı bulunur, Eklenecekler'e eklenir. SUNUCUYA HİÇBİR ŞEY GİTMEZ. */
+async function importTakeout(files) {
+  const report = { files: files.length, found: 0, added: 0, duplicate: 0, untitled: 0, limit: 0, skippedFiles: 0 };
+  const sources = [];
+  try {
+    for (const file of files) {
+      if (await looksLikeZip(file)) {
+        const opened = await readCsvEntries(file);
+        report.skippedFiles += opened.skipped;
+        for (const entry of opened.files) sources.push({ name: entry.name, text: entry.text });
+      } else if (/\.csv$/i.test(file.name) || file.type === "text/csv" || file.type === "") {
+        if (file.size > 20 * 1024 * 1024) {
+          report.skippedFiles += 1;
+          continue;
+        }
+        sources.push({ name: file.name, text: await file.text() });
+      } else {
+        report.skippedFiles += 1;
+      }
+    }
+  } catch (error) {
+    wishMessage(error instanceof ZipError ? error.message : "Dosya okunamadı. Zip ya da CSV dosyası seç.");
+    return;
+  }
+  for (const source of sources) {
+    const parsed = wishesFromCsv(source.text);
+    if (!parsed.entries.length) continue;
+    const base = source.name.split("/").pop().replace(/\.csv$/i, "").replace(/[-_ ](?:videos?|videolar)$/i, "").trim();
+    const result = collection.addWishes(parsed.entries, { src: "takeout", from: base });
+    if (!result.ok) {
+      wishMessage(collectionError(result));
+      return;
+    }
+    report.found += parsed.entries.length;
+    report.added += result.added || 0;
+    report.duplicate += result.duplicate || 0;
+    report.limit += result.limit || 0;
+    if (parsed.kind === "ids") report.untitled += parsed.untitled;
+  }
+  matchWishes(librarySongs);
+  wishMessage(importSummary(report), report.added ? "ok" : "warn");
+  renderWishes();
+  refreshWishCard();
+}
+
+on("open-wishes", "click", openWishesScreen);
+on("wishes-back", "click", () => requestBack("wishes"));
+on("wish-import", "click", () => el("wish-file").click());
+on("wish-file", "change", async () => {
+  const input = el("wish-file");
+  const files = [...(input.files || [])];
+  input.value = "";
+  if (!files.length) return;
+  wishMessage("Dosya okunuyor…", "ok");
+  await importTakeout(files);
+});
+on("wish-add-open", "click", () => {
+  const box = el("wish-add");
+  box.hidden = !box.hidden;
+  el("wish-add-open").setAttribute("aria-expanded", String(!box.hidden));
+  if (!box.hidden) el("wish-add-title").focus();
+});
+on("wish-add-cancel", "click", () => {
+  el("wish-add").hidden = true;
+  el("wish-add-open").setAttribute("aria-expanded", "false");
+});
+on("wish-add-go", "click", addWishManually);
+on("wish-clear-done", "click", () => {
+  const { done } = collection.wishCounts();
+  if (!done) return;
+  if (!window.confirm(`"Eklendi" olan ${done} kayıt Eklenecekler'den silinsin mi? (Kitaplıktaki şarkılara dokunulmaz.)`)) return;
+  const result = collection.clearDoneWishes();
+  wishMessage(result.ok ? `${result.removed} kayıt silindi.` : collectionError(result), result.ok ? "ok" : "warn");
+  renderWishes();
+  refreshWishCard();
+});
 
 function createListFromInput() {
   const input = el("lists-new-name");
@@ -5658,7 +5957,8 @@ function refreshCollectionState() {
   const { favs, tags, songs, lists } = collection.stats();
   const persisted = stemCache.persisted;
   const kalici = persisted === true ? "kalıcı" : persisted === false ? "geçici" : "bilinmiyor";
-  el("collection-state").textContent = `${favs} favori, ${tags} etiket, ${lists} çalma listesi, ${songs} şarkı kaydı. Depolama: ${kalici}.`;
+  const wishes = collection.wishCounts().total;
+  el("collection-state").textContent = `${favs} favori, ${tags} etiket, ${lists} çalma listesi, ${wishes} istek (Eklenecekler), ${songs} şarkı kaydı. Depolama: ${kalici}.`;
 }
 
 function collectionMessage(text) {
@@ -5688,8 +5988,8 @@ on("collection-file", "change", async (event) => {
   const file = event.target.files && event.target.files[0];
   event.target.value = "";
   if (!file) return;
-  if (file.size > 1024 * 1024) {
-    collectionMessage("Dosya çok büyük (en çok 1 MB); bu bir etiket yedeği olmayabilir.");
+  if (file.size > 4 * 1024 * 1024) {
+    collectionMessage("Dosya çok büyük (en çok 4 MB); bu bir etiket yedeği olmayabilir.");
     return;
   }
   let result;
@@ -5701,11 +6001,12 @@ on("collection-file", "change", async (event) => {
   }
   if (!result.ok) {
     collectionMessage({
-      json: "Dosya geçerli bir JSON değil.", format: "Bu bir Stem Mikser etiket yedeği değil.", size: "Dosya çok büyük (en çok 1 MB).",
+      json: "Dosya geçerli bir JSON değil.", format: "Bu bir Stem Mikser etiket yedeği değil.", size: "Dosya çok büyük (en çok 4 MB).",
     }[result.error] || collectionError(result));
     return;
   }
-  collectionMessage(`Yedek yüklendi: ${result.tagsAdded} etiket, ${result.favsAdded} favori, ${result.listsAdded} liste (${result.itemsAdded} şarkı sırası) eklendi, ${result.songsTouched} şarkı kaydı güncellendi.`);
+  collectionMessage(`Yedek yüklendi: ${result.tagsAdded} etiket, ${result.favsAdded} favori, ${result.listsAdded} liste (${result.itemsAdded} şarkı sırası), ${result.wishesAdded || 0} istek eklendi, ${result.songsTouched} şarkı kaydı güncellendi.`);
+  matchWishes(librarySongs);
   refreshCollectionState();
   renderLibrary(librarySongs);
 });

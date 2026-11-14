@@ -6,7 +6,7 @@ export const TABS = ["library", "lists", "settings"];
 /** Ekran adından sekme: kitaplık -> library, listeler ve liste ayrıntısı -> lists, ayarlar -> settings; oynatıcı (mikser) hiçbiri. */
 export function tabForView(view) {
   if (view === "library") return "library";
-  if (view === "lists" || view === "list") return "lists";
+  if (view === "lists" || view === "list" || view === "wishes") return "lists";
   if (view === "settings") return "settings";
   return null;
 }
@@ -17,7 +17,7 @@ export function dockVisible(view) {
 }
 
 // Sekme ekranlarında açık olabilen, "geri" ile kapanan katmanlar (navstack adları): seçim modu, liste ayrıntısı, listeler, ayarlar ("view").
-const ROOT_LAYERS = new Set(["select", "list", "lists", "view"]);
+const ROOT_LAYERS = new Set(["select", "list", "lists", "wishes", "view"]);
 
 /**
  * Kitaplık köküne dönmek için kaç tane history.back() gerek? Katman yığınının ÜSTÜNDEN başlayıp ardışık kök-altı katmanları sayar;

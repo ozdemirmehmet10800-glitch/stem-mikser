@@ -635,3 +635,27 @@ Build ayrıca şunları assert eder: torch sürümü 2.5.1, torchaudio sürümü
 ile eşleşiyor, `beat_this.inference` / `beat_this.preprocessing` / `demucs`
 import'ları çalışıyor, ve kendi kaynağımızda torchaudio I/O kullanımı yok.
 Son kontrol her import'ta da çalışıyor (`_self_check_torchaudio`).
+
+## Görsel yenileme (Yeni görünüm, Kapaklar, Eklenecekler) - testler
+
+Tasarım kuralları: [docs/TASARIM.md](docs/TASARIM.md). Tüm yerel testleri tek komutla koşturmak için:
+
+```powershell
+node tests\run_all.mjs            # node + Python (Modal'a/ağa bağlanmaz)
+node tests\run_all.mjs --node     # yalnız node
+```
+
+Tek tek (hepsi saf mantık, sahte depo/DOM; sentetik veri):
+
+```powershell
+node tests\look_test.mjs              # görünüm tercihi, ?klasik=1 kurtarma yolu, diğer verilere dokunmama
+node tests\shell_test.mjs             # sekme çubuğu / küçük oynatıcı kuralları
+node tests\sw_shell_files_test.mjs    # SW kabuk listesi: eksik/fazla dosya yok
+node tests\cover_test.mjs             # otomatik kapak, CoverManager, MusicBrainz ayrıştırma (sentetik yanıt)
+.\.venv\Scripts\python.exe tests\test_cover_api.py   # GET /songs/{id}/cover (mp3 ID3 / m4a / flac; salt okunur)
+node tests\wishlist_test.mjs          # Eklenecekler: paylaşılan metin, ad eşleştirme, Takeout CSV, yedek, veri güvenliği
+node tests\zipread_test.mjs           # tarayıcıda zip açma (sentetik zip'ler)
+```
+
+Kapak resimleri yalnız telefonda (IndexedDB `stem-mikser-covers`); Eklenecekler collection belgesinde (`wishes`, yedeğe dahil).
+Sahte sunucuda kapak denemek için `out/<kimlik>/cover.jpg` koy (gitignore'lu), yoksa sunucu 204 ("kapak yok") döner.

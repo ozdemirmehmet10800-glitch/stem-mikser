@@ -310,7 +310,7 @@ html.ui-new .dock[hidden] { display: none; }
 html.ui-new .dock-inner { max-width: 1100px; margin: 0 auto; }
 
 /* Dock sabit, içerik altında kalmasın: kaydırılan listelere alttan boşluk */
-html.ui-new #view-library, html.ui-new #view-lists, html.ui-new #view-list { padding-bottom: calc(var(--dock-h) + var(--safe-b)); }
+html.ui-new #view-library, html.ui-new #view-lists, html.ui-new #view-list, html.ui-new #view-wishes { padding-bottom: calc(var(--dock-h) + var(--safe-b)); }
 
 .mini[hidden] { display: none; }
 html.ui-new .mini[hidden] { display: none; }   /* html.ui-new .mini { display:flex } özgüllüğü [hidden]'ı ezerdi */
@@ -382,3 +382,11 @@ html.ui-new .info-cover { border-radius: 20px; }
 html.ui-new .cover-fields input { background: var(--panel); border: 1px solid transparent; border-radius: 12px; min-height: 48px; }
 html.ui-new .cover-cand { background: var(--panel); border: 0; border-radius: 14px; }
 html.ui-new .info-text span { color: var(--text-dim); }
+
+/* ================= Eklenecekler ================= */
+html.ui-new .wish-card { border: 0; border-radius: 20px; background: var(--panel); }
+html.ui-new .wish-card-icon { background: var(--panel-3); }
+html.ui-new .wish-add input { background: var(--panel-2); border: 1px solid transparent; border-radius: 12px; min-height: 48px; }
+html.ui-new .list-row .wish-done[aria-pressed="true"] { background: var(--accent-dim); box-shadow: inset 0 0 0 1px var(--accent); }
+html.ui-new #view-wishes { padding-bottom: calc(var(--dock-h) + var(--safe-b)); }
+html.ui-new #wishes-back, html.ui-new #lists-back { margin-left: -4px; }

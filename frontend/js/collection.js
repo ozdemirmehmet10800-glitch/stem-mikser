@@ -11,11 +11,16 @@
 // Belge (v1):  { v: 1, rev, updated,
 //   songs: { "<şarkı kimliği>": { fav?: true, tags?: ["<etiket kimliği>"], t, miss? } },   // yalnız favorisi/etiketi olanlar
 //   tags:  { "<etiket kimliği>": { name, t } },
-//   lists: { "<liste kimliği>": { name, t, cur?, items: [{ iid, song, miss? }] } } }                       // çalma listeleri (prova modu)
+//   lists: { "<liste kimliği>": { name, t, cur?, items: [{ iid, song, miss? }] } },                       // çalma listeleri (prova modu)
+//   wishes?: { "<istek kimliği>": { title, artist?, url?, vid?, from?, src, t, done?, auto? } } }         // Eklenecekler (istek listesi; EK alan,
+//     sürüm 1 kalır: eski sürüm bilinmeyen üst düzey alanı AYNEN korur; done: eşleşen şarkı kimliği ya da true)
 // Bilinmeyen alanlar (üst düzeyde, şarkı kaydında) kaydederken AYNEN korunur: eski önbellekli bir sürüm, sonraki
 // sürümün alanlarını silmesin. Etiketler kimlikle tutulur: yeniden adlandırma hiçbir şarkı kaydına dokunmaz.
 
 import { fold } from "./songfilter.js";
+import {
+  WISH_LIMIT, WISH_TITLE_MAX, WISH_ARTIST_MAX, WISH_FROM_MAX, cleanUrl, videoIdOf, wishKey,
+} from "./wishlist.js";
 
 export const COLLECTION_KEY = "stem-mikser.collection";
 export const COLLECTION_BAD_KEY = "stem-mikser.collection.bad";
@@ -23,7 +28,7 @@ export const COLLECTION_VERSION = 1;
 export const TAG_NAME_MAX = 24;
 export const TAG_LIMIT = 60;
 export const ORPHAN_MS = 30 * 24 * 60 * 60 * 1000;      // sunucu listesinde görünmeyen şarkının kaydı bu kadar sonra silinir
-export const IMPORT_MAX_BYTES = 1024 * 1024;
+export const IMPORT_MAX_BYTES = 4 * 1024 * 1024;     // yedek: tek JSON (Eklenecekler binlerce kayıt olabilir)
 export const LIST_LIMIT = 30;                  // en çok liste
 export const LIST_ITEMS_MAX = 100;             // liste başına en çok şarkı (aynı şarkı birden çok kez olabilir)
 export const LIST_NAME_MAX = 40;
@@ -197,6 +202,30 @@ export class Collection {
   listCount(lid, songId) {
     const list = this.getList(lid);
     return list ? list.items.filter((item) => item.song === songId).length : 0;
+  }
+
+  // ------------------------------------------------------ Eklenecekler (okuma)
+
+  /** Tüm istekler (kopya): [{id, title, artist, url, vid, from, src, t, done, auto}] - yeniden eskiye, eşit zamanda kayıt sırası. */
+  wishList() {
+    const all = isObject(this.doc.wishes) ? this.doc.wishes : {};
+    return Object.keys(all)
+      .filter((wid) => isObject(all[wid]))
+      .map((wid) => {
+        const w = all[wid];
+        return {
+          id: wid, title: String(w.title || ""), artist: String(w.artist || ""), url: String(w.url || ""), vid: String(w.vid || ""),
+          from: String(w.from || ""), src: String(w.src || "manual"), t: Number(w.t) || 0,
+          done: w.done === undefined || w.done === false ? "" : (typeof w.done === "string" ? w.done : true), auto: w.auto === true,
+        };
+      })
+      .sort((a, b) => b.t - a.t);
+  }
+
+  wishCounts() {
+    const list = this.wishList();
+    const done = list.filter((w) => w.done).length;
+    return { pending: list.length - done, done, total: list.length };
   }
 
   // ------------------------------------------------------------ değiştirme
@@ -532,6 +561,122 @@ export class Collection {
     });
   }
 
+  // ------------------------------------------------ Eklenecekler (değiştirme)
+
+  #newWishId(wishes) {
+    for (let i = 0; i < 20; i += 1) {
+      const wid = `w${Math.floor(this.random() * 36 ** 7).toString(36).padStart(6, "0")}`;
+      if (!has(wishes, wid)) return wid;
+    }
+    return `w${this.now().toString(36)}${Object.keys(wishes).length}`;
+  }
+
+  static cleanWish(raw, src = "manual", from = "") {
+    if (!isObject(raw)) return null;
+    const url = cleanUrl(raw.url);
+    const title = String(raw.title ?? "").replace(/\s+/g, " ").trim().slice(0, WISH_TITLE_MAX);
+    if (!title && !url) return null;
+    const out = {
+      title, artist: String(raw.artist ?? "").replace(/\s+/g, " ").trim().slice(0, WISH_ARTIST_MAX),
+      url, vid: videoIdOf(url) || "", src: ["share", "takeout", "manual"].includes(src) ? src : "manual",
+    };
+    const label = String(from || raw.from || "").replace(/\s+/g, " ").trim().slice(0, WISH_FROM_MAX);
+    if (label) out.from = label;
+    return out;
+  }
+
+  /**
+   * İstekleri ekler (aynı istek bir kez: video kimliği ya da ad+sanatçı). entries: [{title, artist, url}].
+   * Dönen: {ok, added, duplicate, limit} (limit: üst sınır yüzünden eklenemeyen). Mevcut kayıtta bağlantı yoksa yenisininki tamamlanır.
+   */
+  addWishes(entries, { src = "manual", from = "" } = {}) {
+    if (!Array.isArray(entries) || !entries.length) return { ok: true, added: 0, duplicate: 0, limit: 0, noop: true };
+    return this.#mutate((doc) => {
+      if (!isObject(doc.wishes)) doc.wishes = {};
+      const wishes = doc.wishes;
+      const keys = new Map();
+      for (const [wid, w] of Object.entries(wishes)) if (isObject(w)) keys.set(wishKey(w), wid);
+      let added = 0;
+      let duplicate = 0;
+      let limit = 0;
+      let filled = 0;
+      const stamp = this.now();
+      for (const raw of entries) {
+        const clean = Collection.cleanWish(raw, src, from);
+        if (!clean) continue;
+        const key = wishKey(clean);
+        if (!key) continue;
+        if (keys.has(key)) {
+          const old = wishes[keys.get(key)];
+          if (!old.url && clean.url) {
+            old.url = clean.url;
+            old.vid = clean.vid;
+            filled += 1;
+          }
+          duplicate += 1;
+          continue;
+        }
+        if (Object.keys(wishes).length >= WISH_LIMIT) {
+          limit += 1;
+          continue;
+        }
+        const wid = this.#newWishId(wishes);
+        wishes[wid] = { ...clean, t: stamp };
+        keys.set(key, wid);
+        added += 1;
+      }
+      return { added, duplicate, limit, ...(added || filled ? {} : { noop: true }) };
+    });
+  }
+
+  /** İsteği "eklendi" yapar (songId ya da true) ya da geri alır (false). Elle yapılan işaret auto'yu siler. */
+  setWishDone(wid, value) {
+    if (!isObject(this.doc.wishes) || !has(this.doc.wishes, wid)) return { ok: false, error: "missing" };
+    return this.#mutate((doc) => {
+      const w = doc.wishes[wid];
+      if (value) {
+        w.done = typeof value === "string" ? value : true;
+      } else {
+        delete w.done;
+      }
+      delete w.auto;
+      return {};
+    });
+  }
+
+  removeWish(wid) {
+    if (!isObject(this.doc.wishes) || !has(this.doc.wishes, wid)) return { ok: false, error: "missing" };
+    return this.#mutate((doc) => {
+      delete doc.wishes[wid];
+      return {};
+    });
+  }
+
+  /** "Eklendi" olanların hepsini siler (liste temizliği). {ok, removed}. */
+  clearDoneWishes() {
+    const all = isObject(this.doc.wishes) ? this.doc.wishes : {};
+    const ids = Object.keys(all).filter((wid) => isObject(all[wid]) && all[wid].done);
+    if (!ids.length) return { ok: true, removed: 0, noop: true };
+    return this.#mutate((doc) => {
+      for (const wid of ids) delete doc.wishes[wid];
+      return { removed: ids.length };
+    });
+  }
+
+  /** Ad benzerliğiyle bulunan eşleşmeleri işler: [{id, songId}] -> done = songId, auto = true. Zaten done olana dokunmaz. */
+  applyWishMatches(matches) {
+    const all = isObject(this.doc.wishes) ? this.doc.wishes : {};
+    const todo = (matches || []).filter((m) => m && has(all, m.id) && isObject(all[m.id]) && !all[m.id].done && typeof m.songId === "string");
+    if (!todo.length) return { ok: true, marked: 0, noop: true };
+    return this.#mutate((doc) => {
+      for (const m of todo) {
+        doc.wishes[m.id].done = m.songId;
+        doc.wishes[m.id].auto = true;
+      }
+      return { marked: todo.length };
+    });
+  }
+
   // -------------------------------------------------------- yedek (dışa/içe)
 
   exportData() {
@@ -540,6 +685,7 @@ export class Collection {
       tags: JSON.parse(JSON.stringify(this.doc.tags)),
       songs: JSON.parse(JSON.stringify(this.doc.songs)),
       lists: JSON.parse(JSON.stringify(this.doc.lists || {})),
+      wishes: JSON.parse(JSON.stringify(isObject(this.doc.wishes) ? this.doc.wishes : {})),
     };
   }
 
@@ -639,7 +785,24 @@ export class Collection {
           }
         }
       }
-      return { tagsAdded, favsAdded, songsTouched, listsAdded, itemsAdded };
+      // Eklenecekler: aynı istek (video kimliği ya da ad+sanatçı) bir kez; "eklendi" işareti yedekten alınmaz (şarkı kimliği başka cihazda
+      // geçerli olmayabilir), yalnız eksik istekler eklenir.
+      let wishesAdded = 0;
+      if (isObject(data.wishes)) {
+        if (!isObject(doc.wishes)) doc.wishes = {};
+        const keys = new Set(Object.values(doc.wishes).filter(isObject).map((w) => wishKey(w)));
+        for (const saved of Object.values(data.wishes)) {
+          const clean = Collection.cleanWish(saved, isObject(saved) ? saved.src : "manual");
+          if (!clean) continue;
+          const key = wishKey(clean);
+          if (!key || keys.has(key) || Object.keys(doc.wishes).length >= WISH_LIMIT) continue;
+          const wid = this.#newWishId(doc.wishes);
+          doc.wishes[wid] = { ...clean, t: Number(isObject(saved) && saved.t) || this.now() };
+          keys.add(key);
+          wishesAdded += 1;
+        }
+      }
+      return { tagsAdded, favsAdded, songsTouched, listsAdded, itemsAdded, wishesAdded };
     });
   }
 }

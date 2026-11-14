@@ -197,7 +197,7 @@ check("içe aktarma BİRLEŞTİRİR: var olan favori/etiket kalır, yedek ekleni
 check("içe aktarma: bozuk JSON / yanlış biçim / çok büyük reddedilir, veri değişmez", (() => {
   const before = JSON.stringify(other.doc);
   return other.importJson("{x").error === "json" && other.importJson('{"v":2}').error === "format" && other.importJson('{"v":1,"tags":[],"songs":{}}').error === "format"
-    && other.importJson("x".repeat(1024 * 1024 + 1)).error === "size" && other.importJson(null).error === "size" && JSON.stringify(other.doc) === before;
+    && other.importJson("x".repeat(4 * 1024 * 1024 + 1)).error === "size" && other.importJson(null).error === "size" && JSON.stringify(other.doc) === before;
 })());
 check("içe aktarma: tehlikeli kimlikler (__proto__) atlanır, belge bozulmaz", (() => {
   const evil = JSON.stringify({ v: 1, tags: { a: { name: "x" } }, songs: { "__proto__": { fav: true }, [ZEUS]: { fav: true, tags: ["a", "olmayan"] } } });

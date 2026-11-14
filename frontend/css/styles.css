@@ -1477,3 +1477,31 @@ button.cc.more {
 .cover-cand-text { display: flex; flex-direction: column; min-width: 0; }
 .cover-cand-text b { font-size: 14px; word-break: break-word; }
 .cover-cand-text small { color: var(--text-dim); font-size: 12px; }
+
+/* ---------- Eklenecekler (istek listesi) ---------- */
+.wish-card {
+  display: flex; align-items: center; gap: 12px; width: 100%; margin: 0 0 14px; padding: 12px 14px; min-height: 64px; text-align: left;
+  font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer;
+}
+.wish-card-icon { flex: 0 0 40px; width: 40px; height: 40px; display: grid; place-items: center; border-radius: 12px; background: var(--panel-2); color: var(--accent); }
+.wish-card-icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.wish-card-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.wish-card-text b { font-size: 16px; }
+.wish-card-text small { font-size: 13px; color: var(--text-dim); }
+.wish-intro { font-size: 13px; color: var(--text-dim); line-height: 1.45; margin: -4px 0 12px; }
+.wish-help { margin: 0 0 12px; font-size: 13px; color: var(--text-dim); }
+.wish-help summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; }
+.wish-help p { margin: 4px 0 0; line-height: 1.45; }
+.wish-add { display: flex; flex-direction: column; gap: 8px; margin: 0 0 12px; }
+.wish-add[hidden] { display: none; }
+.wish-add input {
+  min-width: 0; padding: 10px 12px; font: inherit; font-size: 15px; color: var(--text); background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.wish-add-row { display: flex; gap: 8px; }
+.wish-row .song-thumb { flex: 0 0 48px; width: 48px; height: 48px; font-size: 20px; }
+.wish-row.done .list-name { color: var(--text-dim); }
+.wish-row.done .song-thumb { opacity: 0.55; }
+.list-row .list-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.list-row a.list-btn { text-decoration: none; }
+.list-row .wish-done[aria-pressed="true"] { background: var(--accent-dim); border-color: var(--accent); color: var(--text); }

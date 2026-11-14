@@ -9,7 +9,7 @@
 // yeni worker beklemeden devralıyor (skipWaiting + clients.claim), yoksa
 // GitHub Pages'e atılan bir düzeltme kullanıcıya günlerce ulaşmayabiliyor.
 
-const VERSION = "v66";
+const VERSION = "v67";
 const CACHE = `stem-mikser-${VERSION}`;
 // Kabuk cache'lerinin adı (stem-mikser-v<sayı>). Eski sürümler YALNIZ bu kalıpla silinir: uygulamanın kendi cache'leri
 // (stemcache.js: stem-mikser-stems-v1 = çevrimdışı şarkılar; paylaşılan dosya: stem-mikser-share-v1) farklı adlı ve
@@ -36,6 +36,8 @@ const SHELL = [
   "./js/look.js",
   "./js/shell.js",
   "./js/cover.js",
+  "./js/wishlist.js",
+  "./js/zipread.js",
   "./js/coverstore.js",
   "./js/navstack.js",
   "./js/app.js",
@@ -232,19 +234,37 @@ function shareRedirect(state) {
   return Response.redirect(new URL(`./?${SHARE_PARAM}=${state}`, self.location).href, 303);
 }
 
+// Metin paylaşımı (YouTube Music gibi): title/text/url alanları. Alan başına en çok bu kadar karakter saklanır.
+const SHARE_TEXT_MAX = 2000;
+
 /**
  * POST /share-target: multipart içindeki İLK dosyayı `stem-mikser-share-v1` cache'ine koyar, uygulamaya yönlendirir.
- * Dosya yoksa ?paylasim=bos, işlenemezse ?paylasim=hata. Tek bekleyen kayıt (yenisi eskinin yerine geçer).
+ * Dosya yoksa ama title/text/url varsa (ör. YouTube Music'ten bir şarkı paylaşıldı) metni JSON olarak aynı tek kayda koyar ve
+ * ?paylasim=metin'e yönlendirir; uygulama onu "Eklenecekler"e yazar (bağlantıya HİÇBİR istek atılmaz). Hiçbiri yoksa ?paylasim=bos,
+ * işlenemezse ?paylasim=hata. Tek bekleyen kayıt (yenisi eskinin yerine geçer).
  * 30 MB üstü saklanmaz: yalnız ad/boyut kaydedilir (bellek ve depolama boşa dolmasın), uygulama mesaj gösterir.
  */
 async function handleShare(request) {
   try {
     const form = await request.formData();
     const files = [];
-    for (const [, value] of form.entries()) {
+    const texts = {};
+    for (const [key, value] of form.entries()) {
       if (typeof value !== "string") files.push(value);
+      else if (key === "title" || key === "text" || key === "url") texts[key] = value.trim().slice(0, SHARE_TEXT_MAX);
     }
-    if (!files.length) return shareRedirect("bos");
+    if (!files.length) {
+      if (!(texts.title || texts.text || texts.url)) return shareRedirect("bos");
+      const cache = await caches.open(SHARE_CACHE);
+      for (const old of await cache.keys()) await cache.delete(old);
+      await cache.put(
+        new URL(SHARE_KEY, self.location).href,
+        new Response(JSON.stringify({ title: texts.title || "", text: texts.text || "", url: texts.url || "" }), {
+          headers: { "content-type": "application/json", "x-share-state": "text", "x-share-time": String(Date.now()) },
+        })
+      );
+      return shareRedirect("metin");
+    }
     const [file] = files;
     const cache = await caches.open(SHARE_CACHE);
     for (const old of await cache.keys()) await cache.delete(old);

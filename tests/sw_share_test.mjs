@@ -38,8 +38,8 @@ check("manifest: share_target POST + multipart, action kapsam içinde (./share-t
   target && target.method === "POST" && target.enctype === "multipart/form-data" && target.action === "./share-target"
   && new URL(target.action, `${ORIGIN}/stem-mikser/`).href === TARGET && manifest.scope === "./");
 const accepts = target.params.files[0].accept;
-check("manifest: yalnız dosya (title/text/url YOK), audio/* + bilinen uzantılar",
-  !("title" in target.params) && !("text" in target.params) && !("url" in target.params) && accepts.includes("audio/*")
+check("manifest: dosya (audio/* + bilinen uzantılar) VE metin alanları (title/text/url: YouTube Music paylaşımı -> Eklenecekler)",
+  target.params.title === "title" && target.params.text === "text" && target.params.url === "url" && accepts.includes("audio/*")
   && share.AUDIO_EXTENSIONS.every((ext) => accepts.includes(`.${ext}`)));
 check("manifest: kimlik alanları değişmedi (id yok, start_url ./)", !("id" in manifest) && manifest.start_url === "./");
 check("kabuk listesinde share.js var", code.includes('"./js/share.js"'));
@@ -79,13 +79,55 @@ pending = await share.readPending(caches, `${ORIGIN}/stem-mikser/`);
 check("ikinci paylaşım birincinin yerine geçer (tek kayıt)", pending.name === "yeni.wav"
   && (await (await caches.open("stem-mikser-share-v1")).keys()).length === 1);
 
-// --- dosyasız POST (metin/bağlantı)
+// --- dosyasız POST: metin/bağlantı -> Eklenecekler (YouTube Music paylaşımı)
 caches = fakeCaches(); sw = await loadSw({ caches });
-out = await sw.fetch(post([], { extra: { text: "https://youtu.be/xyz", title: "Video" } }));
-check("dosyasız POST (metin/bağlantı): ./?paylasim=bos, cache'e yazılmaz", out.responded.status === 303
+out = await sw.fetch(post([], { extra: { text: "Sentetik Şarkı • Sentetik Sanatçı https://music.youtube.com/watch?v=abcdefghijk&si=IZLEME", title: "Sentetik Şarkı" } }));
+check("dosyasız POST (metin/bağlantı): ./?paylasim=metin'e yönlendirir", out.responded.status === 303
+  && out.responded.headers.get("location").endsWith("?paylasim=metin"));
+entry = await (await caches.open("stem-mikser-share-v1")).match(KEY);
+check("metin paylaşımı: JSON gövde, state=text, zaman damgası", entry && entry.headers.get("x-share-state") === "text"
+  && Date.now() - Number(entry.headers.get("x-share-time")) < 5000 && (await entry.json()).title === "Sentetik Şarkı");
+pending = await share.readPending(caches, `${ORIGIN}/stem-mikser/`);
+check("readPending: metin kaydı {state: text, title, text, url}", pending.state === "text" && pending.title === "Sentetik Şarkı"
+  && pending.text.includes("music.youtube.com") && pending.url === "" && !pending.file);
+const wishVerdict = share.classify(pending);
+check("classify: metin -> wish; ad, sanatçı, izleme parametresiz bağlantı", wishVerdict.action === "wish" && wishVerdict.clear
+  && wishVerdict.entry.title === "Sentetik Şarkı" && wishVerdict.entry.artist === "Sentetik Sanatçı"
+  && wishVerdict.entry.url === "https://music.youtube.com/watch?v=abcdefghijk" && wishVerdict.entry.vid === "abcdefghijk", JSON.stringify(wishVerdict.entry));
+check("metin paylaşımı yalnız bu tek kayda yazar (kabuk cache'ine dokunmaz)", ![...caches.store.keys()].some((k) => /^stem-mikser-v\d+$/.test(k))
+  && (await (await caches.open("stem-mikser-share-v1")).keys()).length === 1);
+check("aşırı uzun alan kırpılır (2000)", await (async () => {
+  const c = fakeCaches(); const s = await loadSw({ caches: c });
+  await s.fetch(post([], { extra: { text: "x".repeat(10000) } }));
+  const p = await share.readPending(c, `${ORIGIN}/stem-mikser/`);
+  return p.text.length === 2000;
+})());
+check("yeni dosya paylaşımı metin kaydının yerine geçer (tek kayıt)", await (async () => {
+  await sw.fetch(post([audio("a.mp3", 100)]));
+  const p = await share.readPending(caches, `${ORIGIN}/stem-mikser/`);
+  return p.state === "ok" && p.name === "a.mp3" && (await (await caches.open("stem-mikser-share-v1")).keys()).length === 1;
+})());
+check("dosya + metin birlikte: dosya kazanır (metin atılır)", await (async () => {
+  const c = fakeCaches(); const s = await loadSw({ caches: c });
+  await s.fetch(post([audio("b.mp3", 100)], { extra: { text: "bir sey", title: "x" } }));
+  const p = await share.readPending(c, `${ORIGIN}/stem-mikser/`);
+  return p.state === "ok" && p.name === "b.mp3";
+})());
+check("metin kaydı bir saatten eskiyse stale", await (async () => {
+  const p = await share.readPending(caches, `${ORIGIN}/stem-mikser/`, Date.now() + 2 * 60 * 60 * 1000);
+  return p.state === "stale";
+})());
+check("yalnız bağlantı paylaşımı: başlıksız istek (ad boş, bağlantı var)", (() => {
+  const v = share.classify({ state: "text", title: "", text: "", url: "https://youtu.be/abcdefghijk?si=x" });
+  return v.action === "wish" && v.entry.title === "" && v.entry.url === "https://youtu.be/abcdefghijk" && v.entry.vid === "abcdefghijk";
+})());
+check("boş metin paylaşımı -> mesaj", share.classify({ state: "text", title: " ", text: "", url: "" }).kind === "nowish");
+caches = fakeCaches(); sw = await loadSw({ caches });
+out = await sw.fetch(post([], { extra: { text: "   ", title: "", url: "" } }));
+check("dosyasız ve boş metin: ./?paylasim=bos, cache'e yazılmaz", out.responded.status === 303
   && out.responded.headers.get("location").endsWith("?paylasim=bos") && !caches.store.has("stem-mikser-share-v1"));
-check("launchKind: bos -> empty, hata -> error, 1 -> file, yok -> null",
-  share.launchKind("?paylasim=bos") === "empty" && share.launchKind("?paylasim=hata") === "error"
+check("launchKind: bos -> empty, hata -> error, 1 -> file, metin -> text, yok -> null",
+  share.launchKind("?paylasim=bos") === "empty" && share.launchKind("?paylasim=hata") === "error" && share.launchKind("?paylasim=metin") === "text"
   && share.launchKind("?paylasim=1") === "file" && share.launchKind("") === null && share.launchKind("?x=1") === null);
 
 // --- büyük dosya: saklanmaz, yalnız ad/boyut

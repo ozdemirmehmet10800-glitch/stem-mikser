@@ -11,6 +11,7 @@ function check(name, ok, detail = "") {
 }
 
 check("sekme: kitaplık/listeler/liste/ayarlar", tabForView("library") === "library" && tabForView("lists") === "lists" && tabForView("list") === "lists" && tabForView("settings") === "settings");
+check("Eklenecekler ekranı Listeler sekmesine bağlı; [lists, wishes] iki geri", tabForView("wishes") === "lists" && layersToRoot(["lists", "wishes"]) === 2 && tabPlan("wishes", "library", ["lists", "wishes"]).pops === 2);
 check("oynatıcıda sekme yok, dock gizli", tabForView("player") === null && !dockVisible("player") && dockVisible("library"));
 check("bilinmeyen ekran -> sekme yok", tabForView("x") === null && tabForView(undefined) === null);
 

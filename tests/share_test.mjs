@@ -47,14 +47,14 @@ check("large: mesaj boyutu ve sınırı söyler, silinir", (() => {
   return v.kind === "large" && v.text.includes("45,0 MB") && v.text.includes("30,0 MB") && v.clear;
 })());
 check("stale/yok: 'bulunamadı' mesajı", classify({ ...ok, state: "stale" }).text === MESSAGES.gone && classify(null).kind === "gone");
-check("mesajlar: dosyasız önerilen metin", MESSAGES.empty === "Dosya gelmedi. Bağlantı ya da metin eklenemez; bir ses dosyasını paylaş.");
+check("mesajlar: hiçbiri gelmedi (dosya da metin de yok)", MESSAGES.empty.includes("ses dosyası ya da metin"));
 
 // --- süre uyarısı
 check("durationWarning: 10 dk içinde boş, üstünde uyarır, bilinmiyorsa boş", durationWarning(600) === "" && durationWarning(null) === ""
   && /10 dakikadan uzun/.test(durationWarning(601)) && durationWarning(601).includes("10:01"));
 
 // --- launchKind
-check("launchKind", launchKind("?paylasim=1") === "file" && launchKind("?paylasim=bos") === "empty" && launchKind("?paylasim=hata") === "error"
+check("launchKind", launchKind("?paylasim=metin") === "text" && launchKind("?paylasim=1") === "file" && launchKind("?paylasim=bos") === "empty" && launchKind("?paylasim=hata") === "error"
   && launchKind("") === null && launchKind(undefined) === null && launchKind("?baska=1") === null);
 
 // --- onay kartı görünümü: paylaşım YOKKEN kart görünmez, düğme pasif (hata: boş kart görünüyordu)

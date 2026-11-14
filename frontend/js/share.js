@@ -6,6 +6,8 @@
 // kartta "Yükle ve ayır"a basınca gidilir. Kayıt yükleme başarılı olunca ya da "Vazgeç"te silinir; 1 saatten eskisi
 // açılışta silinir.
 
+import { parseSharedText } from "./wishlist.js";
+
 // sw.js ile AYNI sabitler (sw.js klasik betik, buradan içe aktaramaz; tests/sw_share_test.mjs eşitliği sınar).
 export const SHARE_PARAM = "paylasim";
 export const SHARE_CACHE = "stem-mikser-share-v1";
@@ -16,7 +18,8 @@ export const SERVER_MAX_SECONDS = 10 * 60;            // sunucu MAX_DURATION_SEC
 export const AUDIO_EXTENSIONS = ["mp3", "m4a", "wav", "flac", "ogg", "opus", "aac"];
 
 export const MESSAGES = Object.freeze({
-  empty: "Dosya gelmedi. Bağlantı ya da metin eklenemez; bir ses dosyasını paylaş.",
+  empty: "Paylaşımda ses dosyası ya da metin yoktu. Bir ses dosyasını ya da bir şarkı bağlantısını paylaş.",
+  nowish: "Paylaşımda şarkı adı ya da bağlantı bulunamadı.",
   error: "Paylaşılan dosya alınamadı. Tekrar paylaşmayı dene.",
   gone: "Paylaşılan dosya bulunamadı (süresi geçmiş olabilir). Tekrar paylaş.",
 });
@@ -41,12 +44,13 @@ export function isAudio({ name = "", type = "" } = {}) {
   return Boolean(match && AUDIO_EXTENSIONS.includes(match[1].toLowerCase()));
 }
 
-/** Adres satırındaki ?paylasim=... değerini yorumlar: "1" dosya var, "bos" dosya yok, "hata" işlenemedi, yoksa null. */
+/** Adres satırındaki ?paylasim=... değerini yorumlar: "1" dosya var, "metin" metin/bağlantı var, "bos" hiçbiri, "hata" işlenemedi, yoksa null. */
 export function launchKind(search) {
   const value = new URLSearchParams(String(search || "")).get(SHARE_PARAM);
   if (value === null) return null;
   if (value === "bos") return "empty";
   if (value === "hata") return "error";
+  if (value === "metin") return "text";
   return "file";
 }
 
@@ -64,6 +68,21 @@ export async function readPending(cachesApi, base, now = Date.now()) {
   const hit = await cache.match(keyUrl(base));
   if (!hit) return null;
   const header = (name) => hit.headers.get(name);
+  if (header("x-share-state") === "text") {
+    // Metin/bağlantı paylaşımı (Eklenecekler): JSON {title, text, url}
+    const time = Number(header("x-share-time")) || 0;
+    if (!(time > 0) || now - time > SHARE_MAX_AGE_MS) return { state: "stale", name: "", size: 0, type: "", skipped: 0, time };
+    let body = {};
+    try {
+      body = JSON.parse(await hit.text());
+    } catch {
+      body = {};
+    }
+    return {
+      state: "text", name: "", size: 0, type: "application/json", skipped: 0, time,
+      title: String(body.title || ""), text: String(body.text || ""), url: String(body.url || ""),
+    };
+  }
   let name = "";
   try {
     name = decodeURIComponent(header("x-share-name") || "");
@@ -100,6 +119,11 @@ export async function clearPending(cachesApi) {
  */
 export function classify(pending) {
   if (!pending || pending.state === "stale") return { action: "message", kind: "gone", text: MESSAGES.gone, clear: true };
+  if (pending.state === "text") {
+    const entry = parseSharedText({ title: pending.title, text: pending.text, url: pending.url });
+    if (!entry) return { action: "message", kind: "nowish", text: MESSAGES.nowish, clear: true };
+    return { action: "wish", entry, clear: true };
+  }
   if (pending.state === "large") {
     return {
       action: "message", kind: "large", clear: true,
