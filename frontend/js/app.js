@@ -5620,8 +5620,22 @@ async function playListIndex(index, { lid = playlistCtx && playlistCtx.lid, note
   }
   await startPlayback();
   updateListBar();
+  prepareNextInList(list, index, map, ctx);
   if (note) notePlayer(note);
   return true;
+}
+
+// Listede geçiş süresi: çalan şarkı başladıktan sonra SIRADAKİNİN sesi arka planda cihaza indirilir (yalnız indirme + önbellek; çözme ve
+// motora dokunma YOK). Böylece geçiş ağdan değil cihazdan açılır. Çevrimdışıyken / zaten cihazdaysa bir şey yapılmaz; hata çalmayı etkilemez.
+function prepareNextInList(list, index, map, ctx) {
+  try {
+    const next = nextPlayable(list.items, index, ctx);
+    if (next.index < 0) return;
+    const song = map.get(list.items[next.index].song);
+    if (song && song.state === "done") enqueuePrefetch(song);
+  } catch (error) {
+    console.warn("[liste] sıradakini hazırlama", error);
+  }
 }
 
 // Şarkı bitti: sıradaki çalınabilir var mı? Varsa geçişi başlatır ve true döner (sessiz <audio> durmasın). Yoksa liste bitti.
@@ -7365,12 +7379,28 @@ async function startTrainerMic() {
   refreshTrainerUi();
 }
 
+// Mikrofon kapanınca Android bazen ses çıkışını "iletişim" rotasında bırakıyor (bir kullanıcıda mikrofondan sonra uygulama sesi bir süre gitmişti).
+// Çalmıyorsak ses bağlamı askıya alınır: çıkış akışı bırakılır, bir sonraki çalma (engine.play zaten resume eder) çıkışı normal rotada yeniden kurar.
+// ÇALARKEN dokunulmaz (askı sesi keserdi). Yalnız mikrofon GERÇEKTEN açıkken kapatılınca çalışır; antrenör kapalıyken hiç devreye girmez.
+function settleOutputAfterMic() {
+  setTimeout(async () => {
+    try {
+      const ctx = engine.ctx;
+      if (!ctx || ctx.state !== "running" || engine.playing || trainerMic.active) return;
+      await ctx.suspend();
+    } catch { /* çalmayı hiçbir koşulda etkilemez */ }
+  }, 800);
+}
+
 function stopTrainerMic(reason = "") {
   trainer.collect = null;
   trainer.calib = null;
   trainer.alignHistory = [];
   trainerPlayWatch.cancel();
-  if (trainerMic.active) trainerMic.stop();
+  if (trainerMic.active) {
+    trainerMic.stop();
+    settleOutputAfterMic();
+  }
   trainer.smoother.reset();
   trainer.gate.reset();
   if (reason) trainer.message = reason;

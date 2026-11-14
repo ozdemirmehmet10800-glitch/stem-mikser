@@ -24,9 +24,18 @@
 
 ## Genel özet
 
-(Oturum sonunda doldurulacak.)
+Oturum kullanım sınırına takılıp erken bitti. YAPILDI: Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar, sunucu ucu canlıda),
+Aşama 3 (Eklenecekler, paylaş menüsü metin/bağlantı, Takeout zip/CSV), Aşama 4'ten iki iş (mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme).
+YAPILMADI: Aşama 4'ün geri kalanı (sözlü -> sözsüz geçiş, konsol/bellek taraması, ek test/sadeleştirme). Modal'a hiçbir GPU işi eklenmedi, hiçbir şarkı verisine dokunulmadı.
 
 ## Kayıtlar (en yeni üstte)
+
+### 4. Küçük iyileştirmeler (Aşama 4, kısmen)
+
+- **Mikrofon kapanınca ses rotası:** Antrenör mikrofonu kapanınca, çalmıyorsak ses bağlamı askıya alınır; sonraki çalma çıkışı normal rotada yeniden kurar
+  (Android'de mikrofondan sonra sesin gitmesi şikâyeti için önlem; telefonda doğrulanmadı). Çalarken dokunulmaz. Antrenör varsayılan kapalı kaldı.
+- **Listede geçiş:** Çalma listesinde bir şarkı başlayınca sıradakinin sesi arka planda cihaza indirilir (yalnız indirme; çözme/motor yok), geçiş ağdan değil cihazdan açılır.
+- **SW:** v68. Telefonda kontrol: (1) iki şarkılı liste çal, ilk şarkıdayken sıradaki "cihaza iniyor" görünmeli; (2) geçiş hızlı olmalı.
 
 ### 3. Eklenecekler (Aşama 3)
 
