@@ -4,7 +4,7 @@
 // KURAL: bağlantılara HİÇBİR İSTEK atılmaz, hiçbir şey indirilmez; bağlantı yalnız kullanıcı dokununca tarayıcıda açılır.
 // Şarkı adı/sanatçı yalnız verilen metinden ve CSV sütunlarından okunur. Veri yalnız telefonda kalır (collection belgesi).
 
-import { fold } from "./songfilter.js";
+import { fold, queryTokens } from "./songfilter.js";
 
 export const WISH_LIMIT = 2000;                 // en çok kayıt (localStorage tek anahtarı şişmesin)
 export const WISH_TITLE_MAX = 160;
@@ -271,6 +271,16 @@ export function wishesFromCsv(text) {
     return { entries, rows: body.length, untitled, kind: "ids" };
   }
   return { entries: [], rows: body.length, untitled: 0, kind: "unknown" };
+}
+
+// ------------------------------------------------------------------ arama
+
+/** Eklenecekler araması: sorgunun her sözcüğü ad, sanatçı ya da kaynak etiketinde geçmeli (Türkçe/aksan/büyük-küçük katlamalı). Boş sorgu = hepsi. */
+export function wishMatchesQuery(wish, query) {
+  const words = queryTokens(query);
+  if (!words.length) return true;
+  const text = fold([wish.title, wish.artist, wish.from].filter(Boolean).join(" "));
+  return words.every((word) => text.includes(word));
 }
 
 // ------------------------------------------------------------------ özet cümlesi

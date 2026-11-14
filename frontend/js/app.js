@@ -89,7 +89,7 @@ import {
 } from "./cover.js";
 import { coverStore } from "./coverstore.js";
 import {
-  findMatches, wishesFromCsv, importSummary, cleanUrl,
+  findMatches, wishesFromCsv, importSummary, cleanUrl, wishMatchesQuery,
 } from "./wishlist.js";
 import { readCsvEntries, looksLikeZip, ZipError } from "./zipread.js";
 import {
@@ -5091,6 +5091,7 @@ let wishFilter = "pending";            // "pending" | "done" | "all" (yalnız be
 // Takeout binlerce kayıt getirebilir: hepsini birden çizmek telefonda ekranı saniyelerce dondurur. Sayfa sayfa çizilir.
 const WISH_PAGE = 150;
 let wishLimit = WISH_PAGE;
+let wishQuery = "";                    // arama kutusu (yalnız bellekte)
 
 function wishMessage(text, tone = "warn") {
   const node = el("wishes-message");
@@ -5163,12 +5164,13 @@ function renderWishes() {
   const box = el("wishes-list");
   box.replaceChildren();
   const all = collection.wishList();
-  const shown = all.filter((wish) => wishFilter === "all" || (wishFilter === "done" ? wish.done : !wish.done));
+  const shown = all.filter((wish) => (wishFilter === "all" || (wishFilter === "done" ? wish.done : !wish.done))
+    && wishMatchesQuery(wish, wishQuery));
   if (!shown.length) {
     const none = document.createElement("li");
     none.className = "list-row";
     none.style.cursor = "default";
-    none.textContent = !all.length
+    none.textContent = all.length && wishQuery.trim() ? "Aramayla eşleşen kayıt yok." : !all.length
       ? "Henüz bir şey yok. Başka uygulamadan (ör. YouTube Music) bir şarkıyı bu uygulamaya paylaş, Takeout dosyanı al ya da elle ekle."
       : (wishFilter === "done" ? "Henüz eklendi olan yok." : "Bekleyen yok.");
     box.append(none);
@@ -5357,6 +5359,11 @@ async function importTakeout(files) {
 }
 
 on("open-wishes", "click", openWishesScreen);
+on("wish-search", "input", () => {
+  wishQuery = el("wish-search").value;
+  wishLimit = WISH_PAGE;
+  renderWishes();
+});
 on("wishes-back", "click", () => requestBack("wishes"));
 on("wish-import", "click", () => el("wish-file").click());
 on("wish-file", "change", async () => {

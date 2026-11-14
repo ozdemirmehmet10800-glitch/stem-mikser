@@ -27,7 +27,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v70 (son kod commit'i GUNLUK'taki 6. kayıtta). 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
+- **Son sürüm:** SW v71. 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -36,6 +36,13 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 7. Eklenecekler'de arama
+
+- **Ne:** Eklenecekler ekranına arama kutusu: ad, sanatçı ya da kaynak (ör. Takeout liste adı) ile süzer. Türkçe harf, aksan ve büyük-küçük farkı önemsiz;
+  birden çok sözcük yazarsan hepsi geçmeli. Bekleyen / Eklendi / Hepsi çipleriyle birlikte çalışır.
+- **SW:** v71.
+- **Telefonda kontrol:** Eklenecekler'de arama kutusuna bir şarkı adının bir kısmını yaz: yalnız eşleşenler kalmalı; silince hepsi geri gelmeli.
 
 ### 6. Eklenecekler: uzun liste sayfa sayfa
 

@@ -189,3 +189,13 @@ console.log("\ntümü geçti");
   console.log(`${ok ? "ok  " : "FAIL"} Eklenecekler ekranı sayfalı çizilir (hepsi birden değil)`);
   if (!ok) process.exit(1);
 }
+
+// arama
+{
+  const { wishMatchesQuery } = await import("../frontend/js/wishlist.js");
+  const w = { title: "Şarkı Adı", artist: "İstanbul Grubu", from: "Beğendiklerim" };
+  const ok = wishMatchesQuery(w, "") && wishMatchesQuery(w, "sarki") && wishMatchesQuery(w, "ISTANBUL adi") && wishMatchesQuery(w, "begendik")
+    && !wishMatchesQuery(w, "sarki yok") && wishMatchesQuery({ title: "", artist: "", from: "" }, "  ");
+  console.log(`${ok ? "ok  " : "FAIL"} wishMatchesQuery: Türkçe katlama, AND, kaynak etiketi, boş sorgu`);
+  if (!ok) process.exit(1);
+}
