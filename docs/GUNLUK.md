@@ -27,7 +27,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v71. 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
+- **Son sürüm:** SW v72 (kayıt 8'deki on özellik dahil). 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -36,6 +36,27 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 8. On yeni özellik (öneri listesinin hepsi)
+
+Hepsi yeni görünümde ve klasikte çalışır; veriler yalnız telefonda. Her biri saf mantık modülü + testli. SW v72, 71 test dosyası yeşil.
+
+1. **Eklenecekler'den yükleme:** Bekleyen satırda yukarı-ok düğmesi: ses dosyasını sen seçersin, onay kartı kitaplıkta açılır, "Yükle ve ayır"a basınca yüklenir ve istek "eklendi" olur. (GPU yine yalnız o düğmeyle başlar.)
+2. **Kapak yedeği:** Ayarlar > "Kapak yedeğini indir/yükle". Yalnız senin seçtiğin/onayladığın kapaklar; yükleme birleştirir, şarkıda zaten kendi kapağın varsa dokunmaz.
+3. **Kitaplık sıralaması:** Aramanın altında "Sırala": Yeni, Ada göre, En çok çalınan, En uzun, En kısa. Çalma sayacı yalnız telefonda (şarkı baştan başlayınca +1).
+4. **Uyku zamanlayıcısı:** Mikser başlığında ay simgesi: 15/30/60 dk ya da "Şarkı sonu". Son 20 sn ses kısılır, sonra durur; küçük oynatıcıda kalan süre görünür.
+5. **Çalma sırası:** Kitaplıkta uzun bas > "Sıraya ekle"; Listeler sekmesinde "Çalma sırası" kartı (kaldır/temizle). Şarkı bitince sıradaki başlar. Çalma listesi modunda sıra işlemez.
+6. **Kilit ekranı önceki/sonraki:** Liste dışında da çalışır: sonraki = sıra, yoksa kitaplıktaki sonraki şarkı; önceki = 3 sn'den sonra başa sar, değilse önceki şarkı. ±10 sn atlama da duruyor.
+7. **Kendi mikser ön ayarların:** Ön ayar satırının sonunda "+ Kaydet" (ad sorar, en çok 12); dokun = uygula, uzun bas = sil. Ana sese dokunmaz, şarkıda olmayan kanal atlanır.
+8. **Adlı A-B döngüler:** Döngü çubuğunda "+ Adla kaydet" (ör. Nakarat, Solo); chip'e dokun = döngüyü aç, "×" = sil. Şarkı silinince döngüleri de gider.
+9. **Tanı raporu:** Ayarlar > "Tanı raporunu kopyala": sürüm, sayılar, durum, son hatalar. Token, API adresi, söz ve mikrofon verisi İÇERMEZ (testle sabit); sorun olunca bana yapıştır.
+10. **Cihazdaki şarkılar:** Ayarlar > "Cihazdaki şarkılar (tek tek sil)": şarkı başına boyut ve "Sil" (onaylı). Hiçbir şey kendiliğinden silinmez.
+
+- **Telefonda kontrol (4 adım):**
+  1. İki şarkıyı seçip "Sıraya ekle" de, birini çal, sonuna doğru ilerlet: sıradaki kendiliğinden başlamalı; kilit ekranında ileri düğmesi de sıradakine geçmeli.
+  2. Mikserde ay simgesinden 15 dk seç; küçük oynatıcıda "uyku 14:xx" görünmeli. "+ Kaydet" ile bir ön ayar, "+ Adla kaydet" ile bir döngü kaydet.
+  3. Kitaplıkta "Sırala > En çok çalınan"; Eklenecekler'de bir satırın yukarı-ok düğmesiyle dosya seçip karta düştüğünü gör (yüklemek zorunda değilsin).
+  4. Ayarlar'da "Tanı raporunu kopyala" ve "Cihazdaki şarkılar"ı aç.
 
 ### 7. Eklenecekler'de arama
 

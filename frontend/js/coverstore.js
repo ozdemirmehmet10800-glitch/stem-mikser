@@ -62,6 +62,25 @@ export const coverStore = {
     return found;
   },
 
+  /** Tüm kayıtlar: Map(id -> kayıt) (kapak yedeği için). Okunamazsa boş Map. */
+  async all() {
+    const out = new Map();
+    try {
+      await withStore("readonly", (store) => {
+        const keys = store.getAllKeys();
+        const values = store.getAll();
+        return () => {
+          keys.result.forEach((key, index) => {
+            if (values.result[index]) out.set(String(key), values.result[index]);
+          });
+        };
+      });
+    } catch {
+      return new Map();
+    }
+    return out;
+  },
+
   async put(id, record) {
     try {
       await withStore("readwrite", (store) => { store.put(record, id); });

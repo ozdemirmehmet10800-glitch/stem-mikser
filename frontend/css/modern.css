@@ -440,3 +440,7 @@ html.ui-new .player-cover { width: 40px; height: 40px; flex: 0 0 40px; font-size
 html.ui-new .info-cover { width: 96px; height: 96px; flex: 0 0 96px; font-size: 44px; }
 html.ui-new .wish-row .song-thumb { width: 48px; height: 48px; flex: 0 0 48px; font-size: 20px; }
 html.ui-new #wish-manage { margin-top: 8px; }
+html.ui-new .sleep-row .chip { border: 0; background: var(--panel-2); }
+html.ui-new .sleep-row .chip[aria-pressed="true"] { background: var(--accent-dim); box-shadow: inset 0 0 0 1px var(--accent); }
+html.ui-new .loop-saved .chip, html.ui-new .mix-presets .chip { position: relative; }
+html.ui-new .loop-saved .chip::after { content: ""; position: absolute; left: -2px; right: -2px; top: 50%; height: 44px; margin-top: -22px; }

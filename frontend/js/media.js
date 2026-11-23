@@ -156,19 +156,28 @@ export class MediaBridge {
     if (list) {
       this.#set("previoustrack", () => list.onPrevious());
       this.#set("nexttrack", () => list.onNext());
-      // Liste modunda ileri/geri = ŞARKI geçişi. 10 sn atlama işleyicileri yanında dururken Android kilit ekranı ileri/geri
-      // yuvalarını onlara verebiliyor (düğme 10 sn atlar, şarkı değişmez): liste modunda bunlar kaldırılır.
-      this.#set("seekbackward", null);
-      this.#set("seekforward", null);
+      if (list.keepSeek) {
+        // Kütüphane kipi (liste dışı, sıra/sıradaki şarkı var): önceki/sonraki şarkı + ±10 sn atlama birlikte.
+        this.#bindSeekSteps();
+      } else {
+        // Liste modunda ileri/geri = ŞARKI geçişi. 10 sn atlama işleyicileri yanında dururken Android kilit ekranı ileri/geri
+        // yuvalarını onlara verebiliyor (düğme 10 sn atlar, şarkı değişmez): liste modunda bunlar kaldırılır.
+        this.#set("seekbackward", null);
+        this.#set("seekforward", null);
+      }
     } else {
       this.#set("previoustrack", () => this.onSeek(0));
       this.#set("nexttrack", null);
-      // visualTime: kilit ekranı kullanıcının DUYDUĞU konumu gösteriyor, ileri/geri de ona göre olsun.
-      this.#set("seekbackward", (details) =>
-        this.onSeek(this.engine.visualTime - ((details && details.seekOffset) || 10)));
-      this.#set("seekforward", (details) =>
-        this.onSeek(this.engine.visualTime + ((details && details.seekOffset) || 10)));
+      this.#bindSeekSteps();
     }
+  }
+
+  #bindSeekSteps() {
+    // visualTime: kilit ekranı kullanıcının DUYDUĞU konumu gösteriyor, ileri/geri de ona göre olsun.
+    this.#set("seekbackward", (details) =>
+      this.onSeek(this.engine.visualTime - ((details && details.seekOffset) || 10)));
+    this.#set("seekforward", (details) =>
+      this.onSeek(this.engine.visualTime + ((details && details.seekOffset) || 10)));
   }
 
   setPlaybackState(playing) {

@@ -34,6 +34,8 @@
   <symbol id="i-wish" viewBox="0 0 24 24"><path d="M7 4h10v16l-5-3.5L7 20z"/></symbol>
   <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V5M7.5 9.5 12 5l4.5 4.5M5 19h14"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19 14.5A7.5 7.5 0 0 1 9.5 5a7.5 7.5 0 1 0 9.5 9.5z"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M16 16l4 4"/></symbol>
 </svg>
@@ -75,6 +77,12 @@
       </button>
     </div>
 
+    <div class="library-sort-row">
+      <label class="library-sort"><span>Sırala</span>
+        <select id="library-sort" aria-label="Kitaplık sıralaması"></select>
+      </label>
+    </div>
+
     <!-- Süzme çipleri (★ Favoriler; etiketler sonraki commit): yalnız çip varsa görünür -->
     <div class="library-filters" id="library-filters" role="group" aria-label="Kitaplık süzmesi" hidden></div>
 
@@ -87,6 +95,7 @@
       <span class="select-count" id="select-count">0 seçili</span>
       <button class="btn btn-small" id="select-all">Tümünü seç</button>
       <button class="btn btn-small" id="select-plist">Listeye ekle</button>
+      <button class="btn btn-small" id="select-queue">Sıraya ekle</button>
       <button class="btn btn-small" id="select-tags">Etiketler</button>
       <button class="btn btn-small btn-danger" id="select-delete" disabled>
         Sil (0)
@@ -135,6 +144,10 @@
       <span class="wish-card-text"><b>Eklenecekler</b><small id="wish-card-sub">Yüklemek istediğin şarkılar</small></span>
       <span class="list-chevron" aria-hidden="true">›</span>
     </button>
+    <section class="queue-box" id="queue-box" hidden aria-label="Çalma sırası">
+      <div class="queue-head"><b id="queue-title">Çalma sırası</b><button type="button" class="btn btn-small" id="queue-clear">Temizle</button></div>
+      <ol class="queue-list" id="queue-list"></ol>
+    </section>
     <div class="library-actions">
       <button class="btn btn-primary" id="lists-new">+ Yeni liste</button>
     </div>
@@ -189,6 +202,7 @@
       <button class="btn btn-primary" id="wish-import" type="button">Takeout'tan al</button>
       <button class="btn" id="wish-add-open" type="button" aria-expanded="false">Elle ekle</button>
     </div>
+    <input type="file" id="wish-upload-file" accept="audio/*" hidden>
     <input type="file" id="wish-file" accept=".zip,.csv,application/zip,application/x-zip-compressed,text/csv" multiple hidden>
     <details class="wish-help">
       <summary>Nasıl çalışır? Takeout nasıl alınır?</summary>
@@ -227,8 +241,12 @@
       <button type="button" class="player-cover song-thumb" id="player-cover" aria-label="Şarkı bilgisi ve kapak" title="Şarkı bilgisi ve kapak"></button>
       <div class="player-title" id="player-title">—</div>
       <div class="player-meta" id="player-meta"></div>
+      <button type="button" class="icon-btn sleep-btn" id="sleep-open" aria-label="Uyku zamanlayıcısı" aria-expanded="false" title="Uyku zamanlayıcısı">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-moon"/></svg>
+      </button>
     </header>
     <!-- Yeni görünümde "Hi-Fi'a yükselt" düğmesi alt çubuktan buraya taşınır (app.js placeReprocess): alt çubuk tek satır kalır, miksere yer açılır -->
+    <div class="sleep-row" id="sleep-row" role="group" aria-label="Uyku zamanlayıcısı" hidden></div>
     <div class="player-method-row" id="player-method-row"><div class="player-method" id="player-method" hidden></div></div>
 
     <!-- akor şeridi -->
@@ -368,6 +386,7 @@
         <span class="loop-range" id="loop-range">A — · B —</span>
         <div class="loop-bars" id="loop-bars" role="group" aria-label="Hazır döngü uzunluğu"></div>
       </div>
+      <div class="loop-row loop-saved" id="loop-saved" role="group" aria-label="Kayıtlı döngüler"></div>
     </div>
 
     <div id="player-message" class="message" hidden></div>
@@ -542,6 +561,10 @@
         <small id="sw-version">Sürüm: …</small>
         <small id="sw-state">Service worker durumu kontrol ediliyor…</small>
         <small id="stem-cache-state">Çevrimdışı kopyalar hesaplanıyor…</small>
+        <details class="cache-songs-details" id="cache-songs-details">
+          <summary>Cihazdaki şarkılar (tek tek sil)</summary>
+          <div class="cache-songs" id="cache-songs"></div>
+        </details>
       </div>
 
       <div class="field look-field">
@@ -576,6 +599,8 @@
           <pre id="audio-diag-log" style="white-space:pre-wrap;font-size:11px;user-select:text"></pre>
         </details>
         <button type="button" class="btn btn-small" id="copy-diag">Tanıyı kopyala</button>
+        <small>"Tanı raporunu kopyala": sürüm, depolama, sayılar ve son hatalar. Token, API adresi, söz ya da mikrofon verisi İÇERMEZ; sorun olunca bana yapıştır.</small>
+        <button type="button" class="btn btn-small" id="copy-report">Tanı raporunu kopyala</button>
       </div>
 
       <div class="field">
@@ -605,6 +630,13 @@
         </div>
         <input type="file" id="collection-file" accept="application/json,.json" hidden>
         <small id="collection-message"></small>
+        <small>Kapak resimlerin (senin seçtiğin ya da onayladığın) ayrı bir yedek dosyasıdır; dosyadan gelen kapaklar yedeğe girmez, sunucudan yeniden alınır.</small>
+        <div class="settings-buttons">
+          <button type="button" class="btn btn-small" id="cover-export">Kapak yedeğini indir</button>
+          <button type="button" class="btn btn-small" id="cover-import">Kapak yedeğini yükle</button>
+        </div>
+        <input type="file" id="cover-backup-file" accept="application/json,.json" hidden>
+        <small id="cover-backup-message"></small>
       </div>
 
       <div class="field">

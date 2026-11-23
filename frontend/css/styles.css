@@ -1506,3 +1506,44 @@ button.cc.more {
 .list-row a.list-btn { text-decoration: none; }
 .list-row .wish-done[aria-pressed="true"] { background: var(--accent-dim); border-color: var(--accent); color: var(--text); }
 .wish-more { list-style: none; display: flex; justify-content: center; padding: 12px 0; }
+
+/* uyku zamanlayıcısı */
+.sleep-btn.on { color: var(--accent); }
+.sleep-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0 8px; }
+.sleep-row[hidden] { display: none; }
+.sleep-row .chip { min-height: 36px; padding: 7px 12px; border-radius: 18px; border: 1px solid var(--line); background: transparent; color: var(--text); font: inherit; font-size: 13px; position: relative; }
+.sleep-row .chip[aria-pressed="true"] { background: var(--accent-dim); border-color: var(--accent); }
+.sleep-row .chip::after { content: ""; position: absolute; left: -2px; right: -2px; top: 50%; height: 44px; margin-top: -22px; }
+.sleep-left { font-size: 13px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.sleep-btn svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* çalma sırası */
+.queue-box { margin: 0 0 14px; padding: 12px 14px; background: var(--panel); border-radius: var(--radius); }
+.queue-box[hidden] { display: none; }
+.queue-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.queue-list { list-style: none; margin: 0; padding: 0; }
+.queue-list li { display: flex; align-items: center; gap: 8px; min-height: 44px; font-size: 14px; }
+.queue-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-more { color: var(--text-dim); font-size: 13px; }
+.queue-list .list-btn { flex: 0 0 44px; width: 44px; height: 44px; display: grid; place-items: center; padding: 0; background: var(--panel-2); border: 0; border-radius: 50%; color: var(--danger); cursor: pointer; }
+.queue-list .list-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* kitaplık sıralaması */
+.library-sort-row { display: flex; justify-content: flex-end; margin: -4px 0 8px; }
+.library-sort { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); }
+.library-sort select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; min-height: 36px; }
+
+/* kendi ön ayarların ve adlı döngüler */
+.loop-saved { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.loop-saved::-webkit-scrollbar { display: none; }
+.loop-saved-item { display: inline-flex; flex: 0 0 auto; gap: 2px; }
+.loop-saved .chip { flex: 0 0 auto; white-space: nowrap; }
+.loop-saved-del { padding: 7px 10px; min-width: 36px; }
+
+/* çevrimdışı kopya listesi */
+.cache-songs-details { font-size: 13px; color: var(--text-dim); }
+.cache-songs-details summary { cursor: pointer; min-height: 36px; display: flex; align-items: center; }
+.cache-songs { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; }
+.cache-song { display: flex; align-items: center; gap: 8px; }
+.cache-song-name { flex: 1; min-width: 0; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cache-song small { color: var(--text-faint); white-space: nowrap; }

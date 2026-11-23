@@ -15,8 +15,11 @@ import {
 } from "./loop.js";
 import {
   PRESETS, applyPreset, cleanStates, snapshot, planRestore, readMix, writeMix,
-  removeMix, writeLoop, isDefaultMix, effectiveGain,
+  removeMix, writeLoop, isDefaultMix, effectiveGain, normalizeRecord,
 } from "./mixmemory.js";
+import {
+  readPresets, writePresets, makePreset, addPreset, removePreset, presetRecord, readLoops, writeLoops, addLoop, removeLoop, dropLoops,
+} from "./userpresets.js";
 import { ChordStrip, formatTime } from "./chords.js";
 import {
   SUB_GROUPS, GROUP_ORDER, SUB_LABELS, subNames, subOf, subView, subVersion, isRunning, groupThresholdSec,
@@ -35,7 +38,7 @@ import { LyricsScreen, ROWS_MIN, ROWS_MAX, normalizeRows, syncScreenLines } from
 import * as TR from "./translation.js";
 import { vinylPitch, nearestSemitone, keyShift, formatPitch } from "./vinyl.js";
 import {
-  normalizeFx, neutralFx, DEFAULT_ROOM, ROOM_PRESETS, normalizeRoom, roomPresetId,
+  normalizeFx, neutralFx, DEFAULT_ROOM, ROOM_PRESETS, normalizeRoom, roomPresetId, isDefaultRoom,
   DECAY_MIN, DECAY_MAX,
 } from "./fx.js";
 import {
@@ -88,6 +91,11 @@ import {
   caaFrontUrl, Throttle,
 } from "./cover.js";
 import { coverStore } from "./coverstore.js";
+import { encodeBackup, parseBackup } from "./coverbackup.js";
+import { summarizeBySong, formatSize as formatCacheSize, buildReport } from "./cachelist.js";
+import { SleepTimer, SLEEP_MINUTES, formatRemaining } from "./sleeptimer.js";
+import { readQueue, writeQueue, addToQueue, removeFromQueue, takeNext } from "./queue.js";
+import { SORT_MODES, SORT_LABELS, readSort, writeSort, readPlays, bumpPlays, sortSongs } from "./sortplays.js";
 import {
   findMatches, wishesFromCsv, importSummary, cleanUrl, wishMatchesQuery,
 } from "./wishlist.js";
@@ -238,7 +246,7 @@ function syncMini() {
     mini.dataset.cover = coverKey;
     paintCover(el("mini-cover"), currentSong.id, model.title);
   }
-  el("mini-sub").textContent = model.sub;
+  el("mini-sub").textContent = model.sub + (playQueue.length ? ` · sırada ${playQueue.length}` : "") + (sleepTimer.active ? ` · uyku ${sleepLabel()}` : "");
   mini.classList.toggle("playing", model.playing);
   el("mini-play").setAttribute("aria-label", model.playing ? "Duraklat" : "Oynat");
   el("mini-progress").style.transform = `scaleX(${model.progress.toFixed(4)})`;
@@ -691,6 +699,7 @@ let playlistCtx = null;         // çalma listesinden açılan oynatıcı: {lid,
 // Kitaplık verisi (favori, etiket): telefonda, TEK anahtar (js/collection.js). Süzme durumu yalnız bellekte.
 const collection = new Collection(safeStorage().storage);
 const libraryFilter = { query: "", fav: false, tag: null };
+let librarySort = readSort(safeStorage().storage);       // "new" | "name" | "played" | "long" | "short" (telefonda saklanır)
 let visibleSongs = [];          // süzme sonrası görünen liste (seçim, "Tümünü seç" ve boş durum buna bakar)
 
 const STAR_PATH = "M12 3.6l2.5 5.4 5.9.7-4.4 4 1.2 5.8L12 16.5 6.8 19.5 8 13.7l-4.4-4 5.9-.7z";
@@ -1052,7 +1061,7 @@ function renderLibrary(songs) {
   if (libraryFilter.tag && !collection.tagList().some((tag) => tag.id === libraryFilter.tag && tag.count > 0)) {
     libraryFilter.tag = null;
   }
-  visibleSongs = filterSongs(songs, libraryFilter, libraryContext());
+  visibleSongs = filterSongs(sortSongs(songs, librarySort, librarySort === "played" ? readPlays(safeStorage().storage) : {}), libraryFilter, libraryContext());
   const visibleIds = new Set(visibleSongs.map((song) => song.id));
   for (const id of [...selectedIds]) {
     if (!visibleIds.has(id)) selectedIds.delete(id);
@@ -1275,6 +1284,7 @@ async function deleteSelected() {
       peaksCache.removeSongs(gone);       // dalga verisi de gitsin
       melodyCache.removeSongs(gone);      // hedef melodi de gitsin
       covers.drop(gone).catch(() => {});  // kapak resmi de gitsin
+      dropLoops(safeStorage().storage, gone);   // adlı döngüler de gitsin
       dropMeta(gone);            // cihazdaki durum/akor kopyası da gitsin
       collection.removeSongs(gone);   // favori/etiket kayıtları ve liste öğeleri de HEMEN gitsin
       if (mixStorage()) removeMix(mixStorage(), gone);
@@ -1317,6 +1327,8 @@ function schedulePoll() {
   }, POLL_MS);
 }
 
+let lastUploadedId = "";      // son başarılı yüklemenin şarkı kimliği (Eklenecekler'den yükleme "eklendi" işaretlesin)
+
 async function handleUpload(file) {
   // Dönen: true = sunucu aldı (ya da zaten vardı), false = yüklenemedi (paylaşım kartı kaydı korusun diye).
   if (!requireOnline(el("library-message"), "şarkı yüklemek")) return false;
@@ -1328,6 +1340,7 @@ async function handleUpload(file) {
     const result = await api.uploadSong(file, (ratio) => {
       status.textContent = `${file.name} yükleniyor… %${Math.round(ratio * 100)}`;
     }, quality);
+    lastUploadedId = (result && result.id) || "";
     status.textContent = result.existing
       ? `${file.name} zaten işlenmiş, listede.`
       : `${file.name} alındı, işleniyor.`;
@@ -1445,6 +1458,11 @@ async function confirmShare() {
   select.value = previous;
   const ok = await run;
   if (ok) {
+    const wishId = sharePending && sharePending.wishId;
+    if (wishId) {
+      collection.setWishDone(wishId, lastUploadedId || true);     // Eklenecekler'den başlatılan yükleme: istek "eklendi" olur
+      refreshWishCard();
+    }
     await dropShare();
   } else {
     shareBusy = false;
@@ -2628,7 +2646,16 @@ function startLoop() {
 function handleSongEnded() {
   setPlayIcon(false);
   metronome.stop();
+  if (sleepTimer.atEnd) {          // "şarkı sonu" uykusu: sonraki şarkıya (liste/sıra) GEÇİLMEZ
+    sleepCancel();
+    media.stopKeeper();
+    media.setPlaybackState(false);
+    releasePlaybackWake();
+    notePlayer("Uyku zamanlayıcısı: şarkı bitti, müzik durdu.", "ok", 10000);
+    return;
+  }
   if (playlistCtx && playlistAdvance()) return;
+  if (!playlistCtx && playQueueNext()) return;
   media.stopKeeper();
   media.setPlaybackState(false);
   releasePlaybackWake();
@@ -2639,6 +2666,104 @@ function stopLoop() {
   rafHandle = 0;
 }
 
+
+// ---------------------------------------------------------------- uyku zamanlayıcısı (mantık js/sleeptimer.js)
+// Dakika kipinde son 20 sn'de ana ses doğrusal kısılır (kullanıcının kaydırıcı değeri çarpanla ezilir, KAYDEDİLMEZ), süre dolunca çalma durur
+// ve ana ses kaydırıcının değerine döner. "Şarkı sonu"nda şarkı doğal bitince durur.
+
+const sleepTimer = new SleepTimer();
+let sleepInterval = 0;
+
+function sleepUserGain() {
+  return Number(el("master").value) / 100;
+}
+
+function sleepCancel() {
+  sleepTimer.cancel();
+  clearInterval(sleepInterval);
+  sleepInterval = 0;
+  engine.setMaster(sleepUserGain());
+  refreshSleepUi();
+}
+
+function sleepTick() {
+  const state = sleepTimer.tick(Date.now());
+  if (state.expired) {
+    stopPlayback();
+    clearInterval(sleepInterval);
+    sleepInterval = 0;
+    engine.setMaster(sleepUserGain());
+    notePlayer("Uyku zamanlayıcısı bitti, müzik durdu.", "ok", 10000);
+  } else if (state.active && !state.atEnd) {
+    engine.setMaster(sleepUserGain() * state.gain);
+  }
+  refreshSleepUi();
+  syncMini();
+}
+
+function sleepLabel() {
+  if (!sleepTimer.active) return "";
+  if (sleepTimer.atEnd) return "şarkı sonu";
+  return formatRemaining(sleepTimer.tick(Date.now()).remainingMs);
+}
+
+function sleepStart(minutes) {
+  if (minutes === "end") sleepTimer.startAtEnd();
+  else if (!sleepTimer.startMinutes(minutes, Date.now())) return;
+  clearInterval(sleepInterval);
+  sleepInterval = setInterval(sleepTick, 1000);
+  refreshSleepUi();
+}
+
+function refreshSleepUi() {
+  const button = el("sleep-open");
+  const row = el("sleep-row");
+  if (!button || !row) return;
+  const on = sleepTimer.active;
+  button.classList.toggle("on", on);
+  button.title = on ? `Uyku: ${sleepLabel()}` : "Uyku zamanlayıcısı";
+  if (row.hidden) return;
+  row.replaceChildren();
+  const options = [...SLEEP_MINUTES.map((m) => [m, `${m} dk`]), ["end", "Şarkı sonu"]];
+  for (const [value, text] of options) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    const pressed = on && (value === "end" ? sleepTimer.atEnd : !sleepTimer.atEnd && sleepTimer.minutes === value);
+    chip.setAttribute("aria-pressed", String(pressed));
+    chip.textContent = text;
+    chip.addEventListener("click", () => {
+      sleepStart(value);
+      row.hidden = true;
+      el("sleep-open").setAttribute("aria-expanded", "false");
+      notePlayer(value === "end" ? "Uyku: şarkı bitince duracak." : `Uyku: ${value} dk sonra duracak.`, "ok", 4000);
+    });
+    row.append(chip);
+  }
+  const info = document.createElement("span");
+  info.className = "sleep-left";
+  info.textContent = on ? `Kalan: ${sleepLabel()}` : "";
+  row.append(info);
+  if (on) {
+    const off = document.createElement("button");
+    off.type = "button";
+    off.className = "chip";
+    off.textContent = "İptal";
+    off.addEventListener("click", () => {
+      sleepCancel();
+      row.hidden = true;
+      el("sleep-open").setAttribute("aria-expanded", "false");
+    });
+    row.append(off);
+  }
+}
+
+on("sleep-open", "click", () => {
+  const row = el("sleep-row");
+  row.hidden = !row.hidden;
+  el("sleep-open").setAttribute("aria-expanded", String(!row.hidden));
+  refreshSleepUi();
+});
 
 // ------------------------------------------------- mikser hafızası (Madde 4)
 // Şarkı KİMLİĞİNE bağlı (stems_version'a değil); biçim ve kurallar mixmemory.js'te.
@@ -2764,6 +2889,77 @@ function buildPresetButtons() {
     });
     box.append(button);
   }
+  renderUserPresets();
+}
+
+// ---- kendi ön ayarların (js/userpresets.js): o anki karışımı adla kaydet, her şarkıda uygula (şarkıda olmayan kanal atlanır; ana ses'e dokunmaz)
+let userPresets = readPresets(safeStorage().storage);
+
+function applyUserPreset(preset) {
+  const names = [...engine.channels.keys()];
+  const record = normalizeRecord(presetRecord(preset, masterPercent()));
+  if (!record) return;
+  applyMixStates(planRestore(record, names), { replaceAbsent: true });
+  setRoomState(record.room || DEFAULT_ROOM);
+}
+
+function saveUserPreset() {
+  if (!engine.channels.size) return;
+  const name = window.prompt("Ön ayar adı (en çok 16 harf). Aynı adla kaydedersen üstüne yazılır:", "");
+  if (name === null) return;
+  const preset = makePreset(name, snapshot(engine.channels), isDefaultRoom(roomState) ? null : roomState, `u${Date.now().toString(36)}`);
+  const result = addPreset(userPresets, preset);
+  if (result.error) {
+    showMessage(el("player-message"), result.error === "limit" ? "En çok 12 kendi ön ayarın olabilir; birini sil (uzun bas)." : "Ön ayar için bir ad yaz.", "warn");
+    return;
+  }
+  userPresets = result.list;
+  writePresets(safeStorage().storage, userPresets);
+  renderUserPresets();
+  notePlayer(`"${preset.name}" kaydedildi.`, "ok", 4000);
+}
+
+function renderUserPresets() {
+  const box = el("mix-presets");
+  for (const old of box.querySelectorAll("[data-user-preset], #mix-save")) old.remove();
+  for (const preset of userPresets) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    chip.dataset.userPreset = preset.id;
+    chip.textContent = preset.name;
+    chip.title = "Dokun: uygula. Uzun bas: sil.";
+    let timer = 0;
+    let longPressed = false;
+    chip.addEventListener("pointerdown", () => {
+      longPressed = false;
+      timer = setTimeout(() => {
+        longPressed = true;
+        if (window.confirm(`"${preset.name}" ön ayarı silinsin mi?`)) {
+          userPresets = removePreset(userPresets, preset.id);
+          writePresets(safeStorage().storage, userPresets);
+          renderUserPresets();
+        }
+      }, 600);
+    });
+    for (const type of ["pointerup", "pointerleave", "pointercancel"]) chip.addEventListener(type, () => clearTimeout(timer));
+    chip.addEventListener("click", () => {
+      if (longPressed) {
+        longPressed = false;
+        return;
+      }
+      applyUserPreset(preset);
+    });
+    box.append(chip);
+  }
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "chip";
+  save.id = "mix-save";
+  save.textContent = "+ Kaydet";
+  save.title = "Şimdiki karışımı kendi ön ayarın olarak kaydet";
+  save.addEventListener("click", saveUserPreset);
+  box.append(save);
 }
 
 // "Sıfırla": fader/mute/solo + pan/EQ/yankı gönderimi + ortak oda (hız/ton kendi "Orijinale geri dön"üyle sıfırlanır).
@@ -3803,9 +3999,76 @@ function snapTime(t) {
   return snapPoint(loopGrid, t, loopGrid ? loopSnap : "free");
 }
 
+// ---- adlı döngüler (js/userpresets.js): A-B'yi şarkıya adla kaydet ("Nakarat", "Solo"), tek dokunuşla geri çağır
+let savedLoops = [];
+let savedLoopsFor = null;
+
+function renderSavedLoops() {
+  const box = el("loop-saved");
+  if (!box) return;
+  box.replaceChildren();
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "chip";
+  save.id = "loop-save";
+  save.textContent = "+ Adla kaydet";
+  save.addEventListener("click", saveNamedLoop);
+  box.append(save);
+  for (const loop of savedLoops) {
+    const group = document.createElement("span");
+    group.className = "loop-saved-item";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "chip";
+    open.textContent = `${loop.name} ${formatPoint(loop.a)}-${formatPoint(loop.b)}`;
+    open.addEventListener("click", async () => {
+      loopA = loop.a;
+      loopB = loop.b;
+      loopOn = true;
+      await applyLoop();
+      saveLoopPoints();
+    });
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "chip loop-saved-del";
+    del.textContent = "×";
+    del.setAttribute("aria-label", `Sil: ${loop.name}`);
+    del.addEventListener("click", () => {
+      savedLoops = removeLoop(savedLoops, loop.id);
+      writeLoops(safeStorage().storage, savedLoopsFor, savedLoops);
+      renderSavedLoops();
+      refreshLoopUi();
+    });
+    group.append(open, del);
+    box.append(group);
+  }
+}
+
+function saveNamedLoop() {
+  if (!currentSong || loopA === null || loopB === null) return;
+  const name = window.prompt("Döngü adı (ör. Nakarat, Solo):", "");
+  if (name === null) return;
+  const result = addLoop(savedLoops, { name, a: loopA, b: loopB }, `l${Date.now().toString(36)}`, engine.duration);
+  if (result.error) {
+    loopNotice({ short: "Döngü çok kısa (en az yarım saniye).", limit: "En çok 12 adlı döngü olabilir; birini sil.", range: "Döngü şarkının dışında." }[result.error]);
+    return;
+  }
+  savedLoops = result.list;
+  writeLoops(safeStorage().storage, currentSong.id, savedLoops);
+  renderSavedLoops();
+  refreshLoopUi();
+}
+
 function refreshLoopUi() {
   updateListBar();
   if (!el("loop-bar")) return;
+  const songId = currentSong ? currentSong.id : null;
+  if (songId !== savedLoopsFor) {
+    savedLoopsFor = songId;
+    savedLoops = songId ? readLoops(safeStorage().storage, songId) : [];
+    renderSavedLoops();
+  }
+  if (el("loop-save")) el("loop-save").disabled = !(engine.channels.size > 0 && loopA !== null && loopB !== null);
   const ready = engine.channels.size > 0;
   const full = loopA !== null && loopB !== null;
   el("loop-a").disabled = !ready;
@@ -5049,6 +5312,7 @@ function openListsScreen() {
 
 function renderListsScreen() {
   refreshWishCard();
+  refreshQueueUi();
   const box = el("lists-list");
   const map = librarySongMap();
   const lists = collection.listSummaries();
@@ -5092,6 +5356,7 @@ let wishFilter = "pending";            // "pending" | "done" | "all" (yalnız be
 const WISH_PAGE = 150;
 let wishLimit = WISH_PAGE;
 let wishQuery = "";                    // arama kutusu (yalnız bellekte)
+let pendingWishUpload = "";            // "Yükle"ye basılan isteğin kimliği (dosya seçilince paylaşım kartına bağlanır)
 
 function wishMessage(text, tone = "warn") {
   const node = el("wishes-message");
@@ -5208,6 +5473,19 @@ function renderWishes() {
     sub.textContent = bits.filter(Boolean).join(" · ");
     info.append(name, sub);
     row.append(thumb, info);
+    if (!wish.done) {
+      const upload = document.createElement("button");
+      upload.type = "button";
+      upload.className = "list-btn wish-upload";
+      upload.title = "Ses dosyasını seçip yükle";
+      upload.setAttribute("aria-label", `Ses dosyasını seç ve yükle: ${title}`);
+      upload.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-upload"/></svg>';
+      upload.addEventListener("click", () => {
+        pendingWishUpload = wish.id;
+        el("wish-upload-file").click();
+      });
+      row.append(upload);
+    }
     if (wish.url) {
       const link = document.createElement("a");
       link.className = "list-btn wish-link";
@@ -5359,6 +5637,23 @@ async function importTakeout(files) {
 }
 
 on("open-wishes", "click", openWishesScreen);
+{
+  const select = el("library-sort");
+  if (select) {
+    for (const mode of SORT_MODES) {
+      const option = document.createElement("option");
+      option.value = mode;
+      option.textContent = SORT_LABELS[mode];
+      select.append(option);
+    }
+    select.value = librarySort;
+    select.addEventListener("change", () => {
+      librarySort = select.value;
+      writeSort(safeStorage().storage, librarySort);
+      renderLibrary(librarySongs);
+    });
+  }
+}
 on("wish-search", "input", () => {
   wishQuery = el("wish-search").value;
   wishLimit = WISH_PAGE;
@@ -5385,6 +5680,21 @@ on("wish-add-cancel", "click", () => {
   el("wish-add-open").setAttribute("aria-expanded", "false");
 });
 on("wish-add-go", "click", addWishManually);
+// Eklenecekler'den yükleme: dosyayı sen seçersin (hiçbir şey kendiliğinden indirilmez), onay kartı kitaplıkta açılır; "Yükle ve ayır"a
+// basınca yüklenir ve istek "eklendi" olur. Ayırma (GPU) yalnız o düğmeyle başlar.
+on("wish-upload-file", "change", async () => {
+  const input = el("wish-upload-file");
+  const file = input.files && input.files[0];
+  input.value = "";
+  const wishId = pendingWishUpload;
+  pendingWishUpload = "";
+  if (!file || !wishId) return;
+  const wish = collection.wishList().find((item) => item.id === wishId);
+  await goTab("library");
+  await showShareCard({ file, name: file.name, size: file.size }, wish && wish.title ? `"${wish.title}" isteği için seçildi.` : "");
+  if (sharePending) sharePending.wishId = wishId;
+  showMessage(el("library-message"), "Dosya hazır: aşağıdaki kartta kaliteyi seçip \"Yükle ve ayır\"a bas.", "ok");
+});
 on("wish-clear-done", "click", () => {
   const { done } = collection.wishCounts();
   if (!done) return;
@@ -5628,12 +5938,130 @@ function notePlayer(text, tone = "warn", ms = 6000) {
   }, ms);
 }
 
+// Kilit ekranı önceki/sonraki: liste modunda liste, değilse KİTAPLIK sırası (önce çalma sırası, yoksa kitaplıktaki sonraki şarkı).
+// ±10 sn atlama yine bağlı kalır (keepSeek).
+function refreshTrackControls() {
+  if (!media) return;
+  media.setTrackControls(playlistNow()
+    ? { onPrevious: playlistPrevious, onNext: playlistNext }
+    : { onPrevious: libraryPrevious, onNext: libraryNext, keepSeek: true });
+}
+
+function playableSongById(id) {
+  const song = librarySongs.find((item) => item.id === id);
+  return song && song.state === "done" && !(isOffline() && !isOfflineReady(song)) ? song : null;
+}
+
+function libraryNeighbour(step) {
+  const ids = visibleSongs.filter((song) => playableSongById(song.id)).map((song) => song.id);
+  const at = currentSong ? ids.indexOf(currentSong.id) : -1;
+  if (at < 0) return null;
+  const target = ids[at + step];
+  return target ? playableSongById(target) : null;
+}
+
+function libraryNext() {
+  if (!playQueueNext()) {
+    const next = libraryNeighbour(1);
+    if (next) startSongNow(next);
+  }
+}
+
+function libraryPrevious() {
+  if (engine.visualTime > 3) {
+    engine.seek(0).then(() => metronome.resync());
+    return;
+  }
+  const previous = libraryNeighbour(-1);
+  if (previous) startSongNow(previous);
+  else engine.seek(0).then(() => metronome.resync());
+}
+
+async function startSongNow(song) {
+  const opened = await openSong(song, { fresh: true });
+  if (opened) await startPlayback();
+}
+
+// ---------------------------------------------------------------- çalma sırası (js/queue.js)
+let playQueue = readQueue(safeStorage().storage);
+
+function saveQueue() {
+  writeQueue(safeStorage().storage, playQueue);
+  refreshQueueUi();
+  refreshTrackControls();
+  syncMini();
+}
+
+function addSelectionToQueue(ids) {
+  const result = addToQueue(playQueue, ids);
+  playQueue = result.ids;
+  saveQueue();
+  return result.added;
+}
+
+/** Sıradaki çalınabilir şarkıyı başlatır. Dönen: başlattı mı. (Çalma listesi modunda çağrılmaz.) */
+function playQueueNext() {
+  if (!playQueue.length) return false;
+  const taken = takeNext(playQueue, (id) => Boolean(playableSongById(id)));
+  playQueue = taken.rest;
+  saveQueue();
+  if (!taken.id) return false;
+  playlistCtx = null;
+  startSongNow(playableSongById(taken.id));
+  return true;
+}
+
+function refreshQueueUi() {
+  const box = el("queue-box");
+  if (!box) return;
+  box.hidden = playQueue.length === 0;
+  if (!playQueue.length) return;
+  el("queue-title").textContent = `Çalma sırası (${playQueue.length})`;
+  const list = el("queue-list");
+  list.replaceChildren();
+  for (const id of playQueue.slice(0, 20)) {
+    const song = librarySongs.find((item) => item.id === id);
+    const row = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "queue-name";
+    name.textContent = song ? (song.title || id.slice(0, 12)) : "Bulunamadı";
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "list-btn remove";
+    remove.title = "Sıradan çıkar";
+    remove.setAttribute("aria-label", `Sıradan çıkar: ${name.textContent}`);
+    remove.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"/></svg>';
+    remove.addEventListener("click", () => {
+      playQueue = removeFromQueue(playQueue, id);
+      saveQueue();
+    });
+    row.append(name, remove);
+    list.append(row);
+  }
+  if (playQueue.length > 20) {
+    const more = document.createElement("li");
+    more.className = "queue-more";
+    more.textContent = `… ve ${playQueue.length - 20} şarkı daha`;
+    list.append(more);
+  }
+}
+
+on("queue-clear", "click", () => {
+  playQueue = [];
+  saveQueue();
+});
+on("select-queue", "click", () => {
+  const added = addSelectionToQueue([...selectedIds].filter((id) => playableSongById(id)));
+  exitSelectMode();
+  showMessage(el("library-message"), added ? `${added} şarkı sıraya eklendi (Listeler sekmesinde görünür).` : "Seçilenler zaten sırada ya da çalınamıyor.", added ? "ok" : "warn");
+});
+
 function updateListBar() {
   const bar = el("list-bar");
   if (!bar) return;
   const now = playlistNow();
   bar.hidden = !now;
-  media.setTrackControls(now ? { onPrevious: playlistPrevious, onNext: playlistNext } : null);
+  refreshTrackControls();
   if (!now) return;
   const ctx = listContext(now.map);
   const next = nextPlayable(now.list.items, now.at, ctx);
@@ -6053,6 +6481,88 @@ on("collection-export", "click", () => {
   }
 });
 
+// ---- kapak yedeği (js/coverbackup.js): yalnız senin seçtiğin / onayladığın kapaklar
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+function coverBackupMessage(text) {
+  el("cover-backup-message").textContent = text;
+}
+
+on("cover-export", "click", async () => {
+  try {
+    const all = await coverStore.all();
+    const entries = [];
+    for (const [id, record] of all) {
+      if (record && record.blob && (record.source === "user" || record.source === "found")) {
+        entries.push({ id, source: record.source, mime: record.blob.type || "image/jpeg", data: await blobToBase64(record.blob) });
+      }
+    }
+    if (!entries.length) {
+      coverBackupMessage("Yedeklenecek kapak yok (yalnız kendi seçtiğin ya da onayladığın kapaklar yedeklenir).");
+      return;
+    }
+    const text = encodeBackup(entries);
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+    link.download = `stem-mikser-kapaklar-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    coverBackupMessage(`Kapak yedeği indirildi (${entries.length} kapak, ${(text.length / 1048576).toFixed(1)} MB).`);
+  } catch (error) {
+    coverBackupMessage(`Kapak yedeği indirilemedi: ${error && error.message ? error.message : error}`);
+  }
+});
+
+on("cover-import", "click", () => el("cover-backup-file").click());
+on("cover-backup-file", "change", async (event) => {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = "";
+  if (!file) return;
+  if (file.size > 16 * 1024 * 1024) {
+    coverBackupMessage("Dosya çok büyük (en çok 16 MB).");
+    return;
+  }
+  let parsed;
+  try {
+    parsed = parseBackup(await file.text());
+  } catch {
+    coverBackupMessage("Dosya okunamadı.");
+    return;
+  }
+  if (!parsed.ok) {
+    coverBackupMessage({ json: "Dosya geçerli bir JSON değil.", format: "Bu bir Stem Mikser kapak yedeği değil.", size: "Dosya çok büyük." }[parsed.error] || "Yedek okunamadı.");
+    return;
+  }
+  let added = 0;
+  let kept = 0;
+  for (const entry of parsed.entries) {
+    await covers.load([entry.id]);
+    const source = covers.sourceOf(entry.id);
+    if (source === "user" || source === "found") {      // şarkıda zaten senin kapağın var: dokunulmaz
+      kept += 1;
+      continue;
+    }
+    try {
+      const blob = await (await fetch(`data:${entry.mime};base64,${entry.data}`)).blob();
+      await covers.setImage(entry.id, blob, entry.source);
+      added += 1;
+    } catch {
+      parsed.skipped += 1;
+    }
+  }
+  coverBackupMessage(`Kapak yedeği yüklendi: ${added} eklendi, ${kept} şarkıda zaten kendi kapağın vardı${parsed.skipped ? `, ${parsed.skipped} atlandı` : ""}.`);
+  renderLibrary(librarySongs);
+});
+
 on("collection-import", "click", () => el("collection-file").click());
 on("collection-file", "change", async (event) => {
   const file = event.target.files && event.target.files[0];
@@ -6145,7 +6655,15 @@ function startPlayback() {
   return playStarting;
 }
 
+// Çalma sayacı ("En çok çalınan" sırası): şarkı BAŞTAN (ilk 3 sn) çalmaya başlayınca bir artar; duraklat-devam sayılmaz.
+function countPlay() {
+  try {
+    if (currentSong && engine.visualTime < 3) bumpPlays(safeStorage().storage, currentSong.id);
+  } catch { /* sayaç çalmayı etkilemez */ }
+}
+
 async function runStartPlayback() {
+  countPlay();
   // Autoplay politikası: bu bir kullanıcı hareketi, context burada açılır.
   // Sessiz elementi ÖNCE ve await'siz başlat: kullanıcı hareketi içinde
   // kalsın, yoksa Chrome reddediyor ve kilit ekranı kontrolleri çıkmıyor.
@@ -6681,6 +7199,44 @@ async function refreshStemCacheState() {
   node.textContent =
     `Çevrimdışı kopyalar: ${usage.songs} şarkı, ${usage.files} kanal, ` +
     `${formatBytes(usage.bytes)} / ${formatBytes(usage.limit)} (depolama: ${kalici}).`;
+  renderCacheSongs();
+}
+
+// Cihazdaki şarkılar: şarkı başına boyut ve TEK TEK silme (yalnız sen basınca; hiçbir şey kendiliğinden silinmez).
+function renderCacheSongs() {
+  const box = el("cache-songs");
+  if (!box) return;
+  box.replaceChildren();
+  const rows = summarizeBySong(stemCache.indexSnapshot());
+  if (!rows.length) {
+    box.textContent = "Cihazda kayıtlı şarkı yok.";
+    return;
+  }
+  for (const row of rows) {
+    const song = librarySongs.find((item) => item.id === row.songId);
+    const line = document.createElement("div");
+    line.className = "cache-song";
+    const name = document.createElement("span");
+    name.className = "cache-song-name";
+    name.textContent = song ? (song.title || row.songId.slice(0, 12)) : `(kitaplıkta yok) ${row.songId.slice(0, 8)}`;
+    const size = document.createElement("small");
+    size.textContent = `${formatCacheSize(row.bytes)} · ${row.files} kanal`;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn btn-small";
+    button.textContent = "Sil";
+    button.setAttribute("aria-label", `Cihazdan sil: ${name.textContent}`);
+    button.addEventListener("click", async () => {
+      if (!window.confirm(`"${name.textContent}" cihazdan silinsin mi? (${formatCacheSize(row.bytes)}; sunucudaki şarkıya dokunulmaz, internet varken yeniden inebilir.)`)) return;
+      button.disabled = true;
+      await stemCache.removeSongs([row.songId]);
+      peaksCache.removeSongs([row.songId]);
+      await refreshStemCacheState();
+      if (!views.library.hidden) renderLibrary(librarySongs);
+    });
+    line.append(name, size, button);
+    box.append(line);
+  }
 }
 
 on("clear-stems", "click", async () => {
@@ -6737,6 +7293,44 @@ engine.onResumed = () => {
 };
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) engine.resumeIfSuspended();
+});
+
+// Tanı raporu: SALT OKUNUR, sır yok (token, API adresi, söz/çeviri, mikrofon verisi girmez). Yalnız sürüm, sayılar ve durum.
+function fullReportText() {
+  const stats = collection.stats();
+  const wishes = collection.wishCounts();
+  const sw = el("sw-version") ? el("sw-version").textContent : "";
+  const storageRows = [];
+  try {
+    storageRows.push(`localStorage anahtarı: ${Object.keys(localStorage).filter((key) => key.startsWith("stem-mikser.")).length}`);
+  } catch { /* depolama yok */ }
+  return buildReport([
+    ["Uygulama", [sw, `görünüm: ${isNewLook() ? "yeni" : "klasik"}`, `ekran: ${innerWidth}x${innerHeight} (${devicePixelRatio}x)`,
+      `çevrimiçi: ${navigator.onLine}, sunucuya ulaşılıyor: ${serverReachable}`, navigator.userAgent]],
+    ["Veri", [`${librarySongs.length} şarkı, ${stats.favs} favori, ${stats.tags} etiket, ${stats.lists} liste`,
+      `Eklenecekler: ${wishes.pending} bekliyor, ${wishes.done} eklendi`, `çalma sırası: ${playQueue.length}`,
+      `kapak kaydı: ${covers.records.size} (resimli ${covers.urls.size})`, ...storageRows,
+      `koleksiyon durumu: ${collection.status}`]],
+    ["Ses", [diagText(), `esnetici: ${settings.stretcher}, mobil ses: ${settings.mobileAudio}, paralel çözme: ${settings.decodeParallel}`,
+      `uyku zamanlayıcısı: ${sleepTimer.active ? "açık" : "kapalı"}`, `antrenör: ${trainerEnabled() ? "açık" : "kapalı"}`]],
+    ["Olaylar", [eventsText(diag)]],
+  ]);
+}
+
+on("copy-report", "click", async () => {
+  const button = el("copy-report");
+  const usage = await stemCache.usage().catch(() => null);
+  const text = `${fullReportText()}\n== Çevrimdışı kopyalar ==\n${usage ? `${usage.songs} şarkı, ${usage.files} kanal, ${formatBytes(usage.bytes)}` : "bilinmiyor"}`;
+  try {
+    await navigator.clipboard.writeText(text);
+    button.textContent = "Kopyalandı";
+  } catch {
+    const details = el("audio-diag-details");
+    if (details) details.open = true;
+    el("audio-diag-log").textContent = text;
+    button.textContent = "Kopyalanamadı: Ses olayları'ndan seç";
+  }
+  setTimeout(() => { button.textContent = "Tanı raporunu kopyala"; }, 2500);
 });
 
 on("copy-diag", "click", async () => {
