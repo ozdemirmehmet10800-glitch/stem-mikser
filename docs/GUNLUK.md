@@ -49,6 +49,8 @@
   Arka planı kapatmak için: Ayarlar > Sahne klipleri > "Klibi mikserin arkasında oynat". v79'daki "Mikser" düğmesi kalktı (artık gerek yok).
 - **Neden üste ya da yana değil:** Oynatıcı ekranı sabit yükseklikte; ayrı bir kutu miksere ~90 px bırakıyordu. Arka planda ikisi aynı yeri paylaşıyor.
 - **SW:** v80.
+- **Kullanıcı geri bildirimi:** Beğenilmedi ("hiç olmamış"; video kanalların arkasında net görünmüyor). v79'daki aç/kapa hâli daha iyi bulundu.
+  Sorun başka bir modele devredilmek üzere `docs/KLIP_SORUNU.md`'ye yazıldı (denenenler, ölçüler, kod yerleri, kabul ölçütleri).
 - **Telefonda kontrol (3 adım):**
   1. Klibi saklı bir şarkıyı aç: kanallar görünmeli, klip arkalarında oynamalı; kanal adları okunmalı.
   2. Bir kanalın sürgüsünü/S/M düğmesini kullan: video dokunmayı almamalı, kanal çalışmalı.
