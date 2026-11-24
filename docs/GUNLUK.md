@@ -27,7 +27,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v72 (kayıt 8'deki on özellik dahil). 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
+- **Son sürüm:** SW v73 (kayıt 9'daki sahne modu dahil). 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -36,6 +36,19 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 9. Sahne modu
+
+- **Ne:** Mikserde başlığın altındaki satırda "Sahne" düğmesi. Tam ekran, koyu: devasa **akor** (altında sıradaki akor), altında büyük **söz satırı** (+ sıradaki satır), ilerleme çizgisi, oynat/duraklat, listedeyken önceki/sonraki, "Sıradaki: ..." şarkı adı.
+  Ekran hep açık kalır. Arka planda şarkı adından üretilen iki renkli, yavaş kayan ışık (kapak resmin varsa soluk görünür); yalnız transform/opacity ile hareket eder, ek animasyon döngüsü yok.
+- **Kilit:** Sağ üstteki kilit simgesine dokununca ekran kilitlenir (dokunmalar yutulur, geri tuşu da kapatmaz); açmak için kilit simgesine **basılı tut** (0,7 sn). Sahnede yanlışlıkla durdurmayı önler.
+- **Akor ve söz yoksa** ilgili alan boş kalır, ekran yine çalışır. Ton/transpoze ayarı akorlara uygulanır.
+- **SW:** v73. Bilgisayarda 375x812'de denendi (kilit, geri tuşu, oynat/duraklat, sözlü/sözsüz); telefonda denenmedi.
+- **Telefonda kontrol (4 adım):**
+  1. Bir şarkıyı aç, çal; başlığın altındaki "Sahne"ye dokun: büyük akor ve ilerleme görünmeli.
+  2. Sözü olan bir şarkıda büyük söz satırı akmalı.
+  3. Kilit simgesine dokun, ekrana vur: hiçbir şey olmamalı; geri tuşu da kapatmamalı. Kilidi basılı tutarak aç.
+  4. Çalma listesinde önceki/sonraki düğmeleri ve alttaki "Sıradaki" yazısı görünmeli.
 
 ### 8. On yeni özellik (öneri listesinin hepsi)
 

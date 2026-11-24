@@ -95,6 +95,7 @@ import { encodeBackup, parseBackup } from "./coverbackup.js";
 import { summarizeBySong, formatSize as formatCacheSize, buildReport } from "./cachelist.js";
 import { SleepTimer, SLEEP_MINUTES, formatRemaining } from "./sleeptimer.js";
 import { readQueue, writeQueue, addToQueue, removeFromQueue, takeNext } from "./queue.js";
+import { stageState, stageProgress, holdUnlocks, LOCK_HOLD_MS } from "./stage.js";
 import { SORT_MODES, SORT_LABELS, readSort, writeSort, readPlays, bumpPlays, sortSongs } from "./sortplays.js";
 import {
   findMatches, wishesFromCsv, importSummary, cleanUrl, wishMatchesQuery,
@@ -955,6 +956,7 @@ const layerClosers = {
   },
   fx: () => closeFxDom(),
   info: () => closeInfoDom(),
+  stage: () => closeStageDom(),
   "lyrics-full": () => { if (lyricsScreen) lyricsScreen.close(); },
   select: closeSelectModeDom,
   view: () => {
@@ -2192,6 +2194,7 @@ async function openSong(song, opts = {}) {
     });
     syncCoverUi();
     refreshArtwork();
+    if (stageOpen) stageRefresh();
     // Standart -> "Hi-Fi'a yükselt", Hi-Fi v1 -> "v2'ye yükselt"; v2'de düğme yok.
     refreshMethodUi();
     if (el("reprocess")) el("reprocess").disabled = false;
@@ -2602,6 +2605,7 @@ function setPlayIcon(playing) {
     : '<path d="M8 5v14l11-7z"/>';
   el("play").setAttribute("aria-label", playing ? "Duraklat" : "Oynat");
   if (lyricsScreen) lyricsScreen.setPlaying(playing);
+  if (stageOpen) el("stage").classList.toggle("playing", playing);
   safeHook("icon", playing);
   syncMini();
   syncMiniLoop();
@@ -2624,6 +2628,7 @@ function startLoop() {
     lyricsTick(time);
     if (chordSheetOn) chordSheetTick(time);
     if (lyricsScreen) lyricsScreen.tick(time);
+    if (stageOpen) stageTick(time);
     if (!seeking) {
       el("seek").value = String(Math.round(time * 10));
       wavePlayed(time);
@@ -2666,6 +2671,155 @@ function stopLoop() {
   rafHandle = 0;
 }
 
+
+// ---------------------------------------------------------------- sahne modu (mantık js/stage.js)
+// Tam ekran, ekran hep açık: büyük akor (+ sıradaki), büyük söz satırı (+ sıradaki), ilerleme, sıradaki şarkı. Kilit: dokunuşları yutar, açmak için
+// kilit simgesine basılı tut. Ek animasyon döngüsü YOK: mevcut oynatıcı döngüsüne (startLoop) bağlanır; hareket yalnız transform/opacity.
+
+let stageOpen = false;
+let stageChords = [];
+let stageLocked = false;
+let stageLast = { ci: -2, li: -2 };
+let stageHoldTimer = 0;
+let stageHoldStart = 0;
+
+function stageNextTitle() {
+  const now = playlistNow();
+  if (now) {
+    const next = nextPlayable(now.list.items, now.at, listContext(now.map));
+    return next.index >= 0 ? itemTitle(now.list.items[next.index], now.map) : "";
+  }
+  const queued = playQueue.map((id) => librarySongs.find((song) => song.id === id)).find(Boolean);
+  return queued ? (queued.title || "") : "";
+}
+
+function stageRefresh() {
+  if (!currentSong) return;
+  const title = currentSong.title || currentSong.id.slice(0, 12);
+  const data = songChordData();
+  stageChords = data ? prepareChords(data) : [];
+  el("stage-title").textContent = title;
+  const bits = [];
+  const key = data && data.key ? displayLabel(data.key, shownSemis(), data.key) : "";
+  if (key) bits.push(key);
+  if (data && data.bpm) bits.push(`${Math.round(data.bpm * currentRate())} BPM`);
+  el("stage-meta").textContent = bits.join(" · ");
+  const next = stageNextTitle();
+  el("stage-next-song").textContent = next ? `Sıradaki: ${next}` : "";
+  const inList = Boolean(playlistNow()) || playQueue.length > 0;
+  el("stage-prev").hidden = !playlistNow();
+  el("stage-next").hidden = !inList;
+  // zemin: şarkı adından üretilen iki renk (kapak resmi varsa soluk arka plan)
+  const model = autoCoverModel(title);
+  const root = el("stage");
+  root.style.setProperty("--st-c1", model.c1);
+  root.style.setProperty("--st-c2", model.c2);
+  const url = covers.urlFor(currentSong.id);
+  el("stage-art").style.backgroundImage = url ? `url("${url}")` : "";
+  root.classList.toggle("has-art", Boolean(url));
+  root.classList.toggle("playing", engine.playing);
+  stageLast = { ci: -2, li: -2 };
+  stageTick(engine.visualTime);
+}
+
+function stageTick(time) {
+  const data = songChordData();
+  const lines = lyricsDoc ? lyricsDoc.lines : [];
+  const state = stageState({ chords: stageChords, lines, time });
+  if (state.ci !== stageLast.ci) {
+    stageLast.ci = state.ci;
+    const chord = el("stage-chord");
+    chord.textContent = state.ci >= 0 ? displayLabel(stageChords[state.ci].label, shownSemis(), data && data.key) : "·";
+    chord.classList.remove("pop");
+    void chord.offsetWidth;                    // animasyonu yeniden başlat (yalnız transform/opacity)
+    chord.classList.add("pop");
+    el("stage-next-chord").textContent = state.next >= 0 ? `→ ${displayLabel(stageChords[state.next].label, shownSemis(), data && data.key)}` : "";
+  }
+  if (state.li !== stageLast.li) {
+    stageLast.li = state.li;
+    el("stage-line").textContent = state.li >= 0 ? lines[state.li].text : (lines.length ? "" : "");
+    el("stage-line-next").textContent = state.nextLi >= 0 ? lines[state.nextLi].text : "";
+  }
+  const duration = engine.duration;
+  el("stage-progress").style.transform = `scaleX(${stageProgress(time, duration).toFixed(4)})`;
+  el("stage-time").textContent = formatTime(time);
+  el("stage-left").textContent = `-${formatTime(Math.max(duration - time, 0))}`;
+}
+
+function openStage() {
+  if (!currentSong || stageOpen || engine.channels.size === 0) return;
+  stageOpen = true;
+  el("stage").hidden = false;
+  el("stage").classList.remove("locked");
+  stageRefresh();
+  wakeLock.request();                          // sahnede ekran hep açık
+  pushLayer("stage");
+}
+
+function closeStageDom() {
+  stageOpen = false;
+  stageLocked = false;
+  el("stage").hidden = true;
+  el("stage").classList.remove("locked");
+  el("stage-lock").setAttribute("aria-pressed", "false");
+  el("stage-locked-hint").hidden = true;
+  nav.unblock("stage-lock");
+  if (!engine.playing) releasePlaybackWake();     // çalıyorsa ekran kilidi (wake lock) çalma bitene kadar kalır
+}
+
+function setStageLock(on) {
+  stageLocked = on;
+  el("stage").classList.toggle("locked", on);
+  el("stage-lock").setAttribute("aria-pressed", String(on));
+  el("stage-lock").setAttribute("aria-label", on ? "Kilidi aç (basılı tut)" : "Dokunmayı kilitle");
+  el("stage-lock").innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-${on ? "lock" : "unlock"}"/></svg>`;
+  el("stage-locked-hint").hidden = true;
+  if (on) nav.block("stage-lock");             // kilitliyken geri tuşu da kapatmasın
+  else nav.unblock("stage-lock");
+}
+
+function stageHoldCancel() {
+  clearTimeout(stageHoldTimer);
+  stageHoldTimer = 0;
+}
+
+on("stage-open", "click", openStage);
+on("stage-close", "click", () => {
+  if (!stageLocked) requestBack("stage");
+});
+on("stage-play", "click", () => {
+  if (!stageLocked) togglePlayback();
+});
+on("stage-prev", "click", () => { if (!stageLocked) playlistPrevious(); });
+on("stage-next", "click", () => {
+  if (stageLocked) return;
+  if (playlistNow()) playlistNext();
+  else libraryNext();
+});
+{
+  const lock = el("stage-lock");
+  if (lock) {
+    // Kilit: açıkken tek dokunuş kilitler; kilitliyken LOCK_HOLD_MS basılı tutunca açılır (kısa dokunuş yalnız ipucu gösterir).
+    lock.addEventListener("pointerdown", () => {
+      if (!stageLocked) return;
+      stageHoldStart = Date.now();
+      stageHoldCancel();
+      stageHoldTimer = setTimeout(() => {
+        if (holdUnlocks(Date.now() - stageHoldStart)) setStageLock(false);
+      }, LOCK_HOLD_MS);
+    });
+    for (const type of ["pointerup", "pointerleave", "pointercancel"]) lock.addEventListener(type, stageHoldCancel);
+    lock.addEventListener("click", () => {
+      if (!stageLocked) setStageLock(true);
+      else el("stage-locked-hint").hidden = false;
+    });
+  }
+  const stage = el("stage");
+  if (stage) {
+    // kilitliyken kaydırma/dokunma sahneyi etkilemesin
+    stage.addEventListener("touchmove", (event) => { if (stageLocked) event.preventDefault(); }, { passive: false });
+  }
+}
 
 // ---------------------------------------------------------------- uyku zamanlayıcısı (mantık js/sleeptimer.js)
 // Dakika kipinde son 20 sn'de ana ses doğrusal kısılır (kullanıcının kaydırıcı değeri çarpanla ezilir, KAYDEDİLMEZ), süre dolunca çalma durur

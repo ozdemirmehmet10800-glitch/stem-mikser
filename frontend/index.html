@@ -36,6 +36,8 @@
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/></symbol>
   <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V5M7.5 9.5 12 5l4.5 4.5M5 19h14"/></symbol>
   <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19 14.5A7.5 7.5 0 0 1 9.5 5a7.5 7.5 0 1 0 9.5 9.5z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="i-unlock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-2"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M16 16l4 4"/></symbol>
 </svg>
@@ -247,7 +249,7 @@
     </header>
     <!-- Yeni görünümde "Hi-Fi'a yükselt" düğmesi alt çubuktan buraya taşınır (app.js placeReprocess): alt çubuk tek satır kalır, miksere yer açılır -->
     <div class="sleep-row" id="sleep-row" role="group" aria-label="Uyku zamanlayıcısı" hidden></div>
-    <div class="player-method-row" id="player-method-row"><div class="player-method" id="player-method" hidden></div></div>
+    <div class="player-method-row" id="player-method-row"><div class="player-method" id="player-method" hidden></div><button type="button" class="chip stage-open" id="stage-open" aria-label="Sahne modu">Sahne</button></div>
 
     <!-- akor şeridi -->
     <div class="chordstrip" id="chordstrip">
@@ -863,6 +865,40 @@
     </div>
   </div>
   <input type="file" id="bg-file" accept="image/*,video/*" hidden>
+
+  <!-- sahne modu: tam ekran büyük akor + söz, ekran hep açık, dokunma kilidi (yalnız çalan şarkı için; ayrı katman, geri tuşu önce bunu kapatır) -->
+  <div class="stage" id="stage" hidden role="dialog" aria-modal="true" aria-label="Sahne modu">
+    <div class="stage-bg" aria-hidden="true"><i class="stage-glow g1"></i><i class="stage-glow g2"></i><div class="stage-art" id="stage-art"></div></div>
+    <header class="stage-top">
+      <button type="button" class="stage-btn" id="stage-close" aria-label="Sahne modunu kapat">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
+      </button>
+      <div class="stage-heading"><div class="stage-title" id="stage-title"></div><div class="stage-meta" id="stage-meta"></div></div>
+      <button type="button" class="stage-btn" id="stage-lock" aria-label="Dokunmayı kilitle" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-unlock"/></svg>
+      </button>
+    </header>
+    <main class="stage-main">
+      <div class="stage-chord" id="stage-chord" aria-live="off">—</div>
+      <div class="stage-next-chord" id="stage-next-chord"></div>
+      <div class="stage-line" id="stage-line"></div>
+      <div class="stage-line-next" id="stage-line-next"></div>
+    </main>
+    <footer class="stage-bottom">
+      <div class="stage-progress" aria-hidden="true"><i id="stage-progress"></i></div>
+      <div class="stage-times"><span id="stage-time">0:00</span><span id="stage-left">-0:00</span></div>
+      <div class="stage-controls">
+        <button type="button" class="stage-btn" id="stage-prev" aria-label="Önceki şarkı" hidden><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>
+        <button type="button" class="stage-play" id="stage-play" aria-label="Oynat">
+          <svg class="i-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          <svg class="i-pause" viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>
+        </button>
+        <button type="button" class="stage-btn" id="stage-next" aria-label="Sonraki şarkı" hidden><svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
+      </div>
+      <div class="stage-next-song" id="stage-next-song"></div>
+    </footer>
+    <div class="stage-locked-hint" id="stage-locked-hint" hidden>Kilitli. Açmak için kilit simgesine basılı tut.</div>
+  </div>
 
   <!-- yükleniyor katmanı -->
   <div class="overlay" id="overlay" hidden>

@@ -1547,3 +1547,64 @@ button.cc.more {
 .cache-song { display: flex; align-items: center; gap: 8px; }
 .cache-song-name { flex: 1; min-width: 0; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cache-song small { color: var(--text-faint); white-space: nowrap; }
+
+/* ---------- sahne modu (js/stage.js): tam ekran, koyu, büyük akor + söz; hareket yalnız transform/opacity ---------- */
+.stage {
+  --st-c1: hsl(200 60% 34%); --st-c2: hsl(260 60% 22%);
+  position: fixed; inset: 0; z-index: 46; display: flex; flex-direction: column; background: #06070b; color: #fff; overflow: hidden;
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.stage[hidden] { display: none; }
+.stage-bg { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.stage-glow { position: absolute; width: 120vmax; height: 120vmax; border-radius: 50%; opacity: 0.42; will-change: transform; }
+.stage-glow.g1 { left: -50vmax; top: -45vmax; background: radial-gradient(circle at center, var(--st-c1) 0%, transparent 62%); animation: stage-drift-a 30s ease-in-out infinite alternate; }
+.stage-glow.g2 { right: -55vmax; bottom: -55vmax; background: radial-gradient(circle at center, var(--st-c2) 0%, transparent 62%); animation: stage-drift-b 36s ease-in-out infinite alternate; }
+@keyframes stage-drift-a { from { transform: translate3d(0, 0, 0) scale(1); } to { transform: translate3d(26vmax, 18vmax, 0) scale(1.15); } }
+@keyframes stage-drift-b { from { transform: translate3d(0, 0, 0) scale(1.1); } to { transform: translate3d(-24vmax, -16vmax, 0) scale(0.92); } }
+.stage:not(.playing) .stage-glow { animation-play-state: paused; }
+.stage-art { position: absolute; inset: 0; background-size: cover; background-position: center; opacity: 0; transform: scale(1.25); }
+.stage.has-art .stage-art { opacity: 0.16; }
+.stage-top { position: relative; z-index: 2; display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+.stage-heading { flex: 1; min-width: 0; text-align: center; }
+.stage-title { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage-meta { font-size: 12px; color: rgba(255, 255, 255, 0.62); letter-spacing: 0.04em; min-height: 1em; }
+.stage-btn {
+  flex: 0 0 48px; width: 48px; height: 48px; border-radius: 50%; border: 0; padding: 0; display: grid; place-items: center; cursor: pointer;
+  background: rgba(255, 255, 255, 0.1); color: #fff; -webkit-tap-highlight-color: transparent;
+}
+.stage-btn[hidden] { display: none; }
+.stage-btn svg { width: 22px; height: 22px; fill: currentColor; }
+#stage-lock svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#stage-lock[aria-pressed="true"] { background: #fff; color: #06070b; }
+.stage-main { position: relative; z-index: 2; flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 0 20px; text-align: center; }
+.stage-chord {
+  font-size: clamp(72px, 30vw, 190px); line-height: 1; font-weight: 800; letter-spacing: -0.03em; padding: 0.04em 0.12em;
+  background: linear-gradient(135deg, #7fe7ff, #b9a6ff); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.stage-chord.pop { animation: stage-pop 0.22s cubic-bezier(0.2, 0.8, 0.2, 1); }
+@keyframes stage-pop { from { opacity: 0.2; transform: scale(0.88); } to { opacity: 1; transform: none; } }
+.stage-next-chord { min-height: 1.4em; font-size: clamp(20px, 7vw, 34px); font-weight: 700; color: rgba(255, 255, 255, 0.55); }
+.stage-line { margin-top: 14px; font-size: clamp(22px, 6.8vw, 40px); line-height: 1.25; font-weight: 700; overflow-wrap: anywhere; text-shadow: 0 2px 14px rgba(0, 0, 0, 0.6); }
+.stage-line-next { font-size: clamp(16px, 4.6vw, 26px); line-height: 1.3; color: rgba(255, 255, 255, 0.5); overflow-wrap: anywhere; min-height: 1.3em; }
+.stage-bottom { position: relative; z-index: 2; padding: 6px 16px calc(14px + env(safe-area-inset-bottom, 0px)); }
+.stage-progress { height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.14); overflow: hidden; }
+.stage-progress i { display: block; height: 100%; width: 100%; background: linear-gradient(90deg, #7fe7ff, #b9a6ff); transform-origin: 0 50%; transform: scaleX(0); will-change: transform; }
+.stage-times { display: flex; justify-content: space-between; font-size: 12px; color: rgba(255, 255, 255, 0.6); font-variant-numeric: tabular-nums; padding: 4px 0 6px; }
+.stage-controls { display: flex; align-items: center; justify-content: center; gap: 22px; }
+.stage-play {
+  width: 72px; height: 72px; border-radius: 50%; border: 0; display: grid; place-items: center; cursor: pointer; padding: 0;
+  background: linear-gradient(135deg, #46d3f0, #8f7bff); color: #06121a; -webkit-tap-highlight-color: transparent;
+}
+.stage-play svg { width: 32px; height: 32px; fill: currentColor; grid-area: 1 / 1; }
+.stage-play .i-pause { display: none; }
+.stage.playing .stage-play .i-play { display: none; }
+.stage.playing .stage-play .i-pause { display: block; }
+.stage-next-song { text-align: center; min-height: 1.2em; margin-top: 10px; font-size: 13px; color: rgba(255, 255, 255, 0.55); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage-locked-hint { position: absolute; z-index: 4; left: 50%; top: calc(env(safe-area-inset-top, 0px) + 70px); transform: translateX(-50%); max-width: calc(100% - 32px); padding: 8px 14px; border-radius: 999px; background: rgba(255, 255, 255, 0.92); color: #06070b; font-size: 13px; font-weight: 600; text-align: center; }
+.stage-locked-hint[hidden] { display: none; }
+/* kilitliyken yalnız kilit simgesi dokunmaya cevap verir */
+.stage.locked .stage-btn:not(#stage-lock), .stage.locked .stage-play { pointer-events: none; opacity: 0.35; }
+.stage-open { margin-left: auto; flex: 0 0 auto; }
+.player-method-row { display: flex; align-items: center; gap: 8px; }
+.player-method-row .player-method { flex: 1 1 auto; min-width: 0; padding-left: 0; padding-right: 0; }
+@media (prefers-reduced-motion: reduce) { .stage-glow { animation: none; } .stage-chord.pop { animation: none; } }
