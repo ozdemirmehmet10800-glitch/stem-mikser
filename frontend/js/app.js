@@ -78,7 +78,7 @@ import { NavStack, CLOSE, BLOCKED } from "./navstack.js";
 import { diag, summarize, eventsText } from "./diag.js";
 import { outputVerdict, peakOf, CHECK_DELAY_MS, CHECK_WINDOW_MS, RECHECK_AFTER_MS } from "./outputcheck.js";
 import {
-  SHARE_PARAM, SHARE_MAX_BYTES, MESSAGES as SHARE_MESSAGES, isVideo, launchKind, readPending, clearPending, classify, formatSize,
+  SHARE_PARAM, SHARE_MAX_BYTES, SHARE_VIDEO_MAX_BYTES, MESSAGES as SHARE_MESSAGES, isVideo, launchKind, readPending, clearPending, classify, formatSize,
   formatDuration, durationWarning, cardView,
 } from "./share.js";
 import { Collection, safeStorage } from "./collection.js";
@@ -102,6 +102,7 @@ import {
   findMatches, wishesFromCsv, importSummary, cleanUrl, wishMatchesQuery,
 } from "./wishlist.js";
 import { readCsvEntries, looksLikeZip, ZipError } from "./zipread.js";
+import { extractAudio, REASON_TEXT as MP4_REASON } from "./mp4audio.js";
 import {
   itemState, startIndex, anyPlayable, totalDuration, alreadyInList, nextPlayable, previousAction, indexOfItem, skipNote,
   positionLabel,
@@ -1403,15 +1404,38 @@ let lastUploadedId = "";      // son başarılı yüklemenin şarkı kimliği (E
 async function handleUpload(file) {
   // Dönen: true = sunucu aldı (ya da zaten vardı), false = yüklenemedi (paylaşım kartı kaydı korusun diye).
   if (!requireOnline(el("library-message"), "şarkı yüklemek")) return false;
-  // Sunucu sınırı (30 MB) TÜM dosyaya uygulanır; klip dosyalarında görüntü de sayılır. Boşuna yüklemeden önce açıkça söyle.
-  if (file.size > SHARE_MAX_BYTES) {
-    showMessage(el("library-message"),
-      `"${file.name}" ${formatSize(file.size)}; sınır ${formatSize(SHARE_MAX_BYTES)}.`
-      + (isVideo({ name: file.name, type: file.type }) ? " Klip dosyasında görüntü de sayılır: daha düşük çözünürlüklü/sıkıştırılmış sürümünü dene ya da yalnız ses dosyasını yükle." : " Daha kısa ya da sıkıştırılmış bir dosya dene."),
-      "warn");
-    return false;
-  }
   const status = el("upload-status");
+  // Sunucu sınırı (30 MB) yüklenen dosyaya uygulanır. Büyük KLİPTE görüntü telefonda atılır: ses yeniden kodlanmadan yeni bir .m4a'ya konur
+  // (js/mp4audio.js), yalnız o yüklenir. Ses dosyası 30 MB'ı geçerse eskisi gibi uyarılır.
+  if (file.size > SHARE_MAX_BYTES) {
+    const video = isVideo({ name: file.name, type: file.type });
+    if (!video || file.size > SHARE_VIDEO_MAX_BYTES) {
+      showMessage(el("library-message"),
+        `"${file.name}" ${formatSize(file.size)}; sınır ${formatSize(video ? SHARE_VIDEO_MAX_BYTES : SHARE_MAX_BYTES)}.` + (video ? "" : " Daha kısa ya da sıkıştırılmış bir dosya dene."), "warn");
+      return false;
+    }
+    status.hidden = false;
+    status.textContent = `${file.name}: klipten ses ayıklanıyor…`;
+    let extracted;
+    try {
+      extracted = await extractAudio(file);
+    } catch (error) {
+      console.warn("[mp4] ayıklama", error);
+      extracted = { ok: false, reason: "unsupported" };
+    }
+    if (!extracted.ok) {
+      status.hidden = true;
+      showMessage(el("library-message"),
+        `${MP4_REASON[extracted.reason] || "Ses ayıklanamadı."} "${file.name}" ${formatSize(file.size)} ve sunucu sınırı ${formatSize(SHARE_MAX_BYTES)}: yalnız ses dosyasını (mp3/m4a) yükle ya da daha küçük bir sürümünü dene.`, "warn");
+      return false;
+    }
+    if (extracted.blob.size > SHARE_MAX_BYTES) {
+      status.hidden = true;
+      showMessage(el("library-message"), `Klipten ayıklanan ses ${formatSize(extracted.blob.size)}; sunucu sınırı ${formatSize(SHARE_MAX_BYTES)}.`, "warn");
+      return false;
+    }
+    file = new File([extracted.blob], `${file.name.replace(/\.[^.]+$/, "")}.m4a`, { type: "audio/mp4" });
+  }
   status.hidden = false;
   status.textContent = `${file.name} yükleniyor… %0`;
   try {
@@ -1422,7 +1446,7 @@ async function handleUpload(file) {
     lastUploadedId = (result && result.id) || "";
     status.textContent = result.existing
       ? `${file.name} zaten işlenmiş, listede.`
-      : `${file.name} alındı, işleniyor${isVideo({ name: file.name, type: file.type }) ? " (videonun yalnız sesi alınıyor)" : ""}.`;
+      : `${file.name} alındı, işleniyor.`;
     await refreshLibrary();
     schedulePoll();
     return true;

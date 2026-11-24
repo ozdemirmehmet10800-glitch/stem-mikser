@@ -31,6 +31,7 @@ const pick = (re) => code.match(re)[1];
 check("sabit: SHARE_CACHE sw.js == share.js", pick(/const SHARE_CACHE = "([^"]+)"/) === share.SHARE_CACHE);
 check("sabit: SHARE_KEY sw.js == share.js", pick(/const SHARE_KEY = "([^"]+)"/) === share.SHARE_KEY);
 check("sabit: SHARE_PARAM sw.js == share.js", pick(/const SHARE_PARAM = "([^"]+)"/) === share.SHARE_PARAM);
+check("sabit: SHARE_VIDEO_MAX_BYTES sw.js == share.js (400 MB)", eval(pick(/const SHARE_VIDEO_MAX_BYTES = ([^;]+);/)) === share.SHARE_VIDEO_MAX_BYTES);
 check("sabit: SHARE_MAX_BYTES sw.js == share.js (30 MB)", eval(pick(/const SHARE_MAX_BYTES = ([^;]+);/)) === share.SHARE_MAX_BYTES);
 const manifest = JSON.parse(readFileSync(new URL("../frontend/manifest.json", import.meta.url), "utf8"));
 const target = manifest.share_target;

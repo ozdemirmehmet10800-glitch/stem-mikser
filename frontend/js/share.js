@@ -12,7 +12,8 @@ import { parseSharedText } from "./wishlist.js";
 export const SHARE_PARAM = "paylasim";
 export const SHARE_CACHE = "stem-mikser-share-v1";
 export const SHARE_KEY = "share-pending/current";
-export const SHARE_MAX_BYTES = 30 * 1024 * 1024;      // sunucu MAX_UPLOAD_BYTES
+export const SHARE_MAX_BYTES = 30 * 1024 * 1024;      // sunucu MAX_UPLOAD_BYTES (yüklenen dosya)
+export const SHARE_VIDEO_MAX_BYTES = 400 * 1024 * 1024;   // paylaşılan KLİP bu boyuta kadar saklanır; telefonda sesi ayıklanıp yüklenir (mp4audio.js)
 export const SHARE_MAX_AGE_MS = 60 * 60 * 1000;       // bekleyen kayıt ömrü
 export const SERVER_MAX_SECONDS = 10 * 60;            // sunucu MAX_DURATION_SEC (GPU'ya girmeden reddeder)
 export const AUDIO_EXTENSIONS = ["mp3", "m4a", "wav", "flac", "ogg", "opus", "aac"];
@@ -138,7 +139,7 @@ export function classify(pending) {
   if (pending.state === "large") {
     return {
       action: "message", kind: "large", clear: true,
-      text: `"${pending.name}" ${formatSize(pending.size)}; sınır ${formatSize(SHARE_MAX_BYTES)}. `
+      text: `"${pending.name}" ${formatSize(pending.size)}; sınır ${formatSize(isVideo({ name: pending.name, type: pending.type }) ? SHARE_VIDEO_MAX_BYTES : SHARE_MAX_BYTES)}. `
         + "Daha kısa ya da sıkıştırılmış bir dosya paylaş.",
     };
   }

@@ -9,7 +9,7 @@
 // yeni worker beklemeden devralıyor (skipWaiting + clients.claim), yoksa
 // GitHub Pages'e atılan bir düzeltme kullanıcıya günlerce ulaşmayabiliyor.
 
-const VERSION = "v75";
+const VERSION = "v76";
 const CACHE = `stem-mikser-${VERSION}`;
 // Kabuk cache'lerinin adı (stem-mikser-v<sayı>). Eski sürümler YALNIZ bu kalıpla silinir: uygulamanın kendi cache'leri
 // (stemcache.js: stem-mikser-stems-v1 = çevrimdışı şarkılar; paylaşılan dosya: stem-mikser-share-v1) farklı adlı ve
@@ -24,7 +24,10 @@ const SHARE_PATH = "share-target";
 const SHARE_CACHE = "stem-mikser-share-v1";   // uygulamanın kendi cache'i: activate silmez (SHELL_CACHE_RE'ye uymaz)
 const SHARE_KEY = "share-pending/current";    // tek bekleyen kayıt
 const SHARE_PARAM = "paylasim";
-const SHARE_MAX_BYTES = 30 * 1024 * 1024;     // sunucu sınırıyla aynı (MAX_UPLOAD_BYTES); üstü saklanmaz
+const SHARE_MAX_BYTES = 30 * 1024 * 1024;     // sunucu sınırıyla aynı (MAX_UPLOAD_BYTES); ses dosyası üstü saklanmaz
+// Klip (video) paylaşımı: telefonda yalnız SESİ ayıklanıp yüklenir (js/mp4audio.js), bu yüzden paylaşılan klip bu sınıra kadar saklanır.
+const SHARE_VIDEO_MAX_BYTES = 400 * 1024 * 1024;
+const VIDEO_NAME_RE = /\.(mp4|m4v|mov|webm|mkv)$/i;
 
 // Göreli yollar: site /stem-mikser/ alt yolunda yayınlanıyor, kökte değil.
 const SHELL = [
@@ -45,6 +48,7 @@ const SHELL = [
   "./js/cachelist.js",
   "./js/stage.js",
   "./js/palette.js",
+  "./js/mp4audio.js",
   "./js/zipread.js",
   "./js/coverstore.js",
   "./js/navstack.js",
@@ -276,7 +280,8 @@ async function handleShare(request) {
     const [file] = files;
     const cache = await caches.open(SHARE_CACHE);
     for (const old of await cache.keys()) await cache.delete(old);
-    const large = file.size > SHARE_MAX_BYTES;
+    const isVideoFile = String(file.type || "").toLowerCase().startsWith("video/") || VIDEO_NAME_RE.test(file.name || "");
+    const large = file.size > (isVideoFile ? SHARE_VIDEO_MAX_BYTES : SHARE_MAX_BYTES);
     await cache.put(
       new URL(SHARE_KEY, self.location).href,
       new Response(large ? null : file, {

@@ -27,7 +27,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v75 (kayıt 11'deki mp4 desteği dahil). 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
+- **Son sürüm:** SW v76 (kayıt 12'deki klipten ses ayıklama dahil). 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -36,6 +36,20 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 12. 30 MB sınırı klibe değil sesine uygulanır
+
+- **Ne:** 30 MB'tan büyük bir klip (mp4/m4v/mov) seçince uygulama görüntüyü telefonda atar, sesi YENİDEN KODLAMADAN yeni bir .m4a dosyasına koyar ve yalnız onu yükler. Ses kalitesi değişmez (baytlar aynen kopyalanır). Yeni dosya: `js/mp4audio.js`.
+  Paylaş menüsünden gelen klipler de artık 400 MB'a kadar saklanır (ses dosyası sınırı 30 MB kaldı).
+- **Sunucu sınırı bilerek değişmedi:** Sunucu yüklemeyi belleğe alıyor; sınırı yükseltmek riskli. Bu yol sunucuya hiç dokunmaz.
+- **Çalışmayanlar:** webm/mkv ve "parçalı" (streaming) mp4 telefonda ayıklanamaz; uygulama nedenini söyler ve yalnız ses dosyası yüklemeni önerir. 400 MB üstü klip reddedilir. Ayıklanan ses yine 30 MB'ı geçerse uyarılır.
+- **Sınırlı test:** Yalnız sentetik mp4 ile testli (ses baytları ve ofsetler doğrulandı). Gerçek bir "şarkı evreni" klibiyle ilk denemede sonucu söyle; çalışmazsa kayıt 11'deki gibi ses dosyası yolu geçerli.
+- **SW:** v76.
+- **Telefonda kontrol (4 adım):**
+  1. 30 MB'tan büyük bir mp4'ü "Şarkı ekle"den seç: "klipten ses ayıklanıyor…" yazmalı.
+  2. Bitince şarkı kitaplıkta görünmeli ve çalmalı (ses klibin sesi olmalı).
+  3. Büyük bir webm/mkv seç: nedenini söyleyen uyarı çıkmalı, uygulama bozulmamalı.
+  4. Mevcut şarkıların ayarları (mikser, döngüler) olduğu gibi durmalı.
 
 ### 11. Klip (mp4) dosyası yükleme
 

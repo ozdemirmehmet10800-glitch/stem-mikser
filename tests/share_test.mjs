@@ -3,7 +3,7 @@
 //     node tests\share_test.mjs
 
 import {
-  SHARE_CACHE, SHARE_MAX_BYTES, SHARE_MAX_AGE_MS, MESSAGES, formatSize, formatDuration, isAudio, launchKind, keyUrl,
+  SHARE_CACHE, SHARE_MAX_BYTES, SHARE_VIDEO_MAX_BYTES, SHARE_MAX_AGE_MS, MESSAGES, formatSize, formatDuration, isAudio, launchKind, keyUrl,
   readPending, clearPending, classify, durationWarning, cardView,
 } from "../frontend/js/share.js";
 import { fakeCaches } from "./sw_harness.mjs";
@@ -122,6 +122,7 @@ await put(caches, { name: "" });
 check("ad boş: varsayılan ad", (await readPending(caches, BASE)).name === "paylasilan-ses");
 await clearPending(caches);
 check("clearPending sonrası kayıt yok; null cache'le patlamaz", (await readPending(caches, BASE)) === null && (await clearPending(null)) === undefined);
+check("klip saklama sınırı 400 MB (ses sınırından ayrı)", SHARE_VIDEO_MAX_BYTES === 400 * 1024 * 1024 && SHARE_VIDEO_MAX_BYTES > SHARE_MAX_BYTES);
 check("sınır sabitleri: 30 MB ve 1 saat", SHARE_MAX_BYTES === 30 * 1024 * 1024 && SHARE_MAX_AGE_MS === 3600000);
 
 console.log(failed ? `\n${failed} test başarısız` : "\ntümü geçti");
