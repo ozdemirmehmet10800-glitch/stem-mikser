@@ -1,0 +1,126 @@
+// Klip yardımcıları: kapak karesi seçimi (clipframe.js), sahne klibi senkronu (stage.js clipSync), klip deposu ayarları (clipstore.js),
+// "clip" kapak kaynağının önceliği (cover.js), kapak yedeği, ve uygulamadaki bağlantılar (kaynak taraması).   node tests\clipframe_test.mjs
+
+import { readFileSync } from "node:fs";
+import { frameTimes, squareCrop, frameStats, goodFrame, frameScore, DARK_LUMA } from "../frontend/js/clipframe.js";
+import { clipSync, CLIP_DRIFT_S } from "../frontend/js/stage.js";
+import { settingOn, summarizeClips, CLIP_KEEP_KEY, STAGE_CLIP_KEY } from "../frontend/js/clipstore.js";
+import { CoverManager, SOURCES } from "../frontend/js/cover.js";
+import { encodeBackup, parseBackup } from "../frontend/js/coverbackup.js";
+
+let failed = 0;
+function check(name, ok, detail = "") {
+  console.log(`${ok ? "ok  " : "FAIL"} ${name}${detail ? "  " + detail : ""}`);
+  if (!ok) failed += 1;
+}
+const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8").split(String.fromCharCode(13)).join("");
+
+// ------------------------------------------------------------------ kapak karesi
+{
+  const times = frameTimes(200);
+  check("kare zamanları: ortalardan başlar, intro/son atlanır", times[0] === 70 && times.every((t) => t >= 0.5 && t <= 199.5) && times.length === 4, times.join());
+  check("kısa klip: tek orta kare", frameTimes(1.5).join() === "0.75");
+  check("süresi bilinmeyen klip (webm): baştan birkaç saniye", frameTimes(Infinity).join() === "1,4" && frameTimes(NaN).join() === "1,4");
+  const wide = squareCrop(1920, 1080);
+  const tall = squareCrop(720, 1280);
+  check("ortadan kare kırpma (yatay ve dikey video)", wide.size === 1080 && wide.sx === 420 && wide.sy === 0 && tall.size === 720 && tall.sx === 0 && tall.sy === 280);
+  const rgba = (fn, n = 64) => Uint8ClampedArray.from({ length: n * 4 }, (_, i) => (i % 4 === 3 ? 255 : fn(Math.floor(i / 4))));
+  const black = frameStats(rgba(() => 4));
+  const flat = frameStats(rgba(() => 180));
+  const busy = frameStats(rgba((i) => (i % 2 ? 230 : 40)));
+  check("siyah kare 'iyi' sayılmaz", !goodFrame(black) && black.luma < DARK_LUMA);
+  check("tek renk (düz) kare 'iyi' sayılmaz", !goodFrame(flat) && flat.spread < 0.01);
+  check("ayrıntılı kare 'iyi' ve puanı en yüksek", goodFrame(busy) && frameScore(busy) > frameScore(flat) && frameScore(flat) > frameScore(black));
+  check("boş örnek çökmez", frameStats(new Uint8ClampedArray(0)).luma === 0);
+}
+
+// ------------------------------------------------------------------ sahne klibi senkronu
+{
+  const base = { videoTime: 10, videoDuration: 200, paused: false, seeking: false, audioTime: 10.1, playing: true, rate: 1 };
+  check("küçük kayma: dokunulmaz (her karede atlama yok)", clipSync(base).seekTo === null && !clipSync(base).play && !clipSync(base).pause);
+  check(`büyük kayma (> ${CLIP_DRIFT_S} sn): sese atlar`, clipSync({ ...base, audioTime: 42 }).seekTo === 42);
+  check("video zaten konumlanıyorsa yeniden atlamaz", clipSync({ ...base, audioTime: 42, seeking: true }).seekTo === null);
+  check("ses çalıyor, video duruyor: oynat", clipSync({ ...base, paused: true }).play === true);
+  check("ses durdu: videoyu durdur", clipSync({ ...base, playing: false }).pause === true && clipSync({ ...base, playing: false }).play === false);
+  check("klip sesten kısa: sonunda durur, atlamaz", (() => { const a = clipSync({ ...base, audioTime: 250 }); return a.pause && a.seekTo === null; })());
+  check("tempo videoya geçer (sınırlı)", clipSync({ ...base, rate: 0.8 }).rate === 0.8 && clipSync({ ...base, rate: 9 }).rate === 4 && clipSync({ ...base, rate: 0 }).rate === 1);
+  check("süre bilinmeyen video da senkronlanır", clipSync({ ...base, videoDuration: NaN, audioTime: 30 }).seekTo === 30);
+}
+
+// ------------------------------------------------------------------ ayarlar ve özet
+{
+  const mem = new Map();
+  const storage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)) };
+  check("klip saklama ve sahne klibi varsayılan AÇIK", settingOn(storage, CLIP_KEEP_KEY) && settingOn(storage, STAGE_CLIP_KEY));
+  storage.setItem(CLIP_KEEP_KEY, "0");
+  check("'0' kapatır, diğer ayar etkilenmez", !settingOn(storage, CLIP_KEEP_KEY) && settingOn(storage, STAGE_CLIP_KEY));
+  check("depolama yok/atıyor: açık say (çökmez)", settingOn(null, CLIP_KEEP_KEY) && settingOn({ getItem() { throw new Error("x"); } }, CLIP_KEEP_KEY));
+  check("klip özeti", JSON.stringify(summarizeClips([{ size: 10 }, { size: 5 }, {}])) === JSON.stringify({ count: 3, bytes: 15 }) && summarizeClips(null).count === 0);
+}
+
+// ------------------------------------------------------------------ "clip" kapak kaynağı: önceliği
+{
+  check("'clip' geçerli kapak kaynağı", SOURCES.includes("clip"));
+  const makeStore = (initial = {}) => {
+    const data = new Map(Object.entries(initial));
+    return {
+      data,
+      async getMany(ids) { return new Map(ids.filter((id) => data.has(id)).map((id) => [id, data.get(id)])); },
+      async put(id, record) { data.set(id, record); },
+      async delete(ids) { for (const id of ids) data.delete(id); },
+    };
+  };
+  const blob = (text) => new Blob([text], { type: "image/jpeg" });
+  const store = makeStore({ u: { source: "user", blob: blob("u") }, e: { source: "embedded", blob: blob("e") }, n: { source: "none" } });
+  const manager = new CoverManager({ store, fetchEmbedded: async () => null, makeUrl: () => "blob:x", revokeUrl: () => {} });
+  check("kullanıcının kapağının ÜSTÜNE yazmaz", (await manager.setClipFrame("u", blob("f"))) === false && manager.sourceOf("u") === "user");
+  check("dosyanın gömülü kapağının ÜSTÜNE yazmaz", (await manager.setClipFrame("e", blob("f"))) === false && manager.sourceOf("e") === "embedded");
+  check("'kapak yok' kaydında kare kaydedilir", (await manager.setClipFrame("n", blob("f"))) === true && manager.sourceOf("n") === "clip" && store.data.get("n").source === "clip");
+  check("yeni şarkıda (kayıt yok) kare kaydedilir ve resim olarak görünür", (await manager.setClipFrame("yeni", blob("f"))) === true && manager.hasImage("yeni"));
+  await manager.setImage("yeni", blob("k"), "user");
+  check("sonra seçilen kullanıcı resmi klip karesini geçer", manager.sourceOf("yeni") === "user");
+  await manager.load(["r"]);
+  await manager.setImage("r", blob("x"), "clip");
+  check("yedekten 'clip' geri yüklenebilir (kaynak korunur)", manager.sourceOf("r") === "clip");
+  const id = "a".repeat(64);
+  const parsed = parseBackup(encodeBackup([{ id, source: "clip", mime: "image/jpeg", data: "AAAA" }]));
+  check("kapak yedeği 'clip' kapaklarını da taşır", parsed.ok && parsed.entries.length === 1 && parsed.entries[0].source === "clip");
+}
+
+// ------------------------------------------------------------------ uygulamadaki bağlantılar (kaynak taraması)
+{
+  const app = read("../frontend/js/app.js");
+  const fnBody = (name) => {
+    const start = app.indexOf(`function ${name}(`);
+    if (start < 0) return "";
+    const next = app.indexOf("\nfunction ", start + 10);
+    const nextAsync = app.indexOf("\nasync function ", start + 10);
+    const ends = [next, nextAsync].filter((i) => i > 0);
+    return app.slice(start, ends.length ? Math.min(...ends) : undefined);
+  };
+  const upload = fnBody("handleUpload");
+  const firstAwait = upload.indexOf("await ");
+  const qualityAt = upload.indexOf('el("upload-quality")');
+  check("handleUpload kaliteyi HİÇBİR await'ten önce okur (paylaşım kartının kalite seçimi korunur)", qualityAt > 0 && firstAwait > qualityAt, `${qualityAt} < ${firstAwait}`);
+  check("handleUpload: klipte ses ayıklanır, kalite yüklemeye geçer", /extractClipAudio\(file, status\)/.test(upload) && /api\.uploadSong\(file, [\s\S]*?quality\)/.test(upload));
+  check("ayıklanamayan KÜÇÜK klip eskisi gibi olduğu gibi yüklenir; büyükse uyarı", /else if \(file\.size > SHARE_MAX_BYTES\)/.test(upload) && /MP4_REASON\[extracted\.reason\]/.test(upload));
+  check("ayıklama iptal edilebilir (AbortController + düğme)", /signal: clipAbort\.signal/.test(fnBody("extractClipAudio")) && /on\("upload-cancel", "click"/.test(app));
+  check("kapak karesi + klip saklama yalnız klip yüklemesinde, saklama ayara bağlı", /if \(clip && lastUploadedId\) afterClipUpload/.test(upload) && /settingOn\(safeStorage\(\)\.storage, CLIP_KEEP_KEY\)/.test(fnBody("afterClipUpload")));
+  check("klibin kendi kapağı varsa kare alınmaz", /if \(!\(meta && meta\.hasCover\)\)/.test(fnBody("afterClipUpload")));
+  check("şarkı silinince sahne klibi de gider", /clipStore\.remove\(gone\)/.test(app));
+  check("sahne kapanınca klip bırakılır (video durur, adres serbest)", /stageClipUnload\(\)/.test(fnBody("closeStageDom")) && /URL\.revokeObjectURL\(stageClip\.url\)/.test(fnBody("stageClipUnload")));
+  check("senkron mevcut döngüden (stageTick) ve çal/duraklat anında; ek döngü yok", /stageClipTick\(time\)/.test(fnBody("stageTick")) && /stageClipTick\(engine\.visualTime, true\)/.test(fnBody("setPlayIcon")) && !/requestAnimationFrame/.test(fnBody("stageClipTick")));
+  check("uygulama arka plandayken video oynamaz", /playing: engine\.playing && !document\.hidden/.test(fnBody("stageClipTick")));
+  check("tüm klipleri silmek onay ister", /window\.confirm\(/.test(app.slice(app.indexOf('on("clip-clear"'), app.indexOf('on("clip-clear"') + 600)));
+  const html = read("../frontend/index.html");
+  check("sahne videosu sessiz ve satır içi (ses yalnız mikserden)", /<video class="stage-clip" id="stage-clip" muted playsinline/.test(html));
+  const sw = read("../frontend/sw.js");
+  check("yeni modüller çevrimdışı kabukta", ['"./js/clipframe.js"', '"./js/clipstore.js"', '"./js/mp4audio.js"'].every((m) => sw.includes(m)));
+  for (const mod of ["clipframe.js", "clipstore.js", "mp4audio.js"]) {
+    const text = read(`../frontend/js/${mod}`);
+    check(`${mod}: ağa bağlanmaz (klip/kapak telefonda kalır)`, !/\bfetch\(|XMLHttpRequest|sendBeacon|WebSocket/.test(text));
+  }
+}
+
+if (failed) { console.error(`\n${failed} test başarısız`); process.exit(1); }
+console.log("\ntümü geçti");

@@ -9,7 +9,7 @@
 // Resimler yalnız bu telefonda (IndexedDB); sunucuya yüklenmez. MusicBrainz araması YALNIZ kullanıcı onayıyla (arayüz tarafı).
 
 export const COVER_PX = 384;           // saklanan en büyük kenar (liste, kilit ekranı için yeter)
-export const SOURCES = ["user", "found", "embedded", "none"];
+export const SOURCES = ["user", "found", "embedded", "clip", "none"];
 
 // ------------------------------------------------------------------ otomatik kapak
 
@@ -301,11 +301,25 @@ export class CoverManager {
 
   /** Kullanıcının seçtiği ("user") ya da onayladığı bulunan ("found") resim: HER ZAMAN öncelikli. */
   async setImage(id, blob, source = "user") {
-    const src = source === "found" ? "found" : "user";
+    const src = source === "found" || source === "clip" ? source : "user";
     this.#setRecord(id, { source: src, blob });
     this.loaded.add(id);
     await this.#persist(id, { source: src, blob });
     this.onChange([id]);
+  }
+
+  /**
+   * Klipten alınan kare ("clip"): YALNIZ şarkıda resimli kapak yoksa (kayıt yok ya da "none"). Kullanıcının, bulunan ya da dosyanın
+   * gömülü kapağının ÜSTÜNE yazmaz. Dönen: kaydedildi mi.
+   */
+  async setClipFrame(id, blob) {
+    await this.load([id]);
+    const current = this.sourceOf(id);
+    if (current && current !== "none") return false;
+    this.#setRecord(id, { source: "clip", blob });
+    await this.#persist(id, { source: "clip", blob });
+    this.onChange([id]);
+    return true;
   }
 
   /** Kullanıcı/bulunan kapağı kaldırır: gömülü kapak (varsa) sunucudan yeniden istenir, yoksa otomatik kapak. */

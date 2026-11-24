@@ -37,6 +37,7 @@
   <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V5M7.5 9.5 12 5l4.5 4.5M5 19h14"/></symbol>
   <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19 14.5A7.5 7.5 0 0 1 9.5 5a7.5 7.5 0 1 0 9.5 9.5z"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="i-film" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M7.5 5v14M16.5 5v14M3.5 9.5h4M3.5 14.5h4M16.5 9.5h4M16.5 14.5h4"/></symbol>
   <symbol id="i-unlock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-2"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M16 16l4 4"/></symbol>
@@ -124,6 +125,7 @@
     </section>
 
     <div id="upload-status" class="upload-status" hidden></div>
+    <button type="button" class="btn btn-small upload-cancel" id="upload-cancel" hidden>Ayıklamayı iptal et</button>
     <div class="welcome" id="library-welcome" hidden>
       <div class="welcome-art" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
       <b>Müziğin burada başlıyor</b>
@@ -637,6 +639,16 @@
       </div>
 
       <div class="field">
+        <span>Sahne klipleri</span>
+        <label class="check"><span>Yüklediğin klipleri sahne modu için bu telefonda sakla</span><input type="checkbox" id="setting-clipkeep" role="switch"></label>
+        <small id="clip-summary">Hesaplanıyor…</small>
+        <small>Klip yalnız bu telefonda saklanır, sunucuya gitmez; sahne modunda arka planda sessizce, şarkıyla senkron oynar. Klipler çok yer kaplayabilir. Bir şarkıya sonradan klip eklemek için: şarkı bilgisi &gt; Klip seç.</small>
+        <div class="settings-buttons">
+          <button type="button" class="btn btn-small" id="clip-clear">Saklanan klipleri sil</button>
+        </div>
+      </div>
+
+      <div class="field">
         <span>Etiket ve favori yedeği</span>
         <small id="collection-state">Hesaplanıyor…</small>
         <small>Favoriler, etiketler, çalma listeleri ve Eklenecekler yalnız bu telefonda saklanır (site verisini silersen ya da uygulamayı kaldırırsan gider). Yedek bir JSON dosyasıdır; sözler ve çeviriler içermez. Yüklerken var olanla BİRLEŞTİRİR, üzerine yazmaz.</small>
@@ -774,6 +786,14 @@
         <button type="button" class="btn btn-small" id="cover-reset" hidden>Kapağı sıfırla</button>
       </div>
       <input type="file" id="cover-file" accept="image/*" hidden>
+      <div class="info-clip">
+        <small id="info-clip">Sahne klibi: yok.</small>
+        <div class="info-actions">
+          <button type="button" class="btn btn-small" id="clip-pick">Klip seç</button>
+          <button type="button" class="btn btn-small" id="clip-remove" hidden>Klibi kaldır</button>
+        </div>
+        <input type="file" id="clip-file" accept="video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.m4v,.mov,.webm,.mkv" hidden>
+      </div>
       <div class="cover-find" id="cover-find-box" hidden>
         <p class="tag-sub">"Ara"ya basınca şarkı adı ve sanatçı, açık müzik veritabanı MusicBrainz'e gönderilir; kapaklar Cover Art Archive'dan gelir. Başka hiçbir bilgi gitmez. Seçtiğin kapak yalnız bu telefonda saklanır.</p>
         <div class="cover-fields">
@@ -882,12 +902,13 @@
 
   <!-- sahne modu: tam ekran büyük akor + söz, ekran hep açık, dokunma kilidi (yalnız çalan şarkı için; ayrı katman, geri tuşu önce bunu kapatır) -->
   <div class="stage" id="stage" hidden role="dialog" aria-modal="true" aria-label="Sahne modu">
-    <div class="stage-bg" aria-hidden="true"><div class="stage-pulse" id="stage-pulse"><i class="stage-glow g1"></i><i class="stage-glow g2"></i></div><div class="stage-art" id="stage-art"></div></div>
+    <div class="stage-bg" aria-hidden="true"><video class="stage-clip" id="stage-clip" muted playsinline preload="auto" disablepictureinpicture hidden></video><div class="stage-pulse" id="stage-pulse"><i class="stage-glow g1"></i><i class="stage-glow g2"></i></div><div class="stage-art" id="stage-art"></div></div>
     <header class="stage-top">
       <button type="button" class="stage-btn" id="stage-close" aria-label="Sahne modunu kapat">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
       </button>
       <div class="stage-heading"><div class="stage-title" id="stage-title"></div><div class="stage-meta" id="stage-meta"></div></div>
+      <button type="button" class="stage-btn" id="stage-clip-toggle" aria-label="Klibi göster ya da gizle" aria-pressed="true" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-film"/></svg></button>
       <button type="button" class="stage-btn" id="stage-lock" aria-label="Dokunmayı kilitle" aria-pressed="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-unlock"/></svg>
       </button>

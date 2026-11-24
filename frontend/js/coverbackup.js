@@ -1,5 +1,5 @@
 // Kapak yedeği (yalnız senin seçtiğin / onayladığın kapaklar): SAF mantık. node tests\coverbackup_test.mjs
-// Biçim: {v:1, kind:"stem-mikser-covers", exported, covers:{ "<şarkı kimliği>": {source:"user"|"found", mime, data:<base64>} }}.
+// Biçim: {v:1, kind:"stem-mikser-covers", exported, covers:{ "<şarkı kimliği>": {source:"user"|"found"|"clip", mime, data:<base64>} }}.
 // Dosyadan gelen "gömülü" kapaklar yedeğe GİRMEZ (sunucudan yeniden istenir). Yükleme BİRLEŞTİRİR: şarkıda zaten senin kapağın varsa dokunmaz.
 
 export const BACKUP_KIND = "stem-mikser-covers";
@@ -10,11 +10,11 @@ const ID_RE = /^[0-9A-Za-z][0-9A-Za-z_-]{0,127}$/;
 const MIME_RE = /^image\/(jpeg|png|webp|gif)$/;
 const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
-/** entries: [{id, source, mime, data}] -> JSON metni. Yalnız user/found alınır. */
+/** entries: [{id, source, mime, data}] -> JSON metni. Yalnız user/found/clip alınır. */
 export function encodeBackup(entries, now = Date.now()) {
   const covers = {};
   for (const entry of entries) {
-    if (!entry || !ID_RE.test(entry.id) || (entry.source !== "user" && entry.source !== "found")) continue;
+    if (!entry || !ID_RE.test(entry.id) || !["user", "found", "clip"].includes(entry.source)) continue;
     if (!MIME_RE.test(entry.mime) || !B64_RE.test(entry.data) || entry.data.length > COVER_B64_MAX) continue;
     covers[entry.id] = { source: entry.source, mime: entry.mime, data: entry.data };
   }
@@ -36,7 +36,7 @@ export function parseBackup(text) {
   const entries = [];
   let skipped = 0;
   for (const [id, item] of Object.entries(data.covers)) {
-    const good = ID_RE.test(id) && item && typeof item === "object" && (item.source === "user" || item.source === "found")
+    const good = ID_RE.test(id) && item && typeof item === "object" && ["user", "found", "clip"].includes(item.source)
       && MIME_RE.test(item.mime) && typeof item.data === "string" && B64_RE.test(item.data) && item.data.length <= COVER_B64_MAX;
     if (!good || entries.length >= BACKUP_MAX_COVERS) {
       skipped += 1;

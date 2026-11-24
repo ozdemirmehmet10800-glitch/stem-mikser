@@ -58,3 +58,21 @@ export function stageProgress(time, duration) {
 export function holdUnlocks(heldMs) {
   return Number(heldMs) >= LOCK_HOLD_MS;
 }
+
+// ---------------------------------------------------------------- sahne klibi (arka planda sessiz video, sesle senkron)
+
+export const CLIP_DRIFT_S = 0.3;            // video sesten bu kadar kayarsa yeniden konumlanır (her karede değil: takılma olmasın)
+
+/**
+ * Sahne klibini sesle hizalamak için yapılacaklar (saf). videoTime/paused/seeking: <video>; audioTime/playing/rate: oynatıcı.
+ * Dönen: {seekTo: saniye|null, play, pause, rate}. Klip sesten kısaysa sonunda durur.
+ */
+export function clipSync({ videoTime = 0, videoDuration = NaN, paused = true, seeking = false, audioTime = 0, playing = false, rate = 1 } = {}) {
+  const end = Number.isFinite(videoDuration) && videoDuration > 0 ? videoDuration : Infinity;
+  const target = Math.max(0, audioTime);
+  const pastEnd = target >= end - 0.05;
+  const seekTo = !seeking && !pastEnd && Math.abs(videoTime - target) > CLIP_DRIFT_S ? target : null;
+  const shouldPlay = playing && !pastEnd;
+  const safeRate = Math.min(4, Math.max(0.25, Number(rate) || 1));
+  return { seekTo, play: shouldPlay && paused, pause: !shouldPlay && !paused, rate: safeRate };
+}

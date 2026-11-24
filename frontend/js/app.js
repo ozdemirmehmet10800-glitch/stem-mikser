@@ -95,7 +95,7 @@ import { encodeBackup, parseBackup } from "./coverbackup.js";
 import { summarizeBySong, formatSize as formatCacheSize, buildReport } from "./cachelist.js";
 import { SleepTimer, SLEEP_MINUTES, formatRemaining } from "./sleeptimer.js";
 import { readQueue, writeQueue, addToQueue, removeFromQueue, takeNext } from "./queue.js";
-import { stageState, stageProgress, holdUnlocks, pulseLevel, LOCK_HOLD_MS } from "./stage.js";
+import { stageState, stageProgress, holdUnlocks, pulseLevel, LOCK_HOLD_MS, clipSync } from "./stage.js";
 import { dominantColor, themeColors } from "./palette.js";
 import { SORT_MODES, SORT_LABELS, readSort, writeSort, readPlays, bumpPlays, sortSongs } from "./sortplays.js";
 import {
@@ -103,6 +103,8 @@ import {
 } from "./wishlist.js";
 import { readCsvEntries, looksLikeZip, ZipError } from "./zipread.js";
 import { extractAudio, REASON_TEXT as MP4_REASON } from "./mp4audio.js";
+import { captureFrame } from "./clipframe.js";
+import { clipStore, settingOn, summarizeClips, CLIP_KEEP_KEY, STAGE_CLIP_KEY } from "./clipstore.js";
 import {
   itemState, startIndex, anyPlayable, totalDuration, alreadyInList, nextPlayable, previousAction, indexOfItem, skipNote,
   positionLabel,
@@ -571,6 +573,7 @@ const COVER_SOURCE_TEXT = {
   user: "Kapak: senin seçtiğin resim",
   found: "Kapak: internetten bulundu (onayınla)",
   embedded: "Kapak: dosyanın içinden",
+  clip: "Kapak: klipten bir kare",
 };
 
 function infoMessage(text, tone = "warn") {
@@ -582,7 +585,7 @@ function refreshInfoSource() {
   if (!currentSong) return;
   const source = covers.sourceOf(currentSong.id);
   el("info-source").textContent = COVER_SOURCE_TEXT[source] || "Kapak: otomatik (şarkı adından)";
-  el("cover-reset").hidden = !(source === "user" || source === "found");
+  el("cover-reset").hidden = !(source === "user" || source === "found" || source === "clip");
 }
 
 function renderInfoSheet() {
@@ -597,6 +600,7 @@ function renderInfoSheet() {
   if (badge) bits.push(badge.text);
   el("info-meta").textContent = bits.join(" · ");
   refreshInfoSource();
+  refreshInfoClip();
   paintCover(el("info-cover"), song.id, title);
   const terms = searchTerms(title);
   el("cover-q-title").value = terms.title;
@@ -746,6 +750,80 @@ on("cover-find", "click", () => {
   el("cover-find").setAttribute("aria-expanded", String(!box.hidden));
 });
 on("cover-search", "click", searchCover);
+
+// ---------------------------------------------------------------- bilgi sayfası: sahne klibi (yalnız bu telefonda; yükleme yapılmaz)
+
+async function refreshInfoClip() {
+  if (!currentSong) return;
+  const id = currentSong.id;
+  const record = await clipStore.get(id);
+  if (!currentSong || currentSong.id !== id) return;
+  el("info-clip").textContent = record
+    ? `Sahne klibi: var (${formatSize(record.size)}). Sahne modunda arka planda sessizce oynar.`
+    : "Sahne klibi: yok. Bir klip seçersen sahne modunda arka planda oynar (yalnız bu telefonda saklanır).";
+  el("clip-remove").hidden = !record;
+}
+
+on("clip-pick", "click", () => el("clip-file").click());
+on("clip-file", "change", async () => {
+  const input = el("clip-file");
+  const file = input.files && input.files[0];
+  input.value = "";
+  if (!file || !currentSong) return;
+  const id = currentSong.id;
+  if (!isVideo({ name: file.name, type: file.type })) {
+    infoMessage("Bir klip (video) dosyası seç: mp4, mov, webm ya da mkv.");
+    return;
+  }
+  if (file.size > SHARE_VIDEO_MAX_BYTES) {
+    infoMessage(`Klip çok büyük (${formatSize(file.size)}; sınır ${formatSize(SHARE_VIDEO_MAX_BYTES)}).`);
+    return;
+  }
+  infoMessage("Klip kaydediliyor…", "ok");
+  if (!await clipStore.put(id, file)) {
+    infoMessage("Klip kaydedilemedi (telefonda yer kalmamış olabilir).");
+    return;
+  }
+  let note = "";
+  const frame = await captureFrame(file);
+  if (frame && await covers.setClipFrame(id, frame)) note = " Kapak da klipten alındı.";
+  infoMessage(`Klip bu telefonda saklandı (${formatSize(file.size)}); sahne modunda arka planda oynar.${note}`, "ok");
+  refreshInfoClip();
+  refreshInfoSource();
+  refreshClipSummary();
+  if (stageOpen) stageClipLoad();
+});
+on("clip-remove", "click", async () => {
+  if (!currentSong) return;
+  await clipStore.remove([currentSong.id]);
+  if (stageClip.id === currentSong.id) stageClipUnload();
+  infoMessage("Sahne klibi bu telefondan kaldırıldı (şarkı ve sesleri duruyor).", "ok");
+  refreshInfoClip();
+  refreshClipSummary();
+});
+
+// ---------------------------------------------------------------- Ayarlar: sahne klipleri
+
+async function refreshClipSummary() {
+  const node = el("clip-summary");
+  if (!node) return;
+  const { count, bytes } = summarizeClips(await clipStore.list());
+  node.textContent = count ? `Saklanan: ${count} klip, ${formatSize(bytes)}.` : "Saklanan klip yok.";
+  el("clip-clear").disabled = !count;
+}
+
+on("setting-clipkeep", "change", () => {
+  try { safeStorage().storage.setItem(CLIP_KEEP_KEY, el("setting-clipkeep").checked ? "1" : "0"); } catch { /* bu oturumda kalmaz */ }
+});
+on("clip-clear", "click", async () => {
+  const { count, bytes } = summarizeClips(await clipStore.list());
+  if (!count) return;
+  // eslint-disable-next-line no-alert
+  if (!window.confirm(`${count} sahne klibi (${formatSize(bytes)}) bu telefondan silinsin mi? Şarkılar, sesleri ve ayarların silinmez.`)) return;
+  await clipStore.removeAll();
+  if (stageOpen) stageClipUnload();
+  refreshClipSummary();
+});
 
 // ---------------------------------------------------------------- kitaplık
 
@@ -1356,6 +1434,7 @@ async function deleteSelected() {
       peaksCache.removeSongs(gone);       // dalga verisi de gitsin
       melodyCache.removeSongs(gone);      // hedef melodi de gitsin
       covers.drop(gone).catch(() => {});  // kapak resmi de gitsin
+      clipStore.remove(gone).then(() => refreshClipSummary());   // sahne klibi de gitsin
       dropLoops(safeStorage().storage, gone);   // adlı döngüler de gitsin
       dropMeta(gone);            // cihazdaki durum/akor kopyası da gitsin
       collection.removeSongs(gone);   // favori/etiket kayıtları ve liste öğeleri de HEMEN gitsin
@@ -1403,58 +1482,113 @@ let lastUploadedId = "";      // son başarılı yüklemenin şarkı kimliği (E
 
 async function handleUpload(file) {
   // Dönen: true = sunucu aldı (ya da zaten vardı), false = yüklenemedi (paylaşım kartı kaydı korusun diye).
+  // Kalite İLK satırda, hiçbir await'ten önce okunur: paylaşım kartı seçimini #upload-quality'ye geçici yazıp hemen geri alıyor.
+  const quality = el("upload-quality") ? el("upload-quality").value : "hifi";
   if (!requireOnline(el("library-message"), "şarkı yüklemek")) return false;
   const status = el("upload-status");
-  // Sunucu sınırı (30 MB) yüklenen dosyaya uygulanır. Büyük KLİPTE görüntü telefonda atılır: ses yeniden kodlanmadan yeni bir .m4a'ya konur
-  // (js/mp4audio.js), yalnız o yüklenir. Ses dosyası 30 MB'ı geçerse eskisi gibi uyarılır.
-  if (file.size > SHARE_MAX_BYTES) {
-    const video = isVideo({ name: file.name, type: file.type });
-    if (!video || file.size > SHARE_VIDEO_MAX_BYTES) {
-      showMessage(el("library-message"),
-        `"${file.name}" ${formatSize(file.size)}; sınır ${formatSize(video ? SHARE_VIDEO_MAX_BYTES : SHARE_MAX_BYTES)}.` + (video ? "" : " Daha kısa ya da sıkıştırılmış bir dosya dene."), "warn");
+  const original = file;
+  const clip = isVideo({ name: file.name, type: file.type });
+  let clipMeta = null;
+  let clipNote = "";
+  // Klip: görüntü telefonda atılır, ses YENİDEN KODLANMADAN ayrı dosyaya konur (js/mp4audio.js); sunucu sınırı (30 MB) yalnız sese
+  // uygulanır. Ayıklanamayan küçük klip eskisi gibi olduğu gibi gider (sunucu sesini ffmpeg ile okur).
+  if (clip) {
+    if (file.size > SHARE_VIDEO_MAX_BYTES) {
+      showMessage(el("library-message"), `"${file.name}" ${formatSize(file.size)}; klip sınırı ${formatSize(SHARE_VIDEO_MAX_BYTES)}.`, "warn");
       return false;
     }
-    status.hidden = false;
-    status.textContent = `${file.name}: klipten ses ayıklanıyor…`;
-    let extracted;
-    try {
-      extracted = await extractAudio(file);
-    } catch (error) {
-      console.warn("[mp4] ayıklama", error);
-      extracted = { ok: false, reason: "unsupported" };
-    }
-    if (!extracted.ok) {
+    const extracted = await extractClipAudio(file, status);
+    if (extracted.ok && extracted.blob.size <= SHARE_MAX_BYTES) {
+      clipMeta = extracted.meta;
+      const base = file.name.replace(/\.[^.]+$/, "") || "klip";
+      file = new File([extracted.blob], `${base}.${extracted.ext}`, { type: extracted.mime });
+      clipNote = `Klipten ses ayıklandı: ${formatSize(original.size)} → ${formatSize(file.size)}. `;
+    } else if (extracted.ok) {
+      status.hidden = true;
+      showMessage(el("library-message"), `Klipten ayıklanan ses ${formatSize(extracted.blob.size)}; sunucu sınırı ${formatSize(SHARE_MAX_BYTES)}.`, "warn");
+      return false;
+    } else if (extracted.reason === "cancelled") {
+      status.hidden = true;
+      showMessage(el("library-message"), "Ayıklama iptal edildi; hiçbir şey yüklenmedi.", "warn");
+      return false;
+    } else if (file.size > SHARE_MAX_BYTES) {
       status.hidden = true;
       showMessage(el("library-message"),
         `${MP4_REASON[extracted.reason] || "Ses ayıklanamadı."} "${file.name}" ${formatSize(file.size)} ve sunucu sınırı ${formatSize(SHARE_MAX_BYTES)}: yalnız ses dosyasını (mp3/m4a) yükle ya da daha küçük bir sürümünü dene.`, "warn");
       return false;
     }
-    if (extracted.blob.size > SHARE_MAX_BYTES) {
-      status.hidden = true;
-      showMessage(el("library-message"), `Klipten ayıklanan ses ${formatSize(extracted.blob.size)}; sunucu sınırı ${formatSize(SHARE_MAX_BYTES)}.`, "warn");
-      return false;
-    }
-    file = new File([extracted.blob], `${file.name.replace(/\.[^.]+$/, "")}.m4a`, { type: "audio/mp4" });
+  } else if (file.size > SHARE_MAX_BYTES) {
+    showMessage(el("library-message"), `"${file.name}" ${formatSize(file.size)}; sınır ${formatSize(SHARE_MAX_BYTES)}. Daha kısa ya da sıkıştırılmış bir dosya dene.`, "warn");
+    return false;
   }
   status.hidden = false;
-  status.textContent = `${file.name} yükleniyor… %0`;
+  status.textContent = `${clipNote}${file.name} yükleniyor… %0`;
   try {
-    const quality = el("upload-quality") ? el("upload-quality").value : "hifi";
     const result = await api.uploadSong(file, (ratio) => {
-      status.textContent = `${file.name} yükleniyor… %${Math.round(ratio * 100)}`;
+      status.textContent = `${clipNote}${file.name} yükleniyor… %${Math.round(ratio * 100)}`;
     }, quality);
     lastUploadedId = (result && result.id) || "";
-    status.textContent = result.existing
+    status.textContent = clipNote + (result.existing
       ? `${file.name} zaten işlenmiş, listede.`
-      : `${file.name} alındı, işleniyor.`;
+      : `${file.name} alındı, işleniyor.`);
     await refreshLibrary();
     schedulePoll();
+    if (clip && lastUploadedId) afterClipUpload(lastUploadedId, original, clipMeta, status);
     return true;
   } catch (error) {
     status.hidden = true;
     showMessage(el("library-message"), describeError(error));
     return false;
   }
+}
+
+// ------------------------------------------------ klipten ses ayıklama: ilerleme + iptal; yükleme sonrası kapak karesi + sahne klibi
+
+let clipAbort = null;
+
+async function extractClipAudio(file, status) {
+  const cancel = el("upload-cancel");
+  clipAbort = new AbortController();
+  status.hidden = false;
+  if (cancel) cancel.hidden = false;
+  const label = (ratio) => `${file.name}: klipten ses ayıklanıyor… %${Math.round(ratio * 100)}`;
+  status.textContent = label(0);
+  try {
+    return await extractAudio(file, { signal: clipAbort.signal, onProgress: (ratio) => { status.textContent = label(ratio); } });
+  } catch (error) {
+    console.warn("[klip] ayıklama", error);
+    return { ok: false, reason: "unsupported" };
+  } finally {
+    clipAbort = null;
+    if (cancel) cancel.hidden = true;
+  }
+}
+
+on("upload-cancel", "click", () => {
+  if (clipAbort) clipAbort.abort();
+});
+
+/** Kapak karesi (klibin kendi kapağı yoksa ve şarkıda resimli kapak yoksa) + klibi sahne için saklama (ayar açıksa). Arka planda; hata vermez. */
+async function afterClipUpload(id, clipFile, meta, status) {
+  const notes = [];
+  try {
+    if (!(meta && meta.hasCover)) {
+      const frame = await captureFrame(clipFile);
+      if (frame && await covers.setClipFrame(id, frame)) notes.push("kapak klipten alındı");
+    }
+    if (settingOn(safeStorage().storage, CLIP_KEEP_KEY)) {
+      if (await clipStore.put(id, clipFile)) notes.push(`klip sahne modu için bu telefonda saklandı (${formatSize(clipFile.size)})`);
+      else notes.push("klip saklanamadı (telefonda yer kalmamış olabilir)");
+      refreshClipSummary();
+    }
+  } catch (error) {
+    console.warn("[klip] yükleme sonrası", error);
+  }
+  if (notes.length && status && !status.hidden) {
+    const text = notes.join("; ");
+    status.textContent += ` ${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
+  }
+  if (!el("info-sheet").hidden && currentSong && currentSong.id === id) refreshInfoClip();
 }
 
 // ------------------------------------------------ paylaş menüsünden ekleme (Web Share Target)
@@ -2707,7 +2841,10 @@ function setPlayIcon(playing) {
     : '<path d="M8 5v14l11-7z"/>';
   el("play").setAttribute("aria-label", playing ? "Duraklat" : "Oynat");
   if (lyricsScreen) lyricsScreen.setPlaying(playing);
-  if (stageOpen) el("stage").classList.toggle("playing", playing);
+  if (stageOpen) {
+    el("stage").classList.toggle("playing", playing);
+    stageClipTick(engine.visualTime, true);
+  }
   document.body.classList.toggle("is-playing", playing);        // dönen kapak (yalnız transform animasyonu)
   safeHook("icon", playing);
   syncMini();
@@ -2823,6 +2960,7 @@ function stageRefresh() {
   el("stage-art").style.backgroundImage = url ? `url("${url}")` : "";
   root.classList.toggle("has-art", Boolean(url));
   root.classList.toggle("playing", engine.playing);
+  stageClipLoad();
   stageLast = { ci: -2, li: -2, wi: -2 };
   stageTick(engine.visualTime);
 }
@@ -2928,6 +3066,72 @@ function stageTick(time) {
   el("stage-progress").style.transform = `scaleX(${stageProgress(time, duration).toFixed(4)})`;
   el("stage-time").textContent = formatTime(time);
   el("stage-left").textContent = `-${formatTime(Math.max(duration - time, 0))}`;
+  stageClipTick(time);
+}
+
+// ---------------------------------------------------------------- sahne klibi: arka planda sessiz video, sesle senkron (mantık stage.js clipSync)
+// Klip yalnız bu telefonda (js/clipstore.js). Sahne kapanınca, şarkı değişince ya da uygulama arka plana geçince video durur/bırakılır.
+
+let stageClip = { id: "", url: "", lastSync: 0 };
+
+function stageClipVisibility() {
+  const video = el("stage-clip");
+  if (!video) return;
+  const on = Boolean(stageClip.url) && settingOn(safeStorage().storage, STAGE_CLIP_KEY);
+  video.hidden = !on;
+  el("stage").classList.toggle("has-clip", on);
+  const toggle = el("stage-clip-toggle");
+  toggle.hidden = !stageClip.url;
+  toggle.setAttribute("aria-pressed", String(on));
+  if (!on) video.pause();
+  else stageClipTick(engine.visualTime, true);
+}
+
+function stageClipUnload() {
+  const video = el("stage-clip");
+  if (video) {
+    video.pause();
+    video.removeAttribute("src");
+    try { video.load(); } catch { /* yok say */ }
+    video.hidden = true;
+  }
+  if (stageClip.url) URL.revokeObjectURL(stageClip.url);
+  stageClip = { id: "", url: "", lastSync: 0 };
+  el("stage").classList.remove("has-clip");
+  el("stage-clip-toggle").hidden = true;
+}
+
+async function stageClipLoad() {
+  const id = currentSong ? currentSong.id : "";
+  if (stageClip.id === id) {
+    stageClipVisibility();
+    return;
+  }
+  stageClipUnload();
+  if (!id) return;
+  stageClip.id = id;
+  const record = await clipStore.get(id);
+  if (!stageOpen || stageClip.id !== id || !currentSong || currentSong.id !== id || !record) return;
+  stageClip.url = URL.createObjectURL(record.blob);
+  const video = el("stage-clip");
+  video.src = stageClip.url;
+  stageClipVisibility();
+}
+
+function stageClipTick(time, force = false) {
+  const video = el("stage-clip");
+  if (!stageClip.url || !video || video.hidden) return;
+  const now = performance.now();
+  if (!force && now - stageClip.lastSync < 200) return;
+  stageClip.lastSync = now;
+  const action = clipSync({
+    videoTime: video.currentTime, videoDuration: video.duration, paused: video.paused, seeking: video.seeking,
+    audioTime: time, playing: engine.playing && !document.hidden, rate: currentRate(),
+  });
+  if (video.playbackRate !== action.rate) video.playbackRate = action.rate;
+  if (action.seekTo !== null) video.currentTime = action.seekTo;
+  if (action.play) video.play().catch(() => {});
+  if (action.pause) video.pause();
 }
 
 function openStage() {
@@ -2943,6 +3147,7 @@ function openStage() {
 
 function closeStageDom() {
   stageOpen = false;
+  stageClipUnload();
   stageAnalyserClose();
   stageLocked = false;
   el("stage").hidden = true;
@@ -2970,6 +3175,15 @@ function stageHoldCancel() {
 }
 
 on("stage-open", "click", openStage);
+on("stage-clip-toggle", "click", () => {
+  if (stageLocked) return;
+  const storage = safeStorage().storage;
+  try { storage.setItem(STAGE_CLIP_KEY, settingOn(storage, STAGE_CLIP_KEY) ? "0" : "1"); } catch { /* bu oturumda kalmaz */ }
+  stageClipVisibility();
+});
+document.addEventListener("visibilitychange", () => {
+  if (stageOpen) stageClipTick(engine.visualTime, true);      // arka planda video boşuna oynamasın
+});
 on("stage-close", "click", () => {
   if (!stageLocked) requestBack("stage");
 });
@@ -5545,6 +5759,8 @@ on("open-settings", "click", () => {
   el("setting-theme").value = (globalThis.StemLook && globalThis.StemLook.readTheme(localStorage)) || "dark";
   el("setting-songtheme").checked = songThemeEnabled();
   el("setting-spin").checked = applySpinSetting();
+  el("setting-clipkeep").checked = settingOn(safeStorage().storage, CLIP_KEEP_KEY);
+  refreshClipSummary();
   refreshSwVersion();
   refreshStemCacheState();
   refreshCollectionState();
@@ -6843,7 +7059,7 @@ on("cover-export", "click", async () => {
     const all = await coverStore.all();
     const entries = [];
     for (const [id, record] of all) {
-      if (record && record.blob && (record.source === "user" || record.source === "found")) {
+      if (record && record.blob && (record.source === "user" || record.source === "found" || record.source === "clip")) {
         entries.push({ id, source: record.source, mime: record.blob.type || "image/jpeg", data: await blobToBase64(record.blob) });
       }
     }
@@ -6890,7 +7106,7 @@ on("cover-backup-file", "change", async (event) => {
   for (const entry of parsed.entries) {
     await covers.load([entry.id]);
     const source = covers.sourceOf(entry.id);
-    if (source === "user" || source === "found") {      // şarkıda zaten senin kapağın var: dokunulmaz
+    if (source === "user" || source === "found" || (entry.source === "clip" && source && source !== "none")) {      // şarkıda zaten kapak var: dokunulmaz
       kept += 1;
       continue;
     }

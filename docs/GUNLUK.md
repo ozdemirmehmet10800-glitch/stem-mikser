@@ -21,13 +21,15 @@
   HİÇ gönderilmiyor (yalnız senin "Ara"ya bastığında şarkı adı/sanatçı). Saniyede en çok 1 istek.
 - **Takeout içinde şarkı adı yoksa:** Google'ın "beğenilen videolar" CSV'si genelde yalnız video kimliği veriyor (ad yok). Bunlar "Başlıksız bağlantı" olarak eklenir
   (bağlantıyı açabilirsin, otomatik eşleşme olmaz). Adı olan "müzik kitaplığı şarkıları" CSV'si normal eklenir.
+- **Klipler telefonda saklansın mı?** Yüklediğin klip (videonun kendisi) varsayılan olarak sahne modu için telefonda saklanıyor; klip başına
+  onlarca MB tutabilir. İstemezsen Ayarlar > Sahne klipleri'nden kapat; saklananları oradan silebilirsin (şarkılar ve sesleri silinmez).
 
 ## Genel özet
 
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v76 (kayıt 12'deki klipten ses ayıklama dahil). 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
+- **Son sürüm:** SW v77 (kayıt 13'teki klip geliştirmeleri dahil). 76 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -36,6 +38,31 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 13. Klip geliştirmeleri: gerçek dosya testi, webm/mkv, parçalı mp4, klipten kapak, ilerleme/iptal, sahnede klip
+
+- **Gerçek dosyalarla denendi:** Dört gerçek klip ürettim (içerik yapay: 3 sn ton + renkli kare, telif yok): Windows'un kendi kodlayıcısıyla normal mp4,
+  tarayıcının kaydedicisiyle parçalı mp4, webm ve mkv. Dördünde de ayıklanan ses, klibin kendi sesiyle tarayıcıda örnek örnek AYNI çözüldü (fark 0).
+  Bu dosyalar artık kalıcı test (`tests/fixtures/clips`, `tests/clip_fixtures_test.mjs`). Telefonda ve gerçek bir müzik klibiyle hâlâ denenmedi.
+- **Yeni desteklenenler:** webm ve mkv (ses .webm/.mka olarak), parçalı (streaming) mp4. Süre bilgisi yazılmamış webm'lerde süre son ses bloğundan
+  hesaplanıp eklenir (sunucu süresiz dosyayı reddediyordu). Şifreli (korumalı) klipler ayıklanmaz, nedeni söylenir.
+- **Ad, sanatçı, kapak:** Klibin içindeki başlık/sanatçı/kapak bilgisi ayıklanan sese aynen taşınır; sunucu şarkı adını ve kapağı oradan okur.
+  Klibin kendi kapağı yoksa ve şarkıda resimli kapak yoksa, klibin ortalarından karanlık/düz olmayan bir kare kapak yapılır (yalnız bu telefonda;
+  bilgi sayfasında "Kapak: klipten bir kare", "Kapağı sıfırla" ile kaldırılır; senin seçtiğin ya da dosyanın kapağının üstüne yazmaz).
+- **İlerleme ve iptal:** Ayıklama sırasında yüzde görünür, "Ayıklamayı iptal et" düğmesi çıkar. Sonunda "Klipten ses ayıklandı: 112 MB → 4,1 MB"
+  gibi bilgi verilir. Artık KÜÇÜK klipler de ayıklanıp yüklenir (daha hızlı); ayıklanamayan küçük klip eskisi gibi olduğu gibi gider.
+- **Sahnede klip:** Yüklediğin klip (ayar açıksa) telefonda saklanır; sahne modunda arka planda sessizce, şarkıyla senkron (tempo dahil) oynar,
+  yazılar okunsun diye karartılır. Sahnede film simgesiyle gizlenir/açılır. Eski şarkılara: şarkı bilgisi > "Klip seç" (yükleme yapılmaz).
+  Ayarlar > Sahne klipleri: saklama aç/kapa, toplam boyut, hepsini sil (onay ister). Şarkı silinince klibi de gider. Ses yalnız mikserden gelir.
+- **Düzeltilen hata (v76'dan):** 30 MB üstü klip paylaşım kartından yüklenince kartta seçilen kalite yok sayılıyordu; artık kalite en başta okunuyor
+  (testle korunuyor).
+- **Sunucu:** dokunulmadı (sınır 30 MB, GPU işi yok).
+- **SW:** v77.
+- **Telefonda kontrol (4 adım):**
+  1. Büyük bir mp4 klip seç: yüzde ilerlemeli "ayıklanıyor", sonra "112 MB → … MB" yazmalı ve yüklenmeli; "iptal" düğmesi ayıklama sırasında çalışmalı.
+  2. Bitince şarkının adı/kapağı gelmeli (klipte yoksa klipten bir kare); şarkı bilgisinde "Sahne klibi: var" yazmalı.
+  3. Şarkıyı aç > Sahne: klip arka planda sesle aynı yerde oynamalı; duraklatınca durmalı; film simgesi gizlemeli.
+  4. Ayarlar > Sahne klipleri: toplam boyut doğru görünmeli; mevcut şarkıların mikser ayarları ve döngüleri yerinde olmalı.
 
 ### 12. 30 MB sınırı klibe değil sesine uygulanır
 
