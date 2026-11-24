@@ -104,7 +104,7 @@ import {
 import { readCsvEntries, looksLikeZip, ZipError } from "./zipread.js";
 import { extractAudio, REASON_TEXT as MP4_REASON } from "./mp4audio.js";
 import { captureFrame } from "./clipframe.js";
-import { clipStore, settingOn, summarizeClips, CLIP_KEEP_KEY, STAGE_CLIP_KEY } from "./clipstore.js";
+import { clipStore, settingOn, summarizeClips, clipMode, nextClipMode, storedClipMode, CLIP_KEEP_KEY, STAGE_CLIP_KEY } from "./clipstore.js";
 import {
   itemState, startIndex, anyPlayable, totalDuration, alreadyInList, nextPlayable, previousAction, indexOfItem, skipNote,
   positionLabel,
@@ -769,34 +769,40 @@ on("clip-file", "change", async () => {
   const input = el("clip-file");
   const file = input.files && input.files[0];
   input.value = "";
+  const openAfter = clipOpenAfterPick;
+  clipOpenAfterPick = false;
   if (!file || !currentSong) return;
   const id = currentSong.id;
+  const say = (text, tone = "warn") => (el("info-sheet").hidden ? notePlayer(text, tone, 7000) : infoMessage(text, tone));
   if (!isVideo({ name: file.name, type: file.type })) {
-    infoMessage("Bir klip (video) dosyası seç: mp4, mov, webm ya da mkv.");
+    say("Bir klip (video) dosyası seç: mp4, mov, webm ya da mkv.");
     return;
   }
   if (file.size > SHARE_VIDEO_MAX_BYTES) {
-    infoMessage(`Klip çok büyük (${formatSize(file.size)}; sınır ${formatSize(SHARE_VIDEO_MAX_BYTES)}).`);
+    say(`Klip çok büyük (${formatSize(file.size)}; sınır ${formatSize(SHARE_VIDEO_MAX_BYTES)}).`);
     return;
   }
-  infoMessage("Klip kaydediliyor…", "ok");
+  say("Klip kaydediliyor…", "ok");
   if (!await clipStore.put(id, file)) {
-    infoMessage("Klip kaydedilemedi (telefonda yer kalmamış olabilir).");
+    say("Klip kaydedilemedi (telefonda yer kalmamış olabilir).");
     return;
   }
   let note = "";
   const frame = await captureFrame(file);
   if (frame && await covers.setClipFrame(id, frame)) note = " Kapak da klipten alındı.";
-  infoMessage(`Klip bu telefonda saklandı (${formatSize(file.size)}); sahne modunda arka planda oynar.${note}`, "ok");
+  say(`Klip bu telefonda saklandı (${formatSize(file.size)}). "Klip" düğmesi tam ekran açar; "Sahne"de arka planda oynar.${note}`, "ok");
   refreshInfoClip();
   refreshInfoSource();
   refreshClipSummary();
+  refreshClipChip();
   if (stageOpen) stageClipLoad();
+  else if (openAfter && currentSong && currentSong.id === id) openStage("full");
 });
 on("clip-remove", "click", async () => {
   if (!currentSong) return;
   await clipStore.remove([currentSong.id]);
   if (stageClip.id === currentSong.id) stageClipUnload();
+  refreshClipChip();
   infoMessage("Sahne klibi bu telefondan kaldırıldı (şarkı ve sesleri duruyor).", "ok");
   refreshInfoClip();
   refreshClipSummary();
@@ -823,6 +829,7 @@ on("clip-clear", "click", async () => {
   await clipStore.removeAll();
   if (stageOpen) stageClipUnload();
   refreshClipSummary();
+  refreshClipChip();
 });
 
 // ---------------------------------------------------------------- kitaplık
@@ -1589,6 +1596,7 @@ async function afterClipUpload(id, clipFile, meta, status) {
     status.textContent += ` ${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
   }
   if (!el("info-sheet").hidden && currentSong && currentSong.id === id) refreshInfoClip();
+  if (currentSong && currentSong.id === id) refreshClipChip();
 }
 
 // ------------------------------------------------ paylaş menüsünden ekleme (Web Share Target)
@@ -2429,6 +2437,7 @@ async function openSong(song, opts = {}) {
     });
     syncCoverUi();
     refreshArtwork();
+    refreshClipChip();
     if (stageOpen) stageRefresh();
     // Standart -> "Hi-Fi'a yükselt", Hi-Fi v1 -> "v2'ye yükselt"; v2'de düğme yok.
     refreshMethodUi();
@@ -3073,18 +3082,32 @@ function stageTick(time) {
 // Klip yalnız bu telefonda (js/clipstore.js). Sahne kapanınca, şarkı değişince ya da uygulama arka plana geçince video durur/bırakılır.
 
 let stageClip = { id: "", url: "", lastSync: 0 };
+let stageClipView = "dim";          // bu sahne açılışındaki görünüm: "dim" (akor+söz, karartılmış klip) | "full" (net klip) | "off"
+const CLIP_VIEW_TEXT = { dim: "Klip: arka planda (akor ve söz önde)", full: "Klip: tam ekran", off: "Klip: gizli" };
 
 function stageClipVisibility() {
   const video = el("stage-clip");
   if (!video) return;
-  const on = Boolean(stageClip.url) && settingOn(safeStorage().storage, STAGE_CLIP_KEY);
+  const on = Boolean(stageClip.url) && stageClipView !== "off";
   video.hidden = !on;
   el("stage").classList.toggle("has-clip", on);
+  el("stage").classList.toggle("clip-full", on && stageClipView === "full");
   const toggle = el("stage-clip-toggle");
   toggle.hidden = !stageClip.url;
   toggle.setAttribute("aria-pressed", String(on));
+  toggle.setAttribute("aria-label", `${CLIP_VIEW_TEXT[stageClipView]}. Değiştir`);
   if (!on) video.pause();
   else stageClipTick(engine.visualTime, true);
+}
+
+let stageToastTimer = 0;
+function stageToast(text) {
+  const node = el("stage-toast");
+  if (!node) return;
+  node.textContent = text;
+  node.hidden = false;
+  clearTimeout(stageToastTimer);
+  stageToastTimer = setTimeout(() => { node.hidden = true; }, 1800);
 }
 
 function stageClipUnload() {
@@ -3097,7 +3120,7 @@ function stageClipUnload() {
   }
   if (stageClip.url) URL.revokeObjectURL(stageClip.url);
   stageClip = { id: "", url: "", lastSync: 0 };
-  el("stage").classList.remove("has-clip");
+  el("stage").classList.remove("has-clip", "clip-full");
   el("stage-clip-toggle").hidden = true;
 }
 
@@ -3134,8 +3157,10 @@ function stageClipTick(time, force = false) {
   if (action.pause) video.pause();
 }
 
-function openStage() {
+function openStage(view = "") {
   if (!currentSong || stageOpen || engine.channels.size === 0) return;
+  // "Klip" düğmesi tam (net) klip ister; "Sahne" son seçilen görünümle açılır.
+  stageClipView = view === "full" ? "full" : clipMode(safeStorage().storage);
   stageOpen = true;
   el("stage").hidden = false;
   el("stage").classList.remove("locked");
@@ -3174,12 +3199,40 @@ function stageHoldCancel() {
   stageHoldTimer = 0;
 }
 
-on("stage-open", "click", openStage);
+on("stage-open", "click", () => openStage());
 on("stage-clip-toggle", "click", () => {
   if (stageLocked) return;
-  const storage = safeStorage().storage;
-  try { storage.setItem(STAGE_CLIP_KEY, settingOn(storage, STAGE_CLIP_KEY) ? "0" : "1"); } catch { /* bu oturumda kalmaz */ }
+  stageClipView = nextClipMode(stageClipView);
+  try { safeStorage().storage.setItem(STAGE_CLIP_KEY, storedClipMode(stageClipView)); } catch { /* bu oturumda kalmaz */ }
   stageClipVisibility();
+  stageToast(CLIP_VIEW_TEXT[stageClipView]);
+});
+
+// ---------------------------------------------------------------- oynatıcıdaki "Klip" düğmesi
+// Klip varsa sahneyi TAM (net) klip görünümüyle açar; yoksa "Klip ekle": telefondaki klibi bu şarkıya bağlar (yükleme yok) ve açar.
+
+let clipChipHas = false;
+let clipOpenAfterPick = false;
+
+async function refreshClipChip() {
+  const chip = el("clip-open");
+  if (!chip || !currentSong) return;
+  const id = currentSong.id;
+  const list = await clipStore.list();
+  if (!currentSong || currentSong.id !== id) return;
+  clipChipHas = list.some((item) => item.id === id);
+  chip.textContent = clipChipHas ? "Klip" : "Klip ekle";
+  chip.setAttribute("aria-label", clipChipHas ? "Klibi tam ekran aç" : "Bu şarkıya telefondaki klibi ekle");
+}
+
+on("clip-open", "click", () => {
+  if (!currentSong) return;
+  if (clipChipHas) {
+    openStage("full");
+    return;
+  }
+  clipOpenAfterPick = true;
+  el("clip-file").click();
 });
 document.addEventListener("visibilitychange", () => {
   if (stageOpen) stageClipTick(engine.visualTime, true);      // arka planda video boşuna oynamasın

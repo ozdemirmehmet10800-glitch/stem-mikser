@@ -446,6 +446,7 @@ html.ui-new .loop-saved .chip, html.ui-new .mix-presets .chip { position: relati
 html.ui-new .loop-saved .chip::after { content: ""; position: absolute; left: -2px; right: -2px; top: 50%; height: 44px; margin-top: -22px; }
 html.ui-new .stage-open { min-height: 32px; padding: 0 14px; border-radius: 999px; border: 0; background: var(--grad); color: var(--on-grad); font-weight: 700; font-size: 12px; margin-bottom: 6px; }
 html.ui-new .player-method-row .stage-open { position: relative; }
+html.ui-new .clip-open { min-height: 32px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--accent); background: var(--panel-2); color: var(--text); font-weight: 700; font-size: 12px; margin-bottom: 6px; }
 html.ui-new .stage { z-index: 46; }
 
 /* ================= yükleniyor: dönen halka yerine ekolayzır çubukları ================= */

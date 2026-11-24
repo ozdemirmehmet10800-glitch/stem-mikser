@@ -21,6 +21,10 @@
   HİÇ gönderilmiyor (yalnız senin "Ara"ya bastığında şarkı adı/sanatçı). Saniyede en çok 1 istek.
 - **Takeout içinde şarkı adı yoksa:** Google'ın "beğenilen videolar" CSV'si genelde yalnız video kimliği veriyor (ad yok). Bunlar "Başlıksız bağlantı" olarak eklenir
   (bağlantıyı açabilirsin, otomatik eşleşme olmaz). Adı olan "müzik kitaplığı şarkıları" CSV'si normal eklenir.
+- **Ayırma süresi (sunucu, onayını bekliyor):** Son şarkında (4 dk, Hi-Fi) yüklemeden "hazır"a ~6 dk geçti. Ölçüm (salt okunur): GPU ayırması 14 sn,
+  6 kanalı AAC'ye çevirmek SIRAYLA 97 sn, durum kayıtları 33 sn, analiz 34 sn; kalanı konteyner açılışı + Hi-Fi aşaması. Öneri: kodlamayı paralel
+  yapmak + GPU konteynerine birkaç CPU çekirdeği ayırmak + durum kaydını 6 yerine 2 kez yazmak (tahmini ~1,5-2 dk kazanç, GPU süresi de kısalır).
+  Bu, GPU ayırma işinin kodunu değiştirir ve bir gerçek şarkıyla denenmesi gerekir; onay vermeden yapmadım.
 - **Klipler telefonda saklansın mı?** Yüklediğin klip (videonun kendisi) varsayılan olarak sahne modu için telefonda saklanıyor; klip başına
   onlarca MB tutabilir. İstemezsen Ayarlar > Sahne klipleri'nden kapat; saklananları oradan silebilirsin (şarkılar ve sesleri silinmez).
 
@@ -29,7 +33,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v77 (kayıt 13'teki klip geliştirmeleri dahil). 76 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
+- **Son sürüm:** SW v78 (kayıt 14'teki Klip düğmesi dahil). 76 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -38,6 +42,23 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 14. Oynatıcıda "Klip" düğmesi; ayırma süresinin ölçümü
+
+- **Sorun:** "Klibi açamıyorum, direkt ses ekranı çıkıyor." Sebep: (1) bugünkü yüklemen v77 yayına girmeden önceydi, klip saklanmamıştı;
+  (2) klip yalnız "Sahne"nin içinde, karartılmış arka plan olarak görünüyordu, oynatıcıdan açılmıyordu.
+- **Ne:** Oynatıcıda "Sahne"nin yanına "Klip" düğmesi. Klip varsa tam ekran, NET (karartmasız) açar; akor ve söz küçülüp alta iner, ses mikserden
+  gelir, video sesle senkron. Klip yoksa düğme "Klip ekle" der: telefondaki mp4'ü seçersin, bu şarkıya bağlanır (yükleme yok) ve hemen açılır.
+  Sahnedeki film düğmesi artık üç durum arasında döner: arka planda (akor/söz önde) -> tam ekran -> gizli; kısa bir yazıyla hangisi olduğu söylenir.
+- **Ölçüm (salt okunur, sunucuya iş verilmedi):** son şarkı 4 dk, Hi-Fi: yüklemeden hazıra ~6 dk. GPU ayırması 14 sn; kanalları AAC'ye çevirme 97 sn
+  (sırayla); durum kayıtları 33 sn; analiz 34 sn. Bu yüklemenin 11,4 MB'lık dosyası klibin tamamıydı (v76); v77'den beri yalnız sesi gidiyor.
+  Sunucu iyileştirmesi "Senin kararın gereken"de, onay bekliyor.
+- **SW:** v78.
+- **Telefonda kontrol (4 adım):**
+  1. Klipten yüklediğin şarkıyı aç: "Sahne"nin yanında "Klip ekle" görünmeli; dokun, aynı mp4'ü seç: klip tam ekran açılmalı.
+  2. Oynat: video sesle aynı yerde gitmeli, duraklatınca durmalı.
+  3. Film simgesine dokun: "arka planda" -> "tam ekran" -> "gizli" diye dönmeli.
+  4. Kapat, şarkıyı yeniden aç: düğme artık "Klip" demeli.
 
 ### 13. Klip geliştirmeleri: gerçek dosya testi, webm/mkv, parçalı mp4, klipten kapak, ilerleme/iptal, sahnede klip
 

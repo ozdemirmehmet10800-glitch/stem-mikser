@@ -1573,6 +1573,15 @@ button.cc.more {
 .stage.has-clip .stage-chord { filter: drop-shadow(0 2px 10px rgba(0, 0, 0, 0.55)); }
 #stage-clip-toggle svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 #stage-clip-toggle[aria-pressed="false"] { opacity: 0.55; }
+/* tam klip: video net; akor ve söz küçülüp alta iner, yalnız üst/alt kenar karartılır */
+.stage.clip-full .stage-clip { opacity: 1; filter: none; object-fit: contain; background: #000; }
+.stage.clip-full .stage-pulse { display: none; }
+.stage.clip-full .stage-bg::after { background: linear-gradient(to bottom, rgba(0, 0, 0, 0.55), transparent 18%, transparent 62%, rgba(0, 0, 0, 0.75)); }
+.stage.clip-full .stage-main { justify-content: flex-end; gap: 2px; padding-bottom: 8px; }
+.stage.clip-full .stage-chord { font-size: clamp(34px, 11vw, 72px); }
+.stage.clip-full .stage-line { margin-top: 2px; font-size: clamp(16px, 4.6vw, 26px); }
+.stage.clip-full .stage-next-chord, .stage.clip-full .stage-line-next { display: none; }
+.clip-open { flex: 0 0 auto; }
 .upload-cancel { margin: 6px 0 0; }
 .upload-cancel[hidden] { display: none; }
 .info-clip { display: grid; gap: 6px; margin-top: 10px; }

@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { frameTimes, squareCrop, frameStats, goodFrame, frameScore, DARK_LUMA } from "../frontend/js/clipframe.js";
 import { clipSync, CLIP_DRIFT_S } from "../frontend/js/stage.js";
-import { settingOn, summarizeClips, CLIP_KEEP_KEY, STAGE_CLIP_KEY } from "../frontend/js/clipstore.js";
+import { settingOn, summarizeClips, clipMode, nextClipMode, storedClipMode, CLIP_KEEP_KEY, STAGE_CLIP_KEY } from "../frontend/js/clipstore.js";
 import { CoverManager, SOURCES } from "../frontend/js/cover.js";
 import { encodeBackup, parseBackup } from "../frontend/js/coverbackup.js";
 
@@ -56,6 +56,11 @@ const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8").split(
   check("'0' kapatır, diğer ayar etkilenmez", !settingOn(storage, CLIP_KEEP_KEY) && settingOn(storage, STAGE_CLIP_KEY));
   check("depolama yok/atıyor: açık say (çökmez)", settingOn(null, CLIP_KEEP_KEY) && settingOn({ getItem() { throw new Error("x"); } }, CLIP_KEEP_KEY));
   check("klip özeti", JSON.stringify(summarizeClips([{ size: 10 }, { size: 5 }, {}])) === JSON.stringify({ count: 3, bytes: 15 }) && summarizeClips(null).count === 0);
+  const modes = new Map();
+  const ms = { getItem: (k) => (modes.has(k) ? modes.get(k) : null), setItem: (k, v) => modes.set(k, String(v)) };
+  check("sahne klibi varsayılan: karartılmış (eski '1' de)", clipMode(ms) === "dim" && (ms.setItem(STAGE_CLIP_KEY, "1"), clipMode(ms)) === "dim" && clipMode(null) === "dim");
+  check("film düğmesi sırası: karartılmış -> tam -> gizli -> karartılmış", nextClipMode("dim") === "full" && nextClipMode("full") === "off" && nextClipMode("off") === "dim" && nextClipMode("x") === "dim");
+  check("görünüm saklanır ve geri okunur (eski '0' = gizli korunur)", ["dim", "full", "off"].every((m) => (ms.setItem(STAGE_CLIP_KEY, storedClipMode(m)), clipMode(ms)) === m) && storedClipMode("off") === "0");
 }
 
 // ------------------------------------------------------------------ "clip" kapak kaynağı: önceliği
@@ -112,7 +117,12 @@ const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8").split(
   check("senkron mevcut döngüden (stageTick) ve çal/duraklat anında; ek döngü yok", /stageClipTick\(time\)/.test(fnBody("stageTick")) && /stageClipTick\(engine\.visualTime, true\)/.test(fnBody("setPlayIcon")) && !/requestAnimationFrame/.test(fnBody("stageClipTick")));
   check("uygulama arka plandayken video oynamaz", /playing: engine\.playing && !document\.hidden/.test(fnBody("stageClipTick")));
   check("tüm klipleri silmek onay ister", /window\.confirm\(/.test(app.slice(app.indexOf('on("clip-clear"'), app.indexOf('on("clip-clear"') + 600)));
+  const clipOpen = app.slice(app.indexOf('on("clip-open", "click"'), app.indexOf('on("clip-open", "click"') + 300);
+  check("oynatıcıdaki Klip düğmesi: klip varsa TAM görünümle açar, yoksa klip seçtirir", /openStage\("full"\)/.test(clipOpen) && /el\("clip-file"\)\.click\(\)/.test(clipOpen));
+  check("Klip düğmesi şarkı açılınca güncellenir", /syncCoverUi\(\);\n\s*refreshArtwork\(\);\n\s*refreshClipChip\(\);/.test(app));
+  check("Sahne düğmesi son seçilen görünümle açılır (olay nesnesi görünüm sanılmaz)", /on\("stage-open", "click", \(\) => openStage\(\)\)/.test(app) && /view === "full" \? "full" : clipMode\(/.test(fnBody("openStage")));
   const html = read("../frontend/index.html");
+  check("oynatıcıda Klip düğmesi var", /id="clip-open"/.test(html));
   check("sahne videosu sessiz ve satır içi (ses yalnız mikserden)", /<video class="stage-clip" id="stage-clip" muted playsinline/.test(html));
   const sw = read("../frontend/sw.js");
   check("yeni modüller çevrimdışı kabukta", ['"./js/clipframe.js"', '"./js/clipstore.js"', '"./js/mp4audio.js"'].every((m) => sw.includes(m)));

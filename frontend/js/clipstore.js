@@ -7,7 +7,8 @@
 const DB_NAME = "stem-mikser-clips";
 const STORE = "clips";
 export const CLIP_KEEP_KEY = "stem-mikser.clipkeep";       // "0": yüklenen klipleri saklama (varsayılan: sakla)
-export const STAGE_CLIP_KEY = "stem-mikser.stageclip";     // "0": sahnede klibi gösterme (varsayılan: göster)
+export const STAGE_CLIP_KEY = "stem-mikser.stageclip";     // sahnede klip: "0" kapalı, "full" tam (net), başka her şey karartılmış (varsayılan)
+export const CLIP_MODES = ["dim", "full", "off"];          // sahnedeki film düğmesi bu sırayla döner
 
 /** Ayar açık mı (varsayılan açık; depolama yoksa da açık sayılır). */
 export function settingOn(storage, key) {
@@ -17,6 +18,26 @@ export function settingOn(storage, key) {
     return true;
   }
 }
+
+/** Sahne klibi görünümü: "off" | "dim" | "full" (depolama yoksa "dim"). */
+export function clipMode(storage) {
+  try {
+    const value = storage ? storage.getItem(STAGE_CLIP_KEY) : null;
+    if (value === "0") return "off";
+    if (value === "full") return "full";
+  } catch {
+    /* varsayılan */
+  }
+  return "dim";
+}
+
+/** Film düğmesi: karartılmış -> tam -> kapalı -> karartılmış. */
+export function nextClipMode(mode) {
+  const index = CLIP_MODES.indexOf(mode);
+  return CLIP_MODES[(index + 1) % CLIP_MODES.length];
+}
+
+export const storedClipMode = (mode) => (mode === "off" ? "0" : mode === "full" ? "full" : "1");
 
 /** [{size}] -> {count, bytes}. */
 export function summarizeClips(list) {

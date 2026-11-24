@@ -256,7 +256,7 @@
     </header>
     <!-- Yeni görünümde "Hi-Fi'a yükselt" düğmesi alt çubuktan buraya taşınır (app.js placeReprocess): alt çubuk tek satır kalır, miksere yer açılır -->
     <div class="sleep-row" id="sleep-row" role="group" aria-label="Uyku zamanlayıcısı" hidden></div>
-    <div class="player-method-row" id="player-method-row"><div class="player-method" id="player-method" hidden></div><button type="button" class="chip stage-open" id="stage-open" aria-label="Sahne modu">Sahne</button></div>
+    <div class="player-method-row" id="player-method-row"><div class="player-method" id="player-method" hidden></div><button type="button" class="chip stage-open" id="stage-open" aria-label="Sahne modu">Sahne</button><button type="button" class="chip clip-open" id="clip-open" aria-label="Bu şarkıya telefondaki klibi ekle">Klip ekle</button></div>
 
     <!-- akor şeridi -->
     <div class="chordstrip" id="chordstrip">
@@ -932,6 +932,7 @@
       </div>
       <div class="stage-next-song" id="stage-next-song"></div>
     </footer>
+    <div class="stage-locked-hint" id="stage-toast" role="status" hidden></div>
     <div class="stage-locked-hint" id="stage-locked-hint" hidden>Kilitli. Açmak için kilit simgesine basılı tut.</div>
   </div>
 
