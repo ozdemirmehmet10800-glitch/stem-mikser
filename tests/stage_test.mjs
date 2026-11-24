@@ -44,3 +44,21 @@ check("sahne açıkken ek rAF döngüsü YOK (mevcut oynatıcı döngüsüne ba�
 
 if (failed) { console.error(`\n${failed} test başarısız`); process.exit(1); }
 console.log("\ntümü geçti");
+
+// nabız seviyesi (js/stage.js pulseLevel) ve kelime parlaması / analizör kaynak denetimi
+{
+  const { pulseLevel } = await import("../frontend/js/stage.js");
+  const ok = pulseLevel(0, 0) === 0 && pulseLevel(0.1, 0) > 0.29 && pulseLevel(1, 0) === 1 && pulseLevel(5, 0) === 1 && pulseLevel(-1, 0) === 0 && pulseLevel(NaN, 0.5) < 0.5
+    && Math.abs(pulseLevel(0, 1) - 0.88) < 1e-9 && Math.abs(pulseLevel(0.3, 0.2) - 0.9) < 1e-9;
+  console.log(`${ok ? "ok  " : "FAIL"} pulseLevel: sınırlar, hızlı yükseliş, yavaş düşüş`);
+  const src = readFileSync(new URL("../frontend/js/app.js", import.meta.url), "utf8").replaceAll(String.fromCharCode(13), "");
+  const open = /function stageAnalyserOpen\(\) \{([\s\S]*?)\n\}\n/.exec(src);
+  const close = /function stageAnalyserClose\(\) \{([\s\S]*?)\n\}\n/.exec(src);
+  const closeStage = /function closeStageDom\(\) \{([\s\S]*?)\n\}\n/.exec(src);
+  const ok2 = Boolean(open && close && closeStage) && /createAnalyser/.test(open[1]) && /disconnect\(stageAnalyser\)/.test(close[1]) && /stageAnalyserClose\(\)/.test(closeStage[1])
+    && /if \(now - stagePulseAt < 66\) return;/.test(src) && !/stageAnalyserOpen\(\);[\s\S]{0,80}setInterval/.test(src);
+  console.log(`${ok2 ? "ok  " : "FAIL"} analizör yalnız sahne açıkken bağlanır, kapanınca sökülür, ~15 Hz ile okunur (ek döngü yok)`);
+  const ok3 = /wordIndexFor\(lines\[state\.li\], time\)/.test(src) && /stageWords\.forEach/.test(src);
+  console.log(`${ok3 ? "ok  " : "FAIL"} kelime kelime parlama: kelime zamanlaması (line.w) kullanılır`);
+  if (!ok || !ok2 || !ok3) process.exit(1);
+}

@@ -64,7 +64,7 @@ import {
 import { drawRoll, targetRange, RangeEaser, Trail, ROLL_PAST, ROLL_FUTURE } from "./roll.js";
 import { Timeline } from "./timeline.js";
 import {
-  prepareChords, displayLabel, mapSheet, buildGrid, renderMain, renderGap, renderGrid, soundingAt,
+  prepareChords, displayLabel, mapSheet, buildGrid, renderMain, renderGap, renderGrid, soundingAt, wordIndexFor,
 } from "./chordsheet.js";
 import { WakeLock } from "./wakelock.js";
 import { StemCache, cacheTag } from "./stemcache.js";
@@ -95,7 +95,8 @@ import { encodeBackup, parseBackup } from "./coverbackup.js";
 import { summarizeBySong, formatSize as formatCacheSize, buildReport } from "./cachelist.js";
 import { SleepTimer, SLEEP_MINUTES, formatRemaining } from "./sleeptimer.js";
 import { readQueue, writeQueue, addToQueue, removeFromQueue, takeNext } from "./queue.js";
-import { stageState, stageProgress, holdUnlocks, LOCK_HOLD_MS } from "./stage.js";
+import { stageState, stageProgress, holdUnlocks, pulseLevel, LOCK_HOLD_MS } from "./stage.js";
+import { dominantColor, themeColors } from "./palette.js";
 import { SORT_MODES, SORT_LABELS, readSort, writeSort, readPlays, bumpPlays, sortSongs } from "./sortplays.js";
 import {
   findMatches, wishesFromCsv, importSummary, cleanUrl, wishMatchesQuery,
@@ -210,6 +211,7 @@ function syncDock() {
     else button.removeAttribute("aria-current");
   }
   placeReprocess();
+  if (!currentSong || !isNewLook()) clearSongTheme();
   syncMini();
   syncMiniLoop();
 }
@@ -456,6 +458,71 @@ function syncCoverUi() {
   if (!el("info-sheet").hidden) {
     paintCover(el("info-cover"), currentSong.id, title);
     refreshInfoSource();
+  }
+  refreshSongTheme();
+}
+
+// ---- şarkıya özel vurgu rengi (js/palette.js): kapağın baskın rengi (resim yoksa şarkı adından üretilen ton) -> uygulamanın vurgu rengi.
+// Yalnız yeni görünümde ve ayar açıkken; gri/siyah-beyaz kapakta varsayılan camgöbeği-mor. Aydınlık/koyu temaya göre kontrastı korunur.
+const SONG_THEME_PROPS = ["--accent", "--accent-2", "--accent-dim", "--grad", "--on-grad"];
+const songColorCache = new Map();
+let songThemeGen = 0;
+let songThemeOn = false;
+
+function songThemeEnabled() {
+  try { return localStorage.getItem("stem-mikser.songtheme") !== "0"; } catch { return true; }
+}
+
+function clearSongTheme() {
+  if (!songThemeOn) return;
+  songThemeOn = false;
+  const root = document.documentElement;
+  for (const prop of SONG_THEME_PROPS) root.style.removeProperty(prop);
+}
+
+async function sampleCoverColor(url) {
+  const image = new Image();
+  image.src = url;
+  await image.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = 32;
+  canvas.height = 32;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(image, 0, 0, 32, 32);
+  return dominantColor(ctx.getImageData(0, 0, 32, 32).data);
+}
+
+async function refreshSongTheme() {
+  const gen = (songThemeGen += 1);
+  if (!isNewLook() || !currentSong || !songThemeEnabled()) {
+    clearSongTheme();
+    return;
+  }
+  const id = currentSong.id;
+  const url = covers.urlFor(id);
+  const key = `${id}|${url || ""}`;
+  let base = songColorCache.get(key);
+  if (!base) {
+    try {
+      base = url ? await sampleCoverColor(url) : { hue: autoCoverModel(currentSong.title || id).hue, sat: 0.7 };
+    } catch {
+      base = { hue: autoCoverModel(currentSong.title || id).hue, sat: 0.7 };
+    }
+    songColorCache.set(key, base);
+  }
+  if (gen !== songThemeGen || !currentSong || currentSong.id !== id) return;
+  const root = document.documentElement;
+  const colors = themeColors(base, root.getAttribute("data-theme") || "dark");
+  root.style.setProperty("--accent", colors.accent);
+  root.style.setProperty("--accent-2", colors.accent2);
+  root.style.setProperty("--accent-dim", colors.accentDim);
+  root.style.setProperty("--grad", colors.grad);
+  root.style.setProperty("--on-grad", colors.onGrad);
+  songThemeOn = true;
+  const stage = el("stage");
+  if (stage) {
+    stage.style.setProperty("--st-c1", colors.c1);
+    stage.style.setProperty("--st-c2", colors.c2);
   }
 }
 
@@ -1079,9 +1146,11 @@ function renderLibrary(songs) {
   const cacheIndex = offlineNow ? stemCache.indexSnapshot() : null;
 
   list.innerHTML = "";
+  el("library-welcome").hidden = true;
   const empty = el("library-empty");
   empty.hidden = true;
   if (!songs.length) {
+    el("library-welcome").hidden = false;
     showMessage(el("library-message"), "Henüz şarkı yok. Yukarıdan bir tane ekle.", "warn");
     return;
   }
@@ -2362,6 +2431,7 @@ function signed(value) {
 }
 
 function refreshTuneUi() {
+  document.body.classList.toggle("vinyl-on", vinylMode);        // "Plak gibi" açıkken dönen kapak gerçek plak görünümü alır
   const rate = currentRate();
   const percent = Math.round(rate * 100);
 
@@ -2606,6 +2676,7 @@ function setPlayIcon(playing) {
   el("play").setAttribute("aria-label", playing ? "Duraklat" : "Oynat");
   if (lyricsScreen) lyricsScreen.setPlaying(playing);
   if (stageOpen) el("stage").classList.toggle("playing", playing);
+  document.body.classList.toggle("is-playing", playing);        // dönen kapak (yalnız transform animasyonu)
   safeHook("icon", playing);
   syncMini();
   syncMiniLoop();
@@ -2712,14 +2783,84 @@ function stageRefresh() {
   // zemin: şarkı adından üretilen iki renk (kapak resmi varsa soluk arka plan)
   const model = autoCoverModel(title);
   const root = el("stage");
-  root.style.setProperty("--st-c1", model.c1);
-  root.style.setProperty("--st-c2", model.c2);
+  if (!songThemeOn) {                                   // şarkı teması kapalıysa zemin renkleri şarkı adından
+    root.style.setProperty("--st-c1", model.c1);
+    root.style.setProperty("--st-c2", model.c2);
+  }
   const url = covers.urlFor(currentSong.id);
   el("stage-art").style.backgroundImage = url ? `url("${url}")` : "";
   root.classList.toggle("has-art", Boolean(url));
   root.classList.toggle("playing", engine.playing);
-  stageLast = { ci: -2, li: -2 };
+  stageLast = { ci: -2, li: -2, wi: -2 };
   stageTick(engine.visualTime);
+}
+
+let stageWords = [];          // satırdaki kelime düğümleri (kelime zamanlaması varsa)
+
+// Söz satırı: kelime zamanlaması (line.w) varsa kelime kelime parlar, yoksa düz metin. Satır değişince yumuşak giriş (transform/opacity).
+function stageRenderLine(line) {
+  const box = el("stage-line");
+  box.textContent = "";
+  stageWords = [];
+  if (!line) return;
+  const words = Array.isArray(line.w) ? line.w : [];
+  const usable = words.length >= 2 && words.every((item) => item && typeof item[2] === "string" && item[2].trim());
+  if (usable) {
+    const joiner = lyricsDoc && lyricsDoc.language === "ja" ? "" : " ";
+    words.forEach((item, index) => {
+      const node = document.createElement("span");
+      node.className = "w";
+      node.textContent = item[2].trim() + (index < words.length - 1 ? joiner : "");
+      box.append(node);
+      stageWords.push(node);
+    });
+  } else {
+    box.textContent = line.text;
+  }
+  box.classList.remove("pop");
+  void box.offsetWidth;
+  box.classList.add("pop");
+}
+
+// Nabız ışığı: yalnız sahne açıkken çıkış analizörü, ~15 Hz okuma; ışığın opaklığı/ölçeği ses seviyesiyle (yalnız transform/opacity).
+let stageAnalyser = null;
+let stageLevel = 0;
+let stagePulseAt = 0;
+const stageBuffer = new Float32Array(512);
+
+function stageAnalyserOpen() {
+  try {
+    const ctx = engine.ctx;
+    const source = engine.output;
+    if (!ctx || !source || typeof ctx.createAnalyser !== "function") return;
+    stageAnalyser = ctx.createAnalyser();
+    stageAnalyser.fftSize = 512;
+    source.connect(stageAnalyser);
+  } catch {
+    stageAnalyser = null;
+  }
+}
+
+function stageAnalyserClose() {
+  try {
+    if (stageAnalyser && engine.output) engine.output.disconnect(stageAnalyser);
+  } catch { /* zaten ayrık */ }
+  stageAnalyser = null;
+  stageLevel = 0;
+}
+
+function stagePulseTick() {
+  if (!stageAnalyser) return;
+  const now = performance.now();
+  if (now - stagePulseAt < 66) return;
+  stagePulseAt = now;
+  stageAnalyser.getFloatTimeDomainData(stageBuffer);
+  let sum = 0;
+  for (let i = 0; i < stageBuffer.length; i += 1) sum += stageBuffer[i] * stageBuffer[i];
+  stageLevel = pulseLevel(Math.sqrt(sum / stageBuffer.length), stageLevel);
+  const pulse = el("stage-pulse");
+  pulse.style.opacity = (0.55 + stageLevel * 0.45).toFixed(2);
+  pulse.style.transform = `scale(${(1 + stageLevel * 0.07).toFixed(3)})`;
 }
 
 function stageTick(time) {
@@ -2737,9 +2878,20 @@ function stageTick(time) {
   }
   if (state.li !== stageLast.li) {
     stageLast.li = state.li;
-    el("stage-line").textContent = state.li >= 0 ? lines[state.li].text : (lines.length ? "" : "");
+    stageLast.wi = -2;
+    stageRenderLine(state.li >= 0 ? lines[state.li] : null);
     el("stage-line-next").textContent = state.nextLi >= 0 ? lines[state.nextLi].text : "";
   }
+  if (stageWords.length) {
+    const wi = wordIndexFor(lines[state.li], time);
+    if (wi !== stageLast.wi) {
+      stageLast.wi = wi;
+      stageWords.forEach((node, index) => {
+        node.className = index < wi ? "w done" : index === wi ? "w now" : "w";
+      });
+    }
+  }
+  stagePulseTick();
   const duration = engine.duration;
   el("stage-progress").style.transform = `scaleX(${stageProgress(time, duration).toFixed(4)})`;
   el("stage-time").textContent = formatTime(time);
@@ -2752,12 +2904,14 @@ function openStage() {
   el("stage").hidden = false;
   el("stage").classList.remove("locked");
   stageRefresh();
+  stageAnalyserOpen();
   wakeLock.request();                          // sahnede ekran hep açık
   pushLayer("stage");
 }
 
 function closeStageDom() {
   stageOpen = false;
+  stageAnalyserClose();
   stageLocked = false;
   el("stage").hidden = true;
   el("stage").classList.remove("locked");
@@ -5356,6 +5510,9 @@ async function refreshSwVersion() {
 
 on("open-settings", "click", () => {
   el("setting-look").checked = isNewLook();
+  el("setting-theme").value = (globalThis.StemLook && globalThis.StemLook.readTheme(localStorage)) || "dark";
+  el("setting-songtheme").checked = songThemeEnabled();
+  el("setting-spin").checked = applySpinSetting();
   refreshSwVersion();
   refreshStemCacheState();
   refreshCollectionState();
@@ -6932,7 +7089,35 @@ on("setting-look", "change", () => {
   try { store = localStorage; } catch { /* depolama yok: tercih bu oturumda uygulanır, kaydedilmez */ }
   look.set(el("setting-look").checked ? look.NEW : look.CLASSIC, store, document);
   syncDock();
+  refreshSongTheme();
 });
+
+on("setting-theme", "change", () => {
+  const look = globalThis.StemLook;
+  if (!look) return;
+  let store = null;
+  try { store = localStorage; } catch { /* depolama yok */ }
+  look.setTheme(el("setting-theme").value, store, document);
+  refreshSongTheme();                  // vurgu renkleri temaya göre yeniden hesaplanır
+});
+
+on("setting-songtheme", "change", () => {
+  try { localStorage.setItem("stem-mikser.songtheme", el("setting-songtheme").checked ? "1" : "0"); } catch { /* bu oturumda kalır */ }
+  refreshSongTheme();
+});
+
+function applySpinSetting() {
+  let on = true;
+  try { on = localStorage.getItem("stem-mikser.spin") !== "0"; } catch { /* varsayılan açık */ }
+  document.body.classList.toggle("spin-covers", on);
+  return on;
+}
+
+on("setting-spin", "change", () => {
+  try { localStorage.setItem("stem-mikser.spin", el("setting-spin").checked ? "1" : "0"); } catch { /* bu oturumda kalır */ }
+  applySpinSetting();
+});
+applySpinSetting();
 
 on("reprocess", "click", async () => {
   if (!currentSong) return;

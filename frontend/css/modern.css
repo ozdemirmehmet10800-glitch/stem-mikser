@@ -447,3 +447,50 @@ html.ui-new .loop-saved .chip::after { content: ""; position: absolute; left: -2
 html.ui-new .stage-open { min-height: 32px; padding: 0 14px; border-radius: 999px; border: 0; background: var(--grad); color: var(--on-grad); font-weight: 700; font-size: 12px; margin-bottom: 6px; }
 html.ui-new .player-method-row .stage-open { position: relative; }
 html.ui-new .stage { z-index: 46; }
+
+/* ================= yükleniyor: dönen halka yerine ekolayzır çubukları ================= */
+html.ui-new .spinner { width: auto; height: 36px; margin: 0 auto; border: 0; border-radius: 0; animation: none; }
+html.ui-new .spinner i { height: 36px; width: 6px; background: var(--grad); }
+html.ui-new .spinner i:nth-child(1) { animation-delay: -0.9s; } html.ui-new .spinner i:nth-child(2) { animation-delay: -0.6s; } html.ui-new .spinner i:nth-child(3) { animation-delay: -0.3s; }
+html.ui-new .spinner i:nth-child(4) { animation-delay: -0.75s; } html.ui-new .spinner i:nth-child(5) { animation-delay: -0.45s; }
+html.ui-new .welcome-art i { background: var(--grad); }
+
+/* ================= temalar ================= */
+/* Sahne siyahı (OLED): zemin tam siyah, yüzeyler çok koyu */
+html.ui-new[data-theme="black"] { --bg: #000; --bg-2: #05060a; --panel: #0b0d12; --panel-2: #12151b; --panel-3: #1a1e26; }
+html.ui-new[data-theme="black"] body { background: #000; }
+
+/* Aydınlık tema: zemin/yüzey/metin jetonları + koyu zemin varsayan sabit renklerin düzeltmeleri */
+html.ui-new[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f6fa; --bg-2: #e9edf3; --panel: #ffffff; --panel-2: #eef1f6; --panel-3: #dfe4ed;
+  --line: rgba(10, 16, 28, 0.11); --text: #10141b; --text-dim: #475066; --text-faint: #5b667c;
+  --accent: #0a7a94; --accent-2: #6a4fd8; --accent-dim: #d4ecf2;
+  --grad: linear-gradient(135deg, #0e8fb0, #6a4fd8); --on-grad: #ffffff;
+  --danger: #c62828; --warn: #9a5b00; --ok: #0b7a52;
+}
+html.ui-new[data-theme="light"] body { background: var(--bg); color: var(--text); }
+html.ui-new[data-theme="light"] .overlay { background: rgba(244, 246, 250, 0.9); }
+html.ui-new[data-theme="light"] .export-backdrop { background: rgba(16, 20, 27, 0.4); }
+html.ui-new[data-theme="light"] .message.error { background: #fdeaea; border-color: #f3b8b8; color: #8f1d1d; }
+html.ui-new[data-theme="light"] .message.warn { background: #fff4de; border-color: #f0d199; color: #7a4b00; }
+html.ui-new[data-theme="light"] .message.ok { background: #e3f6ee; border-color: #a9dcc6; color: #0b5d3f; }
+html.ui-new[data-theme="light"] .export-box, html.ui-new[data-theme="light"] .fx-box, html.ui-new[data-theme="light"] .tempo-panel,
+html.ui-new[data-theme="light"] .metro-panel, html.ui-new[data-theme="light"] .dl-menu { box-shadow: 0 -8px 30px rgba(16, 20, 27, 0.18); }
+html.ui-new[data-theme="light"] input[type="range"]::-webkit-slider-thumb { background: var(--accent); box-shadow: 0 0 0 4px rgba(10, 122, 148, 0.18); }
+html.ui-new[data-theme="light"] input[type="range"]::-moz-range-thumb { background: var(--accent); box-shadow: 0 0 0 4px rgba(10, 122, 148, 0.18); }
+html.ui-new[data-theme="light"] .seek-wrap .seek::-webkit-slider-thumb { background: linear-gradient(90deg, transparent 5px, var(--text) 5px, var(--text) 8px, transparent 8px); }
+html.ui-new[data-theme="light"] .seek-wrap .seek::-moz-range-thumb { background: linear-gradient(90deg, transparent 5px, var(--text) 5px, var(--text) 8px, transparent 8px); }
+html.ui-new[data-theme="light"] .fader-knob, html.ui-new[data-theme="light"] .channel.audible .fader-knob { background: var(--accent); box-shadow: 0 1px 4px rgba(16, 20, 27, 0.3); }
+html.ui-new[data-theme="light"] .fader-fill { background: #8f9ab0; }
+html.ui-new[data-theme="light"] .chord-cell.active, html.ui-new[data-theme="light"] .cc.now { color: var(--on-grad); }
+html.ui-new[data-theme="light"] .lyric-line { color: var(--text-dim); }
+html.ui-new[data-theme="light"] .lyric-line.active, html.ui-new[data-theme="light"] .lyric-line.low.active { color: var(--text); }
+html.ui-new[data-theme="light"] .song-thumb svg { fill: var(--text-faint); }
+html.ui-new[data-theme="light"] .tab { color: var(--text-faint); }
+html.ui-new[data-theme="light"] .mini { box-shadow: 0 2px 14px rgba(16, 20, 27, 0.12); }
+html.ui-new[data-theme="light"] .btn-primary .plus { fill: var(--on-grad); }
+html.ui-new[data-theme="light"] .toggle.on-solo { color: #fff; }
+html.ui-new[data-theme="light"] .toggle.on-mute { color: #fff; }
+html.ui-new[data-theme="light"] .quality-tag.hifi { color: #0a7a94; background: rgba(10, 122, 148, 0.12); }
+html.ui-new[data-theme="light"] .sub-badge, html.ui-new[data-theme="light"] .lyrics-notices .notice { color: #7a4b00; background: rgba(245, 158, 11, 0.2); }

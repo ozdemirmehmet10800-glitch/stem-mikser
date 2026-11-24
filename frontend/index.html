@@ -124,6 +124,11 @@
     </section>
 
     <div id="upload-status" class="upload-status" hidden></div>
+    <div class="welcome" id="library-welcome" hidden>
+      <div class="welcome-art" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      <b>Müziğin burada başlıyor</b>
+      <p>"Şarkı ekle" ile bir şarkı seç; kanallarına ayrılınca kitaplıkta görünür. YouTube Music'ten paylaşıp "Eklenecekler"e de atabilirsin.</p>
+    </div>
     <div class="library-empty" id="library-empty" hidden>
       <span id="library-empty-text">Eşleşen şarkı yok.</span>
       <button type="button" class="btn btn-small" id="library-empty-clear">Süzmeyi temizle</button>
@@ -573,6 +578,15 @@
         <span>Görünüm</span>
         <label class="check"><span>Yeni görünüm</span><input type="checkbox" id="setting-look" role="switch"></label>
         <small>Alt sekme çubuğu, küçük oynatıcı ve yeni renkler. Kapatırsan eski görünüm gelir; veriler (şarkılar, listeler, mikser ayarları) hiç değişmez. Sorun olursa adres çubuğuna <b>?klasik=1</b> ekleyerek eski görünüme dönebilirsin.</small>
+        <label class="check"><span>Tema</span>
+          <select id="setting-theme" aria-label="Tema">
+            <option value="dark">Koyu</option>
+            <option value="black">Sahne siyahı (tam siyah)</option>
+            <option value="light">Aydınlık</option>
+          </select>
+        </label>
+        <label class="check"><span>Vurgu rengi çalan şarkının kapağından gelsin</span><input type="checkbox" id="setting-songtheme" role="switch"></label>
+        <label class="check"><span>Kapak çalarken dönsün (plak gibi)</span><input type="checkbox" id="setting-spin" role="switch"></label>
       </div>
 
       <div class="field">
@@ -868,7 +882,7 @@
 
   <!-- sahne modu: tam ekran büyük akor + söz, ekran hep açık, dokunma kilidi (yalnız çalan şarkı için; ayrı katman, geri tuşu önce bunu kapatır) -->
   <div class="stage" id="stage" hidden role="dialog" aria-modal="true" aria-label="Sahne modu">
-    <div class="stage-bg" aria-hidden="true"><i class="stage-glow g1"></i><i class="stage-glow g2"></i><div class="stage-art" id="stage-art"></div></div>
+    <div class="stage-bg" aria-hidden="true"><div class="stage-pulse" id="stage-pulse"><i class="stage-glow g1"></i><i class="stage-glow g2"></i></div><div class="stage-art" id="stage-art"></div></div>
     <header class="stage-top">
       <button type="button" class="stage-btn" id="stage-close" aria-label="Sahne modunu kapat">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
@@ -903,7 +917,7 @@
   <!-- yükleniyor katmanı -->
   <div class="overlay" id="overlay" hidden>
     <div class="overlay-box">
-      <div class="spinner"></div>
+      <div class="spinner"><i></i><i></i><i></i><i></i><i></i></div>
       <div class="overlay-text" id="overlay-text">Yükleniyor…</div>
       <div class="overlay-bars" id="overlay-bars"></div>
     </div>

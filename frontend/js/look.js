@@ -68,7 +68,44 @@
     return target && target.classList.contains("ui-new") ? NEW : CLASSIC;
   }
 
-  var api = { KEY: KEY, NEW: NEW, CLASSIC: CLASSIC, paramOf: paramOf, resolve: resolve, apply: apply, set: set, current: current, readStored: readStored };
+  // Tema (yalnız yeni görünümde etkili): "dark" (varsayılan) | "black" (sahne siyahı, OLED) | "light" (aydınlık). Ayrı anahtar.
+  var THEME_KEY = "stem-mikser.theme";
+  var THEMES = ["dark", "black", "light"];
+  var THEME_COLORS = { dark: "#07090d", black: "#000000", light: "#f4f6fa" };
+
+  function readTheme(storage) {
+    try {
+      var value = storage && storage.getItem(THEME_KEY);
+      return THEMES.indexOf(value) >= 0 ? value : "dark";
+    } catch (error) {
+      return "dark";
+    }
+  }
+
+  function applyTheme(theme, doc) {
+    var clean = THEMES.indexOf(theme) >= 0 ? theme : "dark";
+    var target = doc && doc.documentElement;
+    if (!target) return clean;
+    target.setAttribute("data-theme", clean);
+    var meta = doc.querySelector && doc.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", THEME_COLORS[clean]);
+    return clean;
+  }
+
+  function setTheme(theme, storage, doc) {
+    var clean = applyTheme(theme, doc);
+    try {
+      if (storage) storage.setItem(THEME_KEY, clean);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  var api = {
+    KEY: KEY, NEW: NEW, CLASSIC: CLASSIC, paramOf: paramOf, resolve: resolve, apply: apply, set: set, current: current, readStored: readStored,
+    THEME_KEY: THEME_KEY, THEMES: THEMES, readTheme: readTheme, applyTheme: applyTheme, setTheme: setTheme,
+  };
   root.StemLook = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 
@@ -76,5 +113,6 @@
     var storage = null;
     try { storage = root.localStorage; } catch (error) { storage = null; }
     apply(resolve(location.search, storage).look, document);
+    applyTheme(readTheme(storage), document);
   }
 })(typeof globalThis !== "undefined" ? globalThis : this);

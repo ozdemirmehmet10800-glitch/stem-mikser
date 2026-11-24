@@ -58,6 +58,23 @@ look.set("classic", s4, doc);
 check("set() yalnız kendi anahtarını yazar (ayarlar / collection dokunulmaz)",
   s4.data["stem-mikser.settings"] === "{\"url\":\"x\"}" && s4.data["stem-mikser.collection"] === "{}" && s4.data[look.KEY] === "classic");
 
+// tema (koyu / sahne siyahı / aydınlık)
+check("tema: varsayılan dark, geçersiz/bozuk -> dark", look.readTheme(memStorage()) === "dark" && look.readTheme(memStorage({ [look.THEME_KEY]: "??" })) === "dark" && look.readTheme(null) === "dark");
+check("tema: yaz/oku (black, light)", (() => { const s = memStorage(); look.setTheme("black", s, fakeDocTheme()); return look.readTheme(s) === "black"; })());
+const themeDoc = fakeDocTheme();
+look.applyTheme("light", themeDoc);
+check("applyTheme: data-theme ve theme-color meta güncellenir", themeDoc.attrs["data-theme"] === "light" && themeDoc.meta.content === "#f4f6fa");
+look.applyTheme("yok", themeDoc);
+check("applyTheme: geçersiz tema dark'a düşer", themeDoc.attrs["data-theme"] === "dark" && themeDoc.meta.content === "#07090d");
+const st = memStorage({ "stem-mikser.settings": "{}", "stem-mikser.collection": "{}" });
+look.setTheme("light", st, fakeDocTheme());
+check("setTheme yalnız kendi anahtarını yazar", st.data["stem-mikser.settings"] === "{}" && st.data["stem-mikser.collection"] === "{}" && st.data[look.THEME_KEY] === "light");
+function fakeDocTheme() {
+  const attrs = {};
+  const meta = { content: "", setAttribute(k, v) { if (k === "content") this.content = v; } };
+  return { attrs, meta, documentElement: { setAttribute: (k, v) => { attrs[k] = v; }, classList: { add() {}, remove() {}, contains() { return false; } } }, querySelector: () => meta };
+}
+
 // index.html: betik ve stil yüklü, betik <head>'de ve stil dosyasından ÖNCE (yanıp sönme olmasın)
 const html = readFileSync(new URL("../frontend/index.html", import.meta.url), "utf8");
 const head = html.slice(0, html.indexOf("</head>"));

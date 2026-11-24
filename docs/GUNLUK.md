@@ -27,7 +27,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v73 (kayıt 9'daki sahne modu dahil). 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
+- **Son sürüm:** SW v74 (kayıt 10'daki görsel cila dahil). 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -36,6 +36,26 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 10. Görsel cila (7 madde)
+
+Hepsi yeni görünümde; klasikte etkisiz (dönen kapak ve ekolayzır animasyonları hariç, onlar iki görünümde de var). SW v74.
+
+1. **Kapaktan renk çıkarma + şarkıya özel vurgu rengi:** Çalan şarkının kapağından baskın renk alınır (kapak resmi yoksa şarkı adından üretilen ton); uygulamanın vurgu rengi (düğmeler, sekme, ilerleme, sahne ışığı) o renge döner. Gri/siyah-beyaz kapakta varsayılan camgöbeği-mor. Parlaklık her ton için kontrasta göre ayarlanır (testle sabit: koyu ve aydınlık temada okunur).
+   Ayarlar > Görünüm > "Vurgu rengi çalan şarkının kapağından gelsin" ile kapatılabilir.
+2. **Sahnede nabız ışığı:** Zemindeki ışık çıkış sesinin seviyesiyle nabız atar (analizör yalnız sahne açıkken bağlanır, saniyede ~15 okuma, kapanınca sökülür).
+3. **Dönen kapak / plak:** Çalarken küçük oynatıcıdaki ve mikser başlığındaki kapak daire olup yavaşça döner; "Plak gibi" kipi açıkken üstüne plak çizgileri ve orta delik biner. Ayarlar > "Kapak çalarken dönsün" ile kapanır.
+4. **Sahnede kelime kelime parlayan söz:** Kelime zamanlaması olan satırlarda çalan kelime parlar ve hafif büyür; satır değişince yumuşak kayarak girer.
+5. (1 ile birlikte) **Şarkıya özel renk teması** yukarıda.
+6. **Boş/yükleniyor:** Boş kitaplıkta ekolayzır çubukları ve karşılama yazısı; yükleniyor ekranında dönen halka yerine ekolayzır çubukları.
+7. **Tema seçimi:** Ayarlar > Görünüm > Tema: Koyu (varsayılan), Sahne siyahı (tam siyah, OLED), Aydınlık. Aydınlık tema yeni; en çok kullandığın ekranlarda (kitaplık, mikser, ayarlar, alt sayfalar) denendi, nadir ekranlarda küçük renk uyumsuzlukları kalmış olabilir, görürsen söyle.
+   (Kitaplıkta ızgara görünümü, istediğin gibi, yapılmadı.)
+
+- **Telefonda kontrol (4 adım):**
+  1. Kapağı olan bir şarkı çal: düğmelerin ve sekmenin rengi kapağa uymalı; küçük oynatıcıdaki kapak dönmeli. Ayarlar'dan kapatıp aç.
+  2. Ayarlar > Tema > Aydınlık: kitaplık, mikser ve ayarlar okunur olmalı; sonra "Sahne siyahı" ile zemin tam siyah olmalı.
+  3. Sahne modunu aç: ışık müzikle nabız atmalı; sözü olan şarkıda çalan kelime parlamalı.
+  4. Tempo/ton panelinde "Plak gibi"yi aç: dönen kapakta plak çizgileri görünmeli.
 
 ### 9. Sahne modu
 

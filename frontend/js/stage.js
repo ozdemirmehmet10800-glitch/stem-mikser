@@ -40,6 +40,13 @@ export function stageState({ chords = [], lines = [], time = 0 } = {}) {
   return { ci, next, li, nextLi };
 }
 
+/** Nabız ışığı: RMS (0..1) -> yumuşatılmış seviye. Yükselişi hızlı, düşüşü yavaş (kulağa doğal). prev: önceki seviye. 0..1. */
+export function pulseLevel(rms, prev = 0) {
+  const value = Math.min(Math.max(Number(rms) || 0, 0), 1) * 3;           // tipik müzik RMS'i 0,05-0,3: 3x ile görünür aralığa
+  const target = Math.min(value, 1);
+  return target >= prev ? target : Math.max(prev * 0.88, target);
+}
+
 /** İlerleme çizgisi için 0..1. */
 export function stageProgress(time, duration) {
   const total = Number(duration);
