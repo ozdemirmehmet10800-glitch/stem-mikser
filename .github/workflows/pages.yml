@@ -21,12 +21,11 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+# Paketleme ve yayın AYRI işler: tek işte "Yayımla" paketlemeden 1 sn sonra başlıyor ve GitHub paketi henüz kaydetmemiş olabiliyordu
+# ("No artifacts named github-pages were found"; 2026-11-24'te 8 çalışmanın 3'ü). Ayrı işte yayın, paket tamamen bitince başlar.
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -38,6 +37,13 @@ jobs:
         with:
           path: frontend
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Yayımla
         id: deployment
         uses: actions/deploy-pages@v4
