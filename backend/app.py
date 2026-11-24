@@ -578,6 +578,15 @@ def _encode_stem_m4a(flac_path: pathlib.Path, m4a_path: pathlib.Path,
     return "swr"
 
 
+def _encode_stems_parallel(jobs, channels: int, workers: int = 6) -> float:
+    """[(flac, m4a)] -> AAC'ler AYNI ANDA (ffmpeg GIL tutmaz; sırayla 4 dk şarkıda ~97 sn idi). İlk hata aynen yükselir. Dönüş: sn."""
+    from concurrent.futures import ThreadPoolExecutor
+    started = time.time()
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(jobs)))) as pool:
+        list(pool.map(lambda job: _encode_stem_m4a(job[0], job[1], channels), jobs))
+    return round(time.time() - started, 2)
+
+
 def _decode_mono(path: pathlib.Path, samplerate: int):
     """ffmpeg ile mono float32 numpy dizisi. torchaudio I/O yok."""
     import numpy as np
@@ -4338,7 +4347,7 @@ def lyrics_regress(song: str = "Zeus", ref: str = "zeus.txt", method: str = "anc
 
 @app.function(
     image=separate_image,
-    gpu="T4",
+    gpu="T4", cpu=4.0,  # 4 çekirdek: 6 kanalın AAC kodlaması aynı anda (_encode_stems_parallel)
     volumes={DATA_DIR: volume},
     # Hi-Fi'da Roformer demucs'un ÜSTÜNE geliyor. Ölçülen: 110 sn'lik şarkı
     # 95 sn duvar saati; 10 dakikalık şarkı ~5-6 dk bekleniyor. 1800 sn pay
@@ -4494,31 +4503,22 @@ def separate(song_id: str, quality: str = DEFAULT_QUALITY,
 
         written = []
         flac_seconds = 0.0
-        aac_seconds = 0.0
         commit_seconds = 0.0
+        jobs = []
+        # FLAC'lar sırayla (bellekte tek kopya), AAC'ler AYNI ANDA; durum BİR kez (her yazım ~5 sn commit). Bütçe: ayrıştırma 0-70, analiz 70-100.
         for index, name in enumerate(sources):
-            stem = stems[index] / clip_scale
-
             flac_path = master_dir / f"{name}.flac"
             step = time.time()
-            sf.write(
-                str(flac_path), stem.T.numpy(), samplerate,
-                subtype=FLAC_SUBTYPE, format="FLAC",
-            )
+            sf.write(str(flac_path), (stems[index] / clip_scale).T.numpy(), samplerate, subtype=FLAC_SUBTYPE, format="FLAC")
             flac_seconds += time.time() - step
-
-            m4a_path = stems_dir / f"{name}.m4a"
-            step = time.time()
-            _encode_stem_m4a(flac_path, m4a_path, channels)
-            aac_seconds += time.time() - step
+            jobs.append((flac_path, stems_dir / f"{name}.m4a"))
             written.append(name)
-            print(f"[yaz] {name}: tepe {raw_peaks[name]:.4f} -> flac + m4a")
-            # İlerleme bütçesi: ayrıştırma 0-70, analiz 70-100.
-            step = time.time()
-            _write_status(
-                song_id, progress=20 + int(50 * len(written) / len(sources))
-            )
-            commit_seconds += time.time() - step
+            print(f"[yaz] {name}: tepe {raw_peaks[name]:.4f} -> flac")
+        step = time.time()
+        _write_status(song_id, progress=60)
+        commit_seconds += time.time() - step
+        aac_seconds = _encode_stems_parallel(jobs, channels)
+        print(f"[yaz] {len(jobs)} m4a ayni anda kodlandi: {aac_seconds} sn")
 
         result = {
             "id": song_id,
