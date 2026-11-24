@@ -381,11 +381,9 @@
       <span>Son ayar geri yüklendi</span>
       <button type="button" id="mix-notice-reset">Sıfırla</button>
     </div>
-    <!-- klip: şarkı açılınca MİKSERİN YERİNDE doğrudan görünür (sessiz, sesle senkron; ses mikserden). Dokununca tam ekran; "Mikser" kanalları geri getirir. -->
-    <div class="player-clip" id="player-clip" hidden>
-      <video class="player-clip-video" id="player-clip-video" muted playsinline preload="auto" disablepictureinpicture aria-label="Klip (dokununca tam ekran)"></video>
-      <button type="button" class="player-clip-btn player-clip-full" id="player-clip-full" aria-label="Klibi tam ekran aç"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
-      <button type="button" class="player-clip-btn player-clip-hide" id="player-clip-hide" aria-label="Klibi kapat, mikseri göster">Mikser</button>
+    <!-- klip: MİKSERİN ARKASINDA, şarkı açılınca doğrudan (sessiz, sesle senkron; ses mikserden). Kanallar önde kalır; tam ekran üstteki "Klip". -->
+    <div class="player-clip" id="player-clip" aria-hidden="true" hidden>
+      <video class="player-clip-video" id="player-clip-video" muted playsinline preload="auto" disablepictureinpicture tabindex="-1"></video>
     </div>
     <div class="channels" id="channels"></div>
 
@@ -648,6 +646,7 @@
       <div class="field">
         <span>Sahne klipleri</span>
         <label class="check"><span>Yüklediğin klipleri sahne modu için bu telefonda sakla</span><input type="checkbox" id="setting-clipkeep" role="switch"></label>
+        <label class="check"><span>Klibi mikserin arkasında oynat (kanallar önde kalır)</span><input type="checkbox" id="setting-mixerclip" role="switch"></label>
         <small id="clip-summary">Hesaplanıyor…</small>
         <small>Klip yalnız bu telefonda saklanır, sunucuya gitmez; sahne modunda arka planda sessizce, şarkıyla senkron oynar. Klipler çok yer kaplayabilir. Bir şarkıya sonradan klip eklemek için: şarkı bilgisi &gt; Klip seç.</small>
         <div class="settings-buttons">

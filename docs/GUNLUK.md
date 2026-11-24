@@ -31,7 +31,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v79 (kayıt 15: klip oynatıcıda doğrudan, sunucu hızlandırması). 76 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
+- **Son sürüm:** SW v80 (kayıt 16: klip mikserin arkasında, kanallar önde). 76 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -40,6 +40,19 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 16. Klip mikserin ARKASINDA, kanallar önde
+
+- **Sorun:** v79'da klip mikserin yerine geçiyordu; klip açıkken kanallar (solo gitar, vokal...) görünmüyordu.
+- **Ne:** Klip artık kanal bölgesinin arka planında oynar; bütün kanallar yerinde ve önde kalır (sürgüler, S/M, kaydırma aynı). Video dokunmayı
+  almaz; yazılar okunsun diye kenarlardan karartılır, kanal adları beyaz ve gölgeli. Tam ekran: üstteki "Klip" düğmesi.
+  Arka planı kapatmak için: Ayarlar > Sahne klipleri > "Klibi mikserin arkasında oynat". v79'daki "Mikser" düğmesi kalktı (artık gerek yok).
+- **Neden üste ya da yana değil:** Oynatıcı ekranı sabit yükseklikte; ayrı bir kutu miksere ~90 px bırakıyordu. Arka planda ikisi aynı yeri paylaşıyor.
+- **SW:** v80.
+- **Telefonda kontrol (3 adım):**
+  1. Klibi saklı bir şarkıyı aç: kanallar görünmeli, klip arkalarında oynamalı; kanal adları okunmalı.
+  2. Bir kanalın sürgüsünü/S/M düğmesini kullan: video dokunmayı almamalı, kanal çalışmalı.
+  3. "Klip"e dokun: tam ekran açılmalı.
 
 ### 15. Klip oynatıcıda doğrudan; ayırma ~1,5 dk hızlandı
 

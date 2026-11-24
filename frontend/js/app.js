@@ -792,7 +792,7 @@ on("clip-file", "change", async () => {
   let note = "";
   const frame = await captureFrame(file);
   if (frame && await covers.setClipFrame(id, frame)) note = " Kapak da klipten alındı.";
-  say(`Klip bu telefonda saklandı (${formatSize(file.size)}); artık şarkı açılınca mikserin yerinde görünür, dokununca tam ekran olur.${note}`, "ok");
+  say(`Klip bu telefonda saklandı (${formatSize(file.size)}); artık mikserin arkasında oynar, kanallar önde kalır. Tam ekran: "Klip".${note}`, "ok");
   refreshInfoClip();
   refreshInfoSource();
   refreshClipSummary();
@@ -3221,8 +3221,9 @@ on("stage-clip-toggle", "click", () => {
   stageToast(CLIP_VIEW_TEXT[stageClipView]);
 });
 
-// ---------------------------------------------------------------- oynatıcıda klip: şarkı açılınca DOĞRUDAN görünür (sessiz, sesle senkron)
-// Ses yalnız mikserden. Oynatıcı ekranı görünmüyorken (kitaplık, sahne, uygulama arka planda) video durur; döngü yine stage.js clipSync.
+// ---------------------------------------------------------------- oynatıcıda klip: MİKSERİN ARKASINDA, şarkı açılınca doğrudan (sessiz, senkron)
+// Kanallar (solo gitar, vokal...) yerinde ve ÖNDE kalır; video yerleşim dışıdır, kanal bölgesinin konum/boyutuna oturtulur (playerClipPlace)
+// ve dokunmayı almaz. Tam ekran: üstteki "Klip". Ses yalnız mikserden. Oynatıcı görünmüyorken (kitaplık, sahne, arka plan) video durur.
 
 let playerClip = { id: "", url: "", lastSync: 0 };
 
@@ -3236,9 +3237,30 @@ function playerClipApply() {
   if (!box) return;
   const on = Boolean(playerClip.url) && settingOn(safeStorage().storage, PLAYER_CLIP_KEY);
   box.hidden = !on;
-  el("view-player").classList.toggle("clip-on", on);        // klip mikserin yerinde: kanallar gizlenir
-  if (!on) el("player-clip-video").pause();
-  else playerClipTick(engine.visualTime, true);
+  el("view-player").classList.toggle("clip-on", on);        // kanallar videonun önüne alınır (z-index), gizlenmez
+  if (!on) {
+    el("player-clip-video").pause();
+    return;
+  }
+  playerClipPlace();
+  playerClipTick(engine.visualTime, true);
+}
+
+/** Videoyu kanal bölgesinin üstüne (arkasına) oturtur. Kanallar görünmüyorsa (antrenör vb.) video da görünmez. */
+function playerClipPlace() {
+  const box = el("player-clip");
+  const channels = el("channels");
+  if (!box || box.hidden || !channels) return;
+  const visible = channels.offsetParent !== null && channels.offsetHeight >= 40;
+  const key = visible ? `${channels.offsetTop},${channels.offsetLeft},${channels.offsetWidth},${channels.offsetHeight}` : "gizli";
+  if (box.dataset.place === key) return;
+  box.dataset.place = key;
+  box.style.visibility = visible ? "" : "hidden";
+  if (!visible) return;
+  box.style.top = `${channels.offsetTop}px`;
+  box.style.left = `${channels.offsetLeft}px`;
+  box.style.width = `${channels.offsetWidth}px`;
+  box.style.height = `${channels.offsetHeight}px`;
 }
 
 function playerClipUnload() {
@@ -3250,7 +3272,10 @@ function playerClipUnload() {
   }
   if (playerClip.url) URL.revokeObjectURL(playerClip.url);
   playerClip = { id: "", url: "", lastSync: 0 };
-  if (el("player-clip")) el("player-clip").hidden = true;
+  if (el("player-clip")) {
+    el("player-clip").hidden = true;
+    delete el("player-clip").dataset.place;
+  }
   el("view-player").classList.remove("clip-on");
 }
 
@@ -3276,6 +3301,7 @@ function playerClipTick(time, force = false) {
   const now = performance.now();
   if (!force && now - playerClip.lastSync < 200) return;
   playerClip.lastSync = now;
+  playerClipPlace();                    // sözler açılıp kapanınca vb. kanal bölgesi kayabilir
   const onScreen = !document.hidden && !el("view-player").hidden && !stageOpen;
   const action = clipSync({
     videoTime: video.currentTime, videoDuration: video.duration, paused: video.paused, seeking: video.seeking,
@@ -3287,15 +3313,11 @@ function playerClipTick(time, force = false) {
   if (action.pause) video.pause();
 }
 
-on("player-clip-video", "click", () => openStage("full"));
-on("player-clip-full", "click", () => openStage("full"));
-on("player-clip-hide", "click", () => {
-  setPlayerClipPref(false);
-  notePlayer('Mikser açıldı. Klibe dönmek için üstteki "Klip" düğmesine dokun.', "ok", 5000);
-});
+window.addEventListener("resize", () => playerClipPlace());
+on("setting-mixerclip", "change", () => setPlayerClipPref(el("setting-mixerclip").checked));
 
 // ---------------------------------------------------------------- oynatıcıdaki "Klip" düğmesi
-// Klip varsa sahneyi TAM (net) klip görünümüyle açar; yoksa "Klip ekle": telefondaki klibi bu şarkıya bağlar (yükleme yok) ve açar.
+// Klip varsa TAM ekran (net) açar; yoksa "Klip ekle": telefondaki klibi bu şarkıya bağlar (yükleme yok), klip mikserin arkasında başlar.
 
 let clipChipHas = false;
 let clipOpenAfterPick = false;
@@ -3314,10 +3336,6 @@ async function refreshClipChip() {
 on("clip-open", "click", () => {
   if (!currentSong) return;
   if (clipChipHas) {
-    if (playerClip.url && el("player-clip").hidden) {
-      setPlayerClipPref(true);
-      return;
-    }
     openStage("full");
     return;
   }
@@ -5904,6 +5922,7 @@ on("open-settings", "click", () => {
   el("setting-songtheme").checked = songThemeEnabled();
   el("setting-spin").checked = applySpinSetting();
   el("setting-clipkeep").checked = settingOn(safeStorage().storage, CLIP_KEEP_KEY);
+  el("setting-mixerclip").checked = settingOn(safeStorage().storage, PLAYER_CLIP_KEY);
   refreshClipSummary();
   refreshSwVersion();
   refreshStemCacheState();

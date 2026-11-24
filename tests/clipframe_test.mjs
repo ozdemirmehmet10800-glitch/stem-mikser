@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { frameTimes, squareCrop, frameStats, goodFrame, frameScore, DARK_LUMA } from "../frontend/js/clipframe.js";
 import { clipSync, CLIP_DRIFT_S } from "../frontend/js/stage.js";
-import { settingOn, summarizeClips, clipMode, nextClipMode, storedClipMode, CLIP_KEEP_KEY, STAGE_CLIP_KEY } from "../frontend/js/clipstore.js";
+import { settingOn, summarizeClips, clipMode, nextClipMode, storedClipMode, CLIP_KEEP_KEY, STAGE_CLIP_KEY, PLAYER_CLIP_KEY } from "../frontend/js/clipstore.js";
 import { CoverManager, SOURCES } from "../frontend/js/cover.js";
 import { encodeBackup, parseBackup } from "../frontend/js/coverbackup.js";
 
@@ -118,8 +118,8 @@ const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8").split(
   check("uygulama arka plandayken video oynamaz", /playing: engine\.playing && !document\.hidden/.test(fnBody("stageClipTick")));
   check("tüm klipleri silmek onay ister", /window\.confirm\(/.test(app.slice(app.indexOf('on("clip-clear"'), app.indexOf('on("clip-clear"') + 600)));
   const clipOpen = app.slice(app.indexOf('on("clip-open", "click"'), app.indexOf('on("clip-open", "click"') + 600);
-  check("oynatıcıdaki Klip düğmesi: gizli paneli gösterir, açıksa TAM ekran, klip yoksa klip seçtirir",
-    /setPlayerClipPref\(true\)/.test(clipOpen) && /openStage\("full"\)/.test(clipOpen) && /el\("clip-file"\)\.click\(\)/.test(clipOpen));
+  check("oynatıcıdaki Klip düğmesi: klip varsa TAM ekran, klip yoksa klip seçtirir",
+    /openStage\("full"\)/.test(clipOpen) && /el\("clip-file"\)\.click\(\)/.test(clipOpen));
   check("şarkı açılınca klip oynatıcıda DOĞRUDAN yüklenir", /refreshClipChip\(\);\n\s*playerClipLoad\(\);/.test(app));
   check("oynatıcı klibi mevcut döngüden senkron (duraklatılmışken sarınca da), ek döngü yok",
     /stageTick\(time\);\n\s*playerClipTick\(time\);/.test(app) && /playerClipTick\(engine\.visualTime, true\)/.test(fnBody("setPlayIcon")) && !/requestAnimationFrame/.test(fnBody("playerClipTick")));
@@ -132,9 +132,15 @@ const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8").split(
   const html = read("../frontend/index.html");
   check("oynatıcıda Klip düğmesi var", /id="clip-open"/.test(html));
   check("oynatıcı klibi sessiz ve satır içi", /<video class="player-clip-video" id="player-clip-video" muted playsinline/.test(html));
-  check("klip mikserin YERİNDE (kanalların hemen önünde), Mikser düğmesi kanalları geri getirir",
-    /id="player-clip"[\s\S]*?<\/div>\s*<div class="channels" id="channels">/.test(html) && /id="player-clip-hide"[^>]*>Mikser</.test(html)
-    && /classList\.toggle\("clip-on", on\)/.test(fnBody("playerClipApply")) && /#view-player\.clip-on #channels \{ display: none; \}/.test(read("../frontend/css/styles.css")));
+  const css = read("../frontend/css/styles.css");
+  check("klip mikserin ARKASINDA: kanallar (solo gitar vb.) gizlenmez, önde kalır",
+    !/clip-on #channels \{ display: none/.test(css) && /#view-player\.clip-on \.channels \{ position: relative; z-index: 1; \}/.test(css)
+    && /\.player-clip \{ position: absolute; z-index: 0;[^}]*pointer-events: none; \}/.test(css) && !/id="player-clip-hide"/.test(html));
+  check("video kanal bölgesine oturtulur; kanallar görünmüyorsa (antrenör) video da gizlenir",
+    /channels\.offsetTop/.test(fnBody("playerClipPlace")) && /channels\.offsetHeight >= 40/.test(fnBody("playerClipPlace"))
+    && /playerClipPlace\(\)/.test(fnBody("playerClipTick")) && /addEventListener\("resize", \(\) => playerClipPlace\(\)\)/.test(app));
+  check("Ayarlar: 'Klibi mikserin arkasında oynat' anahtarı (yeni anahtar, eski seçim taşınmaz)",
+    /id="setting-mixerclip"/.test(html) && PLAYER_CLIP_KEY === "stem-mikser.mixerclip");
   check("sahne videosu sessiz ve satır içi (ses yalnız mikserden)", /<video class="stage-clip" id="stage-clip" muted playsinline/.test(html));
   const sw = read("../frontend/sw.js");
   check("yeni modüller çevrimdışı kabukta", ['"./js/clipframe.js"', '"./js/clipstore.js"', '"./js/mp4audio.js"'].every((m) => sw.includes(m)));
