@@ -8,6 +8,7 @@
 // Sürüm numarası elle artırılıyor. Değişince eski cache'ler siliniyor ve
 // yeni worker beklemeden devralıyor (skipWaiting + clients.claim), yoksa
 // GitHub Pages'e atılan bir düzeltme kullanıcıya günlerce ulaşmayabiliyor.
+// Not: Pages iş akışı yalnız frontend/ değişince çalışır; boş commit dağıtımı yeniden tetiklemez.
 
 const VERSION = "v77";
 const CACHE = `stem-mikser-${VERSION}`;
