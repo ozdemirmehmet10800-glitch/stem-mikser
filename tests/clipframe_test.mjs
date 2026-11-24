@@ -117,12 +117,24 @@ const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8").split(
   check("senkron mevcut döngüden (stageTick) ve çal/duraklat anında; ek döngü yok", /stageClipTick\(time\)/.test(fnBody("stageTick")) && /stageClipTick\(engine\.visualTime, true\)/.test(fnBody("setPlayIcon")) && !/requestAnimationFrame/.test(fnBody("stageClipTick")));
   check("uygulama arka plandayken video oynamaz", /playing: engine\.playing && !document\.hidden/.test(fnBody("stageClipTick")));
   check("tüm klipleri silmek onay ister", /window\.confirm\(/.test(app.slice(app.indexOf('on("clip-clear"'), app.indexOf('on("clip-clear"') + 600)));
-  const clipOpen = app.slice(app.indexOf('on("clip-open", "click"'), app.indexOf('on("clip-open", "click"') + 300);
-  check("oynatıcıdaki Klip düğmesi: klip varsa TAM görünümle açar, yoksa klip seçtirir", /openStage\("full"\)/.test(clipOpen) && /el\("clip-file"\)\.click\(\)/.test(clipOpen));
+  const clipOpen = app.slice(app.indexOf('on("clip-open", "click"'), app.indexOf('on("clip-open", "click"') + 600);
+  check("oynatıcıdaki Klip düğmesi: gizli paneli gösterir, açıksa TAM ekran, klip yoksa klip seçtirir",
+    /setPlayerClipPref\(true\)/.test(clipOpen) && /openStage\("full"\)/.test(clipOpen) && /el\("clip-file"\)\.click\(\)/.test(clipOpen));
+  check("şarkı açılınca klip oynatıcıda DOĞRUDAN yüklenir", /refreshClipChip\(\);\n\s*playerClipLoad\(\);/.test(app));
+  check("oynatıcı klibi mevcut döngüden senkron (duraklatılmışken sarınca da), ek döngü yok",
+    /stageTick\(time\);\n\s*playerClipTick\(time\);/.test(app) && /playerClipTick\(engine\.visualTime, true\)/.test(fnBody("setPlayIcon")) && !/requestAnimationFrame/.test(fnBody("playerClipTick")));
+  check("oynatıcı ekranı görünmüyorken (kitaplık, sahne, arka plan) video durur",
+    /!document\.hidden && !el\("view-player"\)\.hidden && !stageOpen/.test(fnBody("playerClipTick")));
+  check("oynatıcı klibi bırakılır: şarkı silinince, klip kaldırılınca, hepsi silinince",
+    /gone\.includes\(playerClip\.id\)\) playerClipUnload\(\)/.test(app) && /URL\.revokeObjectURL\(playerClip\.url\)/.test(fnBody("playerClipUnload")));
   check("Klip düğmesi şarkı açılınca güncellenir", /syncCoverUi\(\);\n\s*refreshArtwork\(\);\n\s*refreshClipChip\(\);/.test(app));
   check("Sahne düğmesi son seçilen görünümle açılır (olay nesnesi görünüm sanılmaz)", /on\("stage-open", "click", \(\) => openStage\(\)\)/.test(app) && /view === "full" \? "full" : clipMode\(/.test(fnBody("openStage")));
   const html = read("../frontend/index.html");
   check("oynatıcıda Klip düğmesi var", /id="clip-open"/.test(html));
+  check("oynatıcı klibi sessiz ve satır içi", /<video class="player-clip-video" id="player-clip-video" muted playsinline/.test(html));
+  check("klip mikserin YERİNDE (kanalların hemen önünde), Mikser düğmesi kanalları geri getirir",
+    /id="player-clip"[\s\S]*?<\/div>\s*<div class="channels" id="channels">/.test(html) && /id="player-clip-hide"[^>]*>Mikser</.test(html)
+    && /classList\.toggle\("clip-on", on\)/.test(fnBody("playerClipApply")) && /#view-player\.clip-on #channels \{ display: none; \}/.test(read("../frontend/css/styles.css")));
   check("sahne videosu sessiz ve satır içi (ses yalnız mikserden)", /<video class="stage-clip" id="stage-clip" muted playsinline/.test(html));
   const sw = read("../frontend/sw.js");
   check("yeni modüller çevrimdışı kabukta", ['"./js/clipframe.js"', '"./js/clipstore.js"', '"./js/mp4audio.js"'].every((m) => sw.includes(m)));

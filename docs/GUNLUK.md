@@ -21,10 +21,8 @@
   HİÇ gönderilmiyor (yalnız senin "Ara"ya bastığında şarkı adı/sanatçı). Saniyede en çok 1 istek.
 - **Takeout içinde şarkı adı yoksa:** Google'ın "beğenilen videolar" CSV'si genelde yalnız video kimliği veriyor (ad yok). Bunlar "Başlıksız bağlantı" olarak eklenir
   (bağlantıyı açabilirsin, otomatik eşleşme olmaz). Adı olan "müzik kitaplığı şarkıları" CSV'si normal eklenir.
-- **Ayırma süresi (sunucu, onayını bekliyor):** Son şarkında (4 dk, Hi-Fi) yüklemeden "hazır"a ~6 dk geçti. Ölçüm (salt okunur): GPU ayırması 14 sn,
-  6 kanalı AAC'ye çevirmek SIRAYLA 97 sn, durum kayıtları 33 sn, analiz 34 sn; kalanı konteyner açılışı + Hi-Fi aşaması. Öneri: kodlamayı paralel
-  yapmak + GPU konteynerine birkaç CPU çekirdeği ayırmak + durum kaydını 6 yerine 2 kez yazmak (tahmini ~1,5-2 dk kazanç, GPU süresi de kısalır).
-  Bu, GPU ayırma işinin kodunu değiştirir ve bir gerçek şarkıyla denenmesi gerekir; onay vermeden yapmadım.
+- **Test şarkısı:** Hız ölçümü için kitaplığına "Hiz testi - yapay ses" adlı yapay bir şarkı eklendi (telifsiz ton/davul). İstemezsen
+  kendin silebilirsin; ben silmedim (sunucudaki şarkıları silmeme kuralı).
 - **Klipler telefonda saklansın mı?** Yüklediğin klip (videonun kendisi) varsayılan olarak sahne modu için telefonda saklanıyor; klip başına
   onlarca MB tutabilir. İstemezsen Ayarlar > Sahne klipleri'nden kapat; saklananları oradan silebilirsin (şarkılar ve sesleri silinmez).
 
@@ -33,7 +31,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v78 (kayıt 14'teki Klip düğmesi dahil). 76 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
+- **Son sürüm:** SW v79 (kayıt 15: klip oynatıcıda doğrudan, sunucu hızlandırması). 76 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -42,6 +40,25 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 15. Klip oynatıcıda doğrudan; ayırma ~1,5 dk hızlandı
+
+- **Klip doğrudan ekranda:** Klibi saklanmış bir şarkıyı açınca klip artık düğmeye basmadan, MİKSERİN YERİNDE görünür; sessiz, sesle senkron
+  (duraklat, sar, tempo). Üstte koyamadım: oynatıcı ekranı sabit yükseklikte, üste koyunca miksere ~90 px kalıyordu. Videodaki "Mikser" düğmesi
+  kanalları geri getirir; üstteki "Klip" düğmesi klibe döndürür (seçim hatırlanır). Videoya ya da köşedeki simgeye dokununca tam ekran.
+  Oynatıcı ekranı görünmüyorken (kitaplık, sahne, uygulama arka planda) video durur.
+- **Eski bir kusur da düzeldi:** Dar/kısa ekranda "Sözler" satırı sıkışıp alttaki düğmelerle üst üste biniyordu; artık yalnız söz satırları küçülür.
+- **Sunucu (onayınla):** Ayırma sonrasında 6 kanalın AAC'ye çevrilmesi artık aynı anda (ayırma işine 4 CPU çekirdeği ayrıldı), ilerleme kaydı
+  6 yerine 1 kez. Ses dosyaları ve kalitesi aynı. `app.py` satır sayısı korundu, imaj yeniden kurulmadı. Commit f4d6b2e.
+- **Ölçüm (aynı uzunluk, 4 dk, Hi-Fi):** kodlama 96,6 -> 32,4 sn; durum kayıtları 32,6 -> 11,6 sn; FLAC 13,7 -> 11,6 sn.
+  Yüklemeden hazıra ~5 dk 49 sn -> ~4 dk 19 sn. Ölçüm, kitaplığa eklenen yapay "Hiz testi - yapay ses" şarkısıyla yapıldı (birkaç sentlik GPU).
+  Kalan sürenin çoğu sunucunun açılışı, Hi-Fi aşaması ve analiz; onlara dokunulmadı.
+- **SW:** v79.
+- **Telefonda kontrol (4 adım):**
+  1. Klibi saklı bir şarkıyı aç: klip mikserin yerinde hemen görünmeli; oynatınca sesle birlikte gitmeli.
+  2. Videodaki "Mikser"e dokun: kanallar gelmeli; üstteki "Klip"e dokun: klip geri gelmeli.
+  3. Videoya dokun: tam ekran açılmalı.
+  4. Yeni bir şarkı yükle: eskisine göre ~1,5 dk daha erken "hazır" olmalı.
 
 ### 14. Oynatıcıda "Klip" düğmesi; ayırma süresinin ölçümü
 

@@ -1582,6 +1582,19 @@ button.cc.more {
 .stage.clip-full .stage-line { margin-top: 2px; font-size: clamp(16px, 4.6vw, 26px); }
 .stage.clip-full .stage-next-chord, .stage.clip-full .stage-line-next { display: none; }
 .clip-open { flex: 0 0 auto; }
+/* oynatıcıda klip */
+/* klip mikserin yerinde: kanalların boşluğunu doldurur (oynatıcı ekranı sabit yükseklikte bir sütun; başka hiçbir şey sıkışmaz) */
+.player-clip { position: relative; flex: 1 1 auto; min-height: 0; margin: 4px 0 8px; width: 100%; border-radius: 14px; overflow: hidden; background: #000; }
+#view-player.clip-on #channels { display: none; }
+.player-clip[hidden] { display: none; }
+.player-clip-video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; cursor: pointer; }
+.player-clip-btn {
+  position: absolute; top: 8px; width: 36px; height: 36px; border-radius: 50%; border: 0; padding: 0; display: grid; place-items: center; cursor: pointer;
+  background: rgba(0, 0, 0, 0.55); color: #fff; -webkit-tap-highlight-color: transparent;
+}
+.player-clip-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.player-clip-full { right: 8px; }
+.player-clip-hide { left: 8px; width: auto; padding: 0 14px; border-radius: 999px; font-size: 13px; font-weight: 700; }
 .upload-cancel { margin: 6px 0 0; }
 .upload-cancel[hidden] { display: none; }
 .info-clip { display: grid; gap: 6px; margin-top: 10px; }

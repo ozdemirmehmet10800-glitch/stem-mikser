@@ -104,7 +104,9 @@ import {
 import { readCsvEntries, looksLikeZip, ZipError } from "./zipread.js";
 import { extractAudio, REASON_TEXT as MP4_REASON } from "./mp4audio.js";
 import { captureFrame } from "./clipframe.js";
-import { clipStore, settingOn, summarizeClips, clipMode, nextClipMode, storedClipMode, CLIP_KEEP_KEY, STAGE_CLIP_KEY } from "./clipstore.js";
+import {
+  clipStore, settingOn, summarizeClips, clipMode, nextClipMode, storedClipMode, CLIP_KEEP_KEY, STAGE_CLIP_KEY, PLAYER_CLIP_KEY,
+} from "./clipstore.js";
 import {
   itemState, startIndex, anyPlayable, totalDuration, alreadyInList, nextPlayable, previousAction, indexOfItem, skipNote,
   positionLabel,
@@ -790,18 +792,24 @@ on("clip-file", "change", async () => {
   let note = "";
   const frame = await captureFrame(file);
   if (frame && await covers.setClipFrame(id, frame)) note = " Kapak da klipten alındı.";
-  say(`Klip bu telefonda saklandı (${formatSize(file.size)}). "Klip" düğmesi tam ekran açar; "Sahne"de arka planda oynar.${note}`, "ok");
+  say(`Klip bu telefonda saklandı (${formatSize(file.size)}); artık şarkı açılınca mikserin yerinde görünür, dokununca tam ekran olur.${note}`, "ok");
   refreshInfoClip();
   refreshInfoSource();
   refreshClipSummary();
   refreshClipChip();
+  if (currentSong && currentSong.id === id) {
+    playerClipUnload();
+    setPlayerClipPref(true, false);
+    playerClipLoad();
+  }
   if (stageOpen) stageClipLoad();
-  else if (openAfter && currentSong && currentSong.id === id) openStage("full");
+  if (openAfter && el("view-player").hidden === false) el("player-clip").scrollIntoView({ block: "nearest", behavior: "smooth" });
 });
 on("clip-remove", "click", async () => {
   if (!currentSong) return;
   await clipStore.remove([currentSong.id]);
   if (stageClip.id === currentSong.id) stageClipUnload();
+  playerClipUnload();
   refreshClipChip();
   infoMessage("Sahne klibi bu telefondan kaldırıldı (şarkı ve sesleri duruyor).", "ok");
   refreshInfoClip();
@@ -828,6 +836,7 @@ on("clip-clear", "click", async () => {
   if (!window.confirm(`${count} sahne klibi (${formatSize(bytes)}) bu telefondan silinsin mi? Şarkılar, sesleri ve ayarların silinmez.`)) return;
   await clipStore.removeAll();
   if (stageOpen) stageClipUnload();
+  playerClipUnload();
   refreshClipSummary();
   refreshClipChip();
 });
@@ -1442,6 +1451,7 @@ async function deleteSelected() {
       melodyCache.removeSongs(gone);      // hedef melodi de gitsin
       covers.drop(gone).catch(() => {});  // kapak resmi de gitsin
       clipStore.remove(gone).then(() => refreshClipSummary());   // sahne klibi de gitsin
+      if (playerClip.id && gone.includes(playerClip.id)) playerClipUnload();
       dropLoops(safeStorage().storage, gone);   // adlı döngüler de gitsin
       dropMeta(gone);            // cihazdaki durum/akor kopyası da gitsin
       collection.removeSongs(gone);   // favori/etiket kayıtları ve liste öğeleri de HEMEN gitsin
@@ -2438,6 +2448,7 @@ async function openSong(song, opts = {}) {
     syncCoverUi();
     refreshArtwork();
     refreshClipChip();
+    playerClipLoad();
     if (stageOpen) stageRefresh();
     // Standart -> "Hi-Fi'a yükselt", Hi-Fi v1 -> "v2'ye yükselt"; v2'de düğme yok.
     refreshMethodUi();
@@ -2854,6 +2865,7 @@ function setPlayIcon(playing) {
     el("stage").classList.toggle("playing", playing);
     stageClipTick(engine.visualTime, true);
   }
+  playerClipTick(engine.visualTime, true);
   document.body.classList.toggle("is-playing", playing);        // dönen kapak (yalnız transform animasyonu)
   safeHook("icon", playing);
   syncMini();
@@ -2878,6 +2890,7 @@ function startLoop() {
     if (chordSheetOn) chordSheetTick(time);
     if (lyricsScreen) lyricsScreen.tick(time);
     if (stageOpen) stageTick(time);
+    playerClipTick(time);
     if (!seeking) {
       el("seek").value = String(Math.round(time * 10));
       wavePlayed(time);
@@ -3208,6 +3221,79 @@ on("stage-clip-toggle", "click", () => {
   stageToast(CLIP_VIEW_TEXT[stageClipView]);
 });
 
+// ---------------------------------------------------------------- oynatıcıda klip: şarkı açılınca DOĞRUDAN görünür (sessiz, sesle senkron)
+// Ses yalnız mikserden. Oynatıcı ekranı görünmüyorken (kitaplık, sahne, uygulama arka planda) video durur; döngü yine stage.js clipSync.
+
+let playerClip = { id: "", url: "", lastSync: 0 };
+
+function setPlayerClipPref(on, apply = true) {
+  try { safeStorage().storage.setItem(PLAYER_CLIP_KEY, on ? "1" : "0"); } catch { /* bu oturumda kalmaz */ }
+  if (apply) playerClipApply();
+}
+
+function playerClipApply() {
+  const box = el("player-clip");
+  if (!box) return;
+  const on = Boolean(playerClip.url) && settingOn(safeStorage().storage, PLAYER_CLIP_KEY);
+  box.hidden = !on;
+  el("view-player").classList.toggle("clip-on", on);        // klip mikserin yerinde: kanallar gizlenir
+  if (!on) el("player-clip-video").pause();
+  else playerClipTick(engine.visualTime, true);
+}
+
+function playerClipUnload() {
+  const video = el("player-clip-video");
+  if (video) {
+    video.pause();
+    video.removeAttribute("src");
+    try { video.load(); } catch { /* yok say */ }
+  }
+  if (playerClip.url) URL.revokeObjectURL(playerClip.url);
+  playerClip = { id: "", url: "", lastSync: 0 };
+  if (el("player-clip")) el("player-clip").hidden = true;
+  el("view-player").classList.remove("clip-on");
+}
+
+async function playerClipLoad() {
+  const id = currentSong ? currentSong.id : "";
+  if (playerClip.id === id && playerClip.url) {
+    playerClipApply();
+    return;
+  }
+  playerClipUnload();
+  if (!id) return;
+  playerClip.id = id;
+  const record = await clipStore.get(id);
+  if (playerClip.id !== id || !currentSong || currentSong.id !== id || !record) return;
+  playerClip.url = URL.createObjectURL(record.blob);
+  el("player-clip-video").src = playerClip.url;
+  playerClipApply();
+}
+
+function playerClipTick(time, force = false) {
+  const video = el("player-clip-video");
+  if (!playerClip.url || !video || el("player-clip").hidden) return;
+  const now = performance.now();
+  if (!force && now - playerClip.lastSync < 200) return;
+  playerClip.lastSync = now;
+  const onScreen = !document.hidden && !el("view-player").hidden && !stageOpen;
+  const action = clipSync({
+    videoTime: video.currentTime, videoDuration: video.duration, paused: video.paused, seeking: video.seeking,
+    audioTime: time, playing: engine.playing && onScreen, rate: currentRate(),
+  });
+  if (video.playbackRate !== action.rate) video.playbackRate = action.rate;
+  if (action.seekTo !== null) video.currentTime = action.seekTo;
+  if (action.play) video.play().catch(() => {});
+  if (action.pause) video.pause();
+}
+
+on("player-clip-video", "click", () => openStage("full"));
+on("player-clip-full", "click", () => openStage("full"));
+on("player-clip-hide", "click", () => {
+  setPlayerClipPref(false);
+  notePlayer('Mikser açıldı. Klibe dönmek için üstteki "Klip" düğmesine dokun.', "ok", 5000);
+});
+
 // ---------------------------------------------------------------- oynatıcıdaki "Klip" düğmesi
 // Klip varsa sahneyi TAM (net) klip görünümüyle açar; yoksa "Klip ekle": telefondaki klibi bu şarkıya bağlar (yükleme yok) ve açar.
 
@@ -3228,6 +3314,10 @@ async function refreshClipChip() {
 on("clip-open", "click", () => {
   if (!currentSong) return;
   if (clipChipHas) {
+    if (playerClip.url && el("player-clip").hidden) {
+      setPlayerClipPref(true);
+      return;
+    }
     openStage("full");
     return;
   }
@@ -3236,6 +3326,7 @@ on("clip-open", "click", () => {
 });
 document.addEventListener("visibilitychange", () => {
   if (stageOpen) stageClipTick(engine.visualTime, true);      // arka planda video boşuna oynamasın
+  playerClipTick(engine.visualTime, true);
 });
 on("stage-close", "click", () => {
   if (!stageLocked) requestBack("stage");

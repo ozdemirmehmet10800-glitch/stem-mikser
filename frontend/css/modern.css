@@ -414,6 +414,9 @@ html.ui-new #wishes-back, html.ui-new #lists-back { margin-left: -4px; }
 /* Söz listesi sabit yükseklik yerine ESNEK: kanallara en az ~2,5 satır kalır, söz listesi gerektiğinde kısalır (alt çubuk ekran dışına itilmez). */
 html.ui-new .lyrics { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; }
 html.ui-new .lyrics[hidden] { display: none; }
+/* yalnız söz satırları (gövde) küçülür; başlık/düğme satırı ve söz yokken tüm bölüm sıkışıp üst üste binmesin */
+html.ui-new .lyrics > :not(.lyrics-body) { flex-shrink: 0; }
+html.ui-new .lyrics:not(:has(> .lyrics-body:not([hidden]))) { flex-shrink: 0; }
 html.ui-new .lyrics-head { flex: 0 0 auto; }
 html.ui-new .lyrics-body { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; }
 html.ui-new .lyrics-body[hidden] { display: none; }

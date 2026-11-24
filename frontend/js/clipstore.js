@@ -8,6 +8,7 @@ const DB_NAME = "stem-mikser-clips";
 const STORE = "clips";
 export const CLIP_KEEP_KEY = "stem-mikser.clipkeep";       // "0": yüklenen klipleri saklama (varsayılan: sakla)
 export const STAGE_CLIP_KEY = "stem-mikser.stageclip";     // sahnede klip: "0" kapalı, "full" tam (net), başka her şey karartılmış (varsayılan)
+export const PLAYER_CLIP_KEY = "stem-mikser.playerclip";   // "0": oynatıcıda klibi gösterme (varsayılan: göster)
 export const CLIP_MODES = ["dim", "full", "off"];          // sahnedeki film düğmesi bu sırayla döner
 
 /** Ayar açık mı (varsayılan açık; depolama yoksa da açık sayılır). */

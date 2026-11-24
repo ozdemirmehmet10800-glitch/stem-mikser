@@ -258,6 +258,7 @@
     <div class="sleep-row" id="sleep-row" role="group" aria-label="Uyku zamanlayıcısı" hidden></div>
     <div class="player-method-row" id="player-method-row"><div class="player-method" id="player-method" hidden></div><button type="button" class="chip stage-open" id="stage-open" aria-label="Sahne modu">Sahne</button><button type="button" class="chip clip-open" id="clip-open" aria-label="Bu şarkıya telefondaki klibi ekle">Klip ekle</button></div>
 
+
     <!-- akor şeridi -->
     <div class="chordstrip" id="chordstrip">
       <div class="chordstrip-playhead"></div>
@@ -379,6 +380,12 @@
     <div class="mix-notice" id="mix-notice" hidden>
       <span>Son ayar geri yüklendi</span>
       <button type="button" id="mix-notice-reset">Sıfırla</button>
+    </div>
+    <!-- klip: şarkı açılınca MİKSERİN YERİNDE doğrudan görünür (sessiz, sesle senkron; ses mikserden). Dokununca tam ekran; "Mikser" kanalları geri getirir. -->
+    <div class="player-clip" id="player-clip" hidden>
+      <video class="player-clip-video" id="player-clip-video" muted playsinline preload="auto" disablepictureinpicture aria-label="Klip (dokununca tam ekran)"></video>
+      <button type="button" class="player-clip-btn player-clip-full" id="player-clip-full" aria-label="Klibi tam ekran aç"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+      <button type="button" class="player-clip-btn player-clip-hide" id="player-clip-hide" aria-label="Klibi kapat, mikseri göster">Mikser</button>
     </div>
     <div class="channels" id="channels"></div>
 
