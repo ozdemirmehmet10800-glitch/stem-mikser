@@ -27,7 +27,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v74 (kayıt 10'daki görsel cila dahil). 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
+- **Son sürüm:** SW v75 (kayıt 11'deki mp4 desteği dahil). 65 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -36,6 +36,22 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 11. Klip (mp4) dosyası yükleme
+
+- **Ne:** "Şarkı ekle", Eklenecekler'deki yükle düğmesi ve Paylaş menüsü artık `.mp4 .m4v .mov .webm .mkv` dosyalarını da kabul ediyor. Videonun yalnız SESİ alınır (sunucu ffmpeg ile okur), görüntü atılır; şarkı adı dosya adından gelir.
+  Paylaşım kartında "Video dosyası: yalnız sesi alınır" notu çıkar.
+- **Sınır (önemli):** Sunucunun 30 MB / 10 dk sınırı TÜM dosyaya uygulanır, klipte görüntü de sayılır. Çoğu müzik klibi 30 MB'ı geçer; geçince uygulama yüklemeden önce "dosya çok büyük" der. Çözüm: daha düşük çözünürlüklü sürüm ya da yalnız ses dosyası.
+  Sınırı yükseltmek sunucu belleğini zorlar, bilerek dokunmadım. Karar senin: istersen sınırı (örn. 60 MB) ayrıca değerlendiririz.
+- **Dokunulmayanlar:** Mevcut şarkılar, kanallar, mikser ayarları, sözler, listeler. Yeni dosya yalnız yeni şarkı ekler; aynı dosya ikinci kez yüklenirse çoğalmaz (kimlik dosyanın sha256'sı).
+- **Gerçek bir mp4 ile sunucuda denenmedi** (yerelde yalnız dosya seçimi/paylaşım mantığı testli). İlk denemede bir klip yükleyip sonucu söyle.
+- **PWA notu:** Paylaşım hedefi bildirimi (manifest) değişti; Android'in yeni türleri tanıması için uygulamayı bir kez kapat-aç, olmazsa ana ekrandan kaldırıp yeniden ekle.
+- **SW:** v75.
+- **Telefonda kontrol (4 adım):**
+  1. Kitaplıkta "Şarkı ekle"ye dokun: seçicide mp4 dosyaların görünmeli.
+  2. 30 MB altı bir klip seç: kart/ilerleme çıkmalı, bitince şarkı kitaplıkta görünmeli (adı dosya adı).
+  3. 30 MB üstü bir klip seç: yüklemeden önce "çok büyük" mesajı çıkmalı.
+  4. Dosya yöneticisinde bir mp4'e uzun bas > Paylaş > Stem Mikser: kart "yalnız sesi alınır" demeli.
 
 ### 10. Görsel cila (7 madde)
 

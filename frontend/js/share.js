@@ -16,6 +16,9 @@ export const SHARE_MAX_BYTES = 30 * 1024 * 1024;      // sunucu MAX_UPLOAD_BYTES
 export const SHARE_MAX_AGE_MS = 60 * 60 * 1000;       // bekleyen kayıt ömrü
 export const SERVER_MAX_SECONDS = 10 * 60;            // sunucu MAX_DURATION_SEC (GPU'ya girmeden reddeder)
 export const AUDIO_EXTENSIONS = ["mp3", "m4a", "wav", "flac", "ogg", "opus", "aac"];
+// Klip / video dosyaları (mp4 vb.): sunucu içindeki SESİ okur (ffmpeg), görüntü atılır; boyut sınırı TÜM dosyaya uygulanır (30 MB).
+export const VIDEO_EXTENSIONS = ["mp4", "m4v", "mov", "webm", "mkv"];
+const VIDEO_TYPES = ["video/mp4", "video/quicktime", "video/webm", "video/x-matroska", "video/x-m4v"];
 
 export const MESSAGES = Object.freeze({
   empty: "Paylaşımda ses dosyası ya da metin yoktu. Bir ses dosyasını ya da bir şarkı bağlantısını paylaş.",
@@ -37,11 +40,19 @@ export function formatDuration(seconds) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** Ses mi? MIME audio/* ya da bilinen uzantı (dosya yöneticileri bazen genel MIME verir). */
+/** Video (klip) mu? Yalnız seçilen/paylaşılan dosyanın SESİ alınır. */
+export function isVideo({ name = "", type = "" } = {}) {
+  if (VIDEO_TYPES.includes(String(type).toLowerCase())) return true;
+  const match = /\.([a-z0-9]+)$/i.exec(String(name));
+  return Boolean(match && VIDEO_EXTENSIONS.includes(match[1].toLowerCase()));
+}
+
+/** Yüklenebilir mi? Ses: MIME audio/* ya da bilinen uzantı (dosya yöneticileri bazen genel MIME verir); klip: mp4/mov/webm/mkv (sesi alınır). */
 export function isAudio({ name = "", type = "" } = {}) {
   if (String(type).toLowerCase().startsWith("audio/")) return true;
   const match = /\.([a-z0-9]+)$/i.exec(String(name));
-  return Boolean(match && AUDIO_EXTENSIONS.includes(match[1].toLowerCase()));
+  if (match && AUDIO_EXTENSIONS.includes(match[1].toLowerCase())) return true;
+  return isVideo({ name, type });
 }
 
 /** Adres satırındaki ?paylasim=... değerini yorumlar: "1" dosya var, "metin" metin/bağlantı var, "bos" hiçbiri, "hata" işlenemedi, yoksa null. */
@@ -132,9 +143,10 @@ export function classify(pending) {
     };
   }
   if (!isAudio({ name: pending.name, type: pending.type })) {
-    return { action: "message", kind: "notaudio", text: `"${pending.name}" ses dosyası gibi görünmüyor.`, clear: true };
+    return { action: "message", kind: "notaudio", text: `"${pending.name}" ses ya da video (klip) dosyası gibi görünmüyor.`, clear: true };
   }
-  const note = pending.skipped > 0 ? `${pending.skipped} dosya atlandı (yalnız ilki alındı).` : "";
+  const skipped = pending.skipped > 0 ? `${pending.skipped} dosya atlandı (yalnız ilki alındı).` : "";
+  const note = [isVideo({ name: pending.name, type: pending.type }) ? "Video dosyası: yalnız sesi alınır, görüntü atılır." : "", skipped].filter(Boolean).join(" ");
   return { action: "card", note };
 }
 

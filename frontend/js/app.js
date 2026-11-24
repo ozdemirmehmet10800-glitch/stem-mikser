@@ -78,7 +78,7 @@ import { NavStack, CLOSE, BLOCKED } from "./navstack.js";
 import { diag, summarize, eventsText } from "./diag.js";
 import { outputVerdict, peakOf, CHECK_DELAY_MS, CHECK_WINDOW_MS, RECHECK_AFTER_MS } from "./outputcheck.js";
 import {
-  SHARE_PARAM, MESSAGES as SHARE_MESSAGES, launchKind, readPending, clearPending, classify, formatSize,
+  SHARE_PARAM, SHARE_MAX_BYTES, MESSAGES as SHARE_MESSAGES, isVideo, launchKind, readPending, clearPending, classify, formatSize,
   formatDuration, durationWarning, cardView,
 } from "./share.js";
 import { Collection, safeStorage } from "./collection.js";
@@ -1403,6 +1403,14 @@ let lastUploadedId = "";      // son başarılı yüklemenin şarkı kimliği (E
 async function handleUpload(file) {
   // Dönen: true = sunucu aldı (ya da zaten vardı), false = yüklenemedi (paylaşım kartı kaydı korusun diye).
   if (!requireOnline(el("library-message"), "şarkı yüklemek")) return false;
+  // Sunucu sınırı (30 MB) TÜM dosyaya uygulanır; klip dosyalarında görüntü de sayılır. Boşuna yüklemeden önce açıkça söyle.
+  if (file.size > SHARE_MAX_BYTES) {
+    showMessage(el("library-message"),
+      `"${file.name}" ${formatSize(file.size)}; sınır ${formatSize(SHARE_MAX_BYTES)}.`
+      + (isVideo({ name: file.name, type: file.type }) ? " Klip dosyasında görüntü de sayılır: daha düşük çözünürlüklü/sıkıştırılmış sürümünü dene ya da yalnız ses dosyasını yükle." : " Daha kısa ya da sıkıştırılmış bir dosya dene."),
+      "warn");
+    return false;
+  }
   const status = el("upload-status");
   status.hidden = false;
   status.textContent = `${file.name} yükleniyor… %0`;
@@ -1414,7 +1422,7 @@ async function handleUpload(file) {
     lastUploadedId = (result && result.id) || "";
     status.textContent = result.existing
       ? `${file.name} zaten işlenmiş, listede.`
-      : `${file.name} alındı, işleniyor.`;
+      : `${file.name} alındı, işleniyor${isVideo({ name: file.name, type: file.type }) ? " (videonun yalnız sesi alınıyor)" : ""}.`;
     await refreshLibrary();
     schedulePoll();
     return true;

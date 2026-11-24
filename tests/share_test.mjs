@@ -28,7 +28,7 @@ check("keyUrl: sayfa adresi (index.html) ve SW adresi (sw.js) AYNI anahtarı ür
 const cases = [
   [{ name: "a.mp3", type: "audio/mpeg" }, true], [{ name: "a", type: "audio/x-m4a" }, true], [{ name: "WA.OPUS", type: "" }, true],
   [{ name: "x.flac", type: "application/octet-stream" }, true], [{ name: "kayit.ogg", type: "application/ogg" }, true],
-  [{ name: "x.wav" }, true], [{ name: "x.aac" }, true], [{ name: "video.mp4", type: "video/mp4" }, false],
+  [{ name: "x.wav" }, true], [{ name: "x.aac" }, true], [{ name: "video.mp4", type: "video/mp4" }, true], [{ name: "KLIP.MOV" }, true], [{ name: "belge.pdf" }, false], [{ name: "resim.png", type: "image/png" }, false],
   [{ name: "belge.pdf", type: "application/pdf" }, false], [{ name: "", type: "" }, false], [{}, false],
   [{ name: "mp3", type: "" }, false], [{ name: "sarki.mp3.exe" }, false],
 ];

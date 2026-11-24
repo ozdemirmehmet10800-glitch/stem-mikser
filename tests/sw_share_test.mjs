@@ -40,7 +40,8 @@ check("manifest: share_target POST + multipart, action kapsam içinde (./share-t
 const accepts = target.params.files[0].accept;
 check("manifest: dosya (audio/* + bilinen uzantılar) VE metin alanları (title/text/url: YouTube Music paylaşımı -> Eklenecekler)",
   target.params.title === "title" && target.params.text === "text" && target.params.url === "url" && accepts.includes("audio/*")
-  && share.AUDIO_EXTENSIONS.every((ext) => accepts.includes(`.${ext}`)));
+  && share.AUDIO_EXTENSIONS.every((ext) => accepts.includes(`.${ext}`))
+  && share.VIDEO_EXTENSIONS.every((ext) => accepts.includes(`.${ext}`)) && accepts.includes("video/mp4"));
 check("manifest: kimlik alanları değişmedi (id yok, start_url ./)", !("id" in manifest) && manifest.start_url === "./");
 check("kabuk listesinde share.js var", code.includes('"./js/share.js"'));
 
@@ -155,7 +156,7 @@ caches = fakeCaches(); sw = await loadSw({ caches });
 await sw.fetch(post([new File(["x"], "kayit.flac", { type: "application/octet-stream" })]));
 check("genel MIME (octet-stream) + .flac uzantısı: kabul (kart)", share.classify(await share.readPending(caches, `${ORIGIN}/stem-mikser/`)).action === "card");
 check("isAudio: audio/*, uzantı, büyük harf, ses dışı", share.isAudio({ type: "audio/x-m4a" }) && share.isAudio({ name: "A.MP3" })
-  && !share.isAudio({ name: "video.mp4", type: "video/mp4" }) && !share.isAudio({ name: "belge.pdf" }));
+  && share.isAudio({ name: "klip.mp4", type: "video/mp4" }) && share.isVideo({ name: "klip.MKV" }) && !share.isVideo({ name: "a.mp3" }) && !share.isAudio({ name: "belge.pdf" }) && !share.isAudio({ name: "resim.png", type: "image/png" }));
 
 // --- bayat kayıt
 caches = fakeCaches(); sw = await loadSw({ caches });
@@ -204,6 +205,14 @@ sw = await loadSw({ caches });
 await sw.fetch(post([audio("k.mp3")]));
 await sw.fire("activate");
 check("activate: bekleyen paylaşım korunur, eski kabuk silinir", (await caches.keys()).includes("stem-mikser-share-v1") && !(await caches.keys()).includes("stem-mikser-v1"));
+
+// --- klip (mp4) paylaşımı: kabul edilir, kartta "yalnız sesi alınır" notu
+caches = fakeCaches(); sw = await loadSw({ caches });
+await sw.fetch(post([new File([new Uint8Array(500).fill(1)], "Klip Adı.mp4", { type: "video/mp4" })]));
+const clip = share.classify(await share.readPending(caches, `${ORIGIN}/stem-mikser/`));
+check("mp4 klip paylaşımı: kart açılır, not 'yalnız sesi alınır'", clip.action === "card" && /yalnız sesi alınır/.test(clip.note), JSON.stringify(clip));
+const nonMedia = share.classify({ state: "ok", name: "resim.png", type: "image/png", size: 10, skipped: 0, time: Date.now() });
+check("resim reddedilir, mesaj ses ya da video der", nonMedia.action === "message" && /ses ya da video/.test(nonMedia.text));
 
 console.log(failed ? `\n${failed} test başarısız` : "\ntümü geçti");
 process.exit(failed ? 1 : 0);
