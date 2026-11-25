@@ -105,9 +105,25 @@ import { SORT_MODES, SORT_LABELS, readSort, writeSort, readPlays, bumpPlays, sor
 import {
   findMatches, wishesFromCsv, importSummary, cleanUrl, wishMatchesQuery,
 } from "./wishlist.js";
-import { readCsvEntries, looksLikeZip, ZipError } from "./zipread.js";
-import { extractAudio, REASON_TEXT as MP4_REASON } from "./mp4audio.js";
-import { captureFrame } from "./clipframe.js";
+// Nadiren kullanılan modüller (klip ayıklayıcı, kapak karesi, Takeout okuyucu) açılışta ayrıştırılmaz, ilk gerektiğinde yüklenir.
+// Çevrimdışı için sw.js kabuğunda yine durur (önbellekten gelir). Yükleme başarısızsa sonraki çağrı yeniden dener.
+function lazyModule(path) {
+  let promise = null;
+  return () => {
+    if (!promise) promise = import(path).catch((error) => { promise = null; throw error; });
+    return promise;
+  };
+}
+const loadMp4Audio = lazyModule("./mp4audio.js");
+const loadClipFrame = lazyModule("./clipframe.js");
+const loadZipRead = lazyModule("./zipread.js");
+const captureFrame = async (file) => {
+  try {
+    return await (await loadClipFrame()).captureFrame(file);
+  } catch {
+    return null;                                     // kapak karesi isteğe bağlı: yüklenemezse otomatik kapak kalır
+  }
+};
 import {
   clipStore, settingOn, summarizeClips, clipMode, nextClipMode, storedClipMode, CLIP_KEEP_KEY, STAGE_CLIP_KEY, PLAYER_CLIP_KEY,
 } from "./clipstore.js";
@@ -577,8 +593,11 @@ function crossfadeTick(time) {
   }
 }
 
+// Geçiş süresi ayarı her karede telefon hafızasından (localStorage) okunmasın: açılışta ve ayar değişince okunur.
+let crossfadeSeconds = readCrossfade(safeStorage().storage);
+
 function crossfadeTickInner(time) {
-  const seconds = readCrossfade(safeStorage().storage);
+  const seconds = crossfadeSeconds;
   if (!seconds && !crossfadeFading) return;
   const remaining = engine.duration - time;
   // Sonraki şarkı kontrolü yalnız son saniyelerde (her karede liste taramasın).
@@ -603,7 +622,7 @@ function crossfadeArrive() {
   crossfadeFading = false;
   try {
     engine.fadeOutput(0, 0.02);
-    engine.fadeOutput(1, fadeInSeconds(readCrossfade(safeStorage().storage) || 3));
+    engine.fadeOutput(1, fadeInSeconds(crossfadeSeconds || 3));
   } catch (error) {
     try { diag.note("error", `gecis: ${error && error.message}`); } catch { /* günlük yazılamadı */ }
   }
@@ -1005,6 +1024,7 @@ async function refreshClipSummary() {
 
 on("setting-crossfade", "change", () => {
   try { safeStorage().storage.setItem(CROSSFADE_KEY, el("setting-crossfade").value); } catch { /* bu oturumda kalmaz */ }
+  crossfadeSeconds = readCrossfade(safeStorage().storage);
 });
 on("setting-clippreview", "change", () => {
   try { safeStorage().storage.setItem(PREVIEW_KEY, el("setting-clippreview").checked ? "1" : "0"); } catch { /* bu oturumda kalmaz */ }
@@ -1725,7 +1745,7 @@ async function handleUpload(file) {
     } else if (file.size > SHARE_MAX_BYTES) {
       status.hidden = true;
       showMessage(el("library-message"),
-        `${MP4_REASON[extracted.reason] || "Ses ayıklanamadı."} "${file.name}" ${formatSize(file.size)} ve sunucu sınırı ${formatSize(SHARE_MAX_BYTES)}: yalnız ses dosyasını (mp3/m4a) yükle ya da daha küçük bir sürümünü dene.`, "warn");
+        `${(await loadMp4Audio().then((m) => m.REASON_TEXT).catch(() => ({})))[extracted.reason] || "Ses ayıklanamadı."} "${file.name}" ${formatSize(file.size)} ve sunucu sınırı ${formatSize(SHARE_MAX_BYTES)}: yalnız ses dosyasını (mp3/m4a) yükle ya da daha küçük bir sürümünü dene.`, "warn");
       return false;
     }
   } else if (file.size > SHARE_MAX_BYTES) {
@@ -1765,6 +1785,7 @@ async function extractClipAudio(file, status) {
   const label = (ratio) => `${file.name}: klipten ses ayıklanıyor… %${Math.round(ratio * 100)}`;
   status.textContent = label(0);
   try {
+    const { extractAudio } = await loadMp4Audio();
     return await extractAudio(file, { signal: clipAbort.signal, onProgress: (ratio) => { status.textContent = label(ratio); } });
   } catch (error) {
     console.warn("[klip] ayıklama", error);
@@ -2603,6 +2624,7 @@ async function openSong(song, opts = {}) {
     ensureSubPolling();
     initLyrics();              // sözler: cihazdan ya da sunucudan, yoklama
     strip.build(detail.chords, duration);
+    invalidateLoop();
 
     const chords = detail.chords;
 
@@ -2884,6 +2906,7 @@ async function applyStretch(measure) {
   if (shown !== appliedSemis) {
     appliedSemis = shown;
     strip.setTranspose(shown, originalKey);
+    invalidateLoop();
   }
   applyChordLabels();         // kayma ya da "≈" değişmiş olabilir (plak gibi kipinde oran değişince)
 
@@ -3075,13 +3098,41 @@ function releasePlaybackWake() {
   if (!(lyricsScreen && lyricsScreen.isOpen) && !trainerMicActive()) wakeLock.release();
 }
 
+// Kare döngüsü yalnız DEĞİŞENİ yazar: zaman yazıları saniyede bir değişir ama her karede (120 Hz ekranda saniyede 120 kez) yeniden
+// yazılıyordu (ölçüldü: duraklatılmışken bile saniyede ~330 sayfa değişikliği). Duraklatılmışken ve konum değişmemişken kare işi atlanır.
+const loopShown = { seek: "", now: "", left: "", time: NaN, playing: false };
+
+function invalidateLoop() {
+  loopShown.time = NaN;            // sonraki kare her şeyi yeniden değerlendirsin (şarkı/boyut/ton değişimi)
+}
+
+// Boşta atlama güvenliği: dokunuş, boyut değişimi ve uygulamaya geri dönüş sonrası bir kare her şey yeniden değerlendirilir
+// (ör. duraklatılmışken açılan/kapanan bir panel, sonradan gelen akorlar). Maliyeti olay başına tek kare.
+for (const type of ["pointerup", "keyup"]) document.addEventListener(type, () => invalidateLoop(), { passive: true });
+window.addEventListener("resize", () => invalidateLoop());
+document.addEventListener("visibilitychange", () => invalidateLoop());
+
+function setTextIfChanged(key, id, text) {
+  if (loopShown[key] === text) return;
+  loopShown[key] = text;
+  el(id).textContent = text;
+}
+
 function startLoop() {
   cancelAnimationFrame(rafHandle);
+  invalidateLoop();
   const tick = () => {
     // visualTime: KULAĞA GİDEN konum. currentTime esneticiden çıkanı
     // gösteriyor, ona ctx.outputLatency daha eklenecek - Bluetooth
     // kulaklıkta 200 ms'yi buluyor ve imleç sesin önüne geçiyor.
     const time = engine.visualTime;
+    const playing = engine.playing;
+    if (!playing && !loopShown.playing && !seeking && time === loopShown.time) {
+      rafHandle = requestAnimationFrame(tick);          // boşta: değişen bir şey yok
+      return;
+    }
+    loopShown.time = time;
+    loopShown.playing = playing;
     strip.update(time);
     lyricsTick(time);
     if (chordSheetOn) chordSheetTick(time);
@@ -3090,10 +3141,14 @@ function startLoop() {
     playerClipTick(time);
     crossfadeTick(time);
     if (!seeking) {
-      el("seek").value = String(Math.round(time * 10));
+      const seekValue = String(Math.round(time * 10));
+      if (loopShown.seek !== seekValue) {
+        loopShown.seek = seekValue;
+        el("seek").value = seekValue;
+      }
       wavePlayed(time);
-      el("time-current").textContent = formatTime(time);
-      el("time-remaining").textContent = `-${formatTime(engine.duration - time)}`;
+      setTextIfChanged("now", "time-current", formatTime(time));
+      setTextIfChanged("left", "time-remaining", `-${formatTime(engine.duration - time)}`);
     }
     engine.checkEnded();      // bitiş işlemi engine.onEnded -> handleSongEnded (rAF'a bağlı olmayan onended yolu da aynı)
     // Kilit ekranı konumu: saniyede bir yeter, her karede değil.
@@ -6550,7 +6605,10 @@ function addWishManually() {
 async function importTakeout(files) {
   const report = { files: files.length, found: 0, added: 0, duplicate: 0, untitled: 0, limit: 0, skippedFiles: 0 };
   const sources = [];
+  let zip = null;
   try {
+    zip = await loadZipRead();
+    const { readCsvEntries, looksLikeZip } = zip;
     for (const file of files) {
       if (await looksLikeZip(file)) {
         const opened = await readCsvEntries(file);
@@ -6567,7 +6625,7 @@ async function importTakeout(files) {
       }
     }
   } catch (error) {
-    wishMessage(error instanceof ZipError ? error.message : "Dosya okunamadı. Zip ya da CSV dosyası seç.");
+    wishMessage(zip && error instanceof zip.ZipError ? error.message : "Dosya okunamadı. Zip ya da CSV dosyası seç.");
     return;
   }
   for (const source of sources) {

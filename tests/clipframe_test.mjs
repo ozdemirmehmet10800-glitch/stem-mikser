@@ -108,7 +108,11 @@ const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8").split(
   const qualityAt = upload.indexOf('el("upload-quality")');
   check("handleUpload kaliteyi HİÇBİR await'ten önce okur (paylaşım kartının kalite seçimi korunur)", qualityAt > 0 && firstAwait > qualityAt, `${qualityAt} < ${firstAwait}`);
   check("handleUpload: klipte ses ayıklanır, kalite yüklemeye geçer", /extractClipAudio\(file, status\)/.test(upload) && /api\.uploadSong\(file, [\s\S]*?quality\)/.test(upload));
-  check("ayıklanamayan KÜÇÜK klip eskisi gibi olduğu gibi yüklenir; büyükse uyarı", /else if \(file\.size > SHARE_MAX_BYTES\)/.test(upload) && /MP4_REASON\[extracted\.reason\]/.test(upload));
+  check("ayıklanamayan KÜÇÜK klip eskisi gibi olduğu gibi yüklenir; büyükse uyarı", /else if \(file\.size > SHARE_MAX_BYTES\)/.test(upload) && /m\.REASON_TEXT\)\.catch\(\(\) => \(\{\}\)\)\)\[extracted\.reason\]/.test(upload));
+  check("nadir modüller geç yüklenir (açılışta ayrıştırılmaz): klip ayıklayıcı, kapak karesi, Takeout okuyucu",
+    !/^import .* from "\.\/(mp4audio|clipframe|zipread)\.js";/m.test(app) && /lazyModule\("\.\/mp4audio\.js"\)/.test(app)
+    && /lazyModule\("\.\/clipframe\.js"\)/.test(app) && /lazyModule\("\.\/zipread\.js"\)/.test(app));
+  check("geç yüklenen modüller yine çevrimdışı kabukta", ['"./js/mp4audio.js"', '"./js/clipframe.js"', '"./js/zipread.js"'].every((m) => read("../frontend/sw.js").includes(m)));
   check("ayıklama iptal edilebilir (AbortController + düğme)", /signal: clipAbort\.signal/.test(fnBody("extractClipAudio")) && /on\("upload-cancel", "click"/.test(app));
   check("kapak karesi + klip saklama yalnız klip yüklemesinde, saklama ayara bağlı", /if \(clip && lastUploadedId\) afterClipUpload/.test(upload) && /settingOn\(safeStorage\(\)\.storage, CLIP_KEEP_KEY\)/.test(fnBody("afterClipUpload")));
   check("klibin kendi kapağı varsa kare alınmaz", /if \(!\(meta && meta\.hasCover\)\)/.test(fnBody("afterClipUpload")));

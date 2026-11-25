@@ -24,12 +24,23 @@ export class ChordStrip {
     // Ton kaydırma durumu: etiketler bununla yeniden yazılıyor.
     this.semitones = 0;
     this.songKey = null;
+    // Kare başına yerleşim ölçümü yapılmasın: genişlik yalnız boyut değişince okunur (ResizeObserver; yoksa her karede, eskisi gibi).
+    this.width = -1;
+    this.lastOffset = NaN;
+    if (typeof ResizeObserver !== "undefined") {
+      this.resizer = new ResizeObserver(() => {
+        this.width = -1;
+        this.lastOffset = NaN;
+      });
+      this.resizer.observe(root);
+    }
   }
 
   clear() {
     this.track.innerHTML = "";
     this.cells = [];
     this.activeIndex = -1;
+    this.lastOffset = NaN;
     this.track.style.transform = "translateX(0)";
     this.empty.hidden = false;
   }
@@ -142,8 +153,12 @@ export class ChordStrip {
 
   update(time) {
     if (!this.pxPerSec) return;
-    const offset = this.root.clientWidth * PLAYHEAD_RATIO - time * this.pxPerSec;
-    this.track.style.transform = `translateX(${offset}px)`;
+    if (this.width < 0 || !this.resizer) this.width = this.root.clientWidth;
+    const offset = Math.round((this.width * PLAYHEAD_RATIO - time * this.pxPerSec) * 10) / 10;   // 0,1 px yeter
+    if (offset !== this.lastOffset) {
+      this.lastOffset = offset;
+      this.track.style.transform = `translateX(${offset}px)`;
+    }
 
     let next = -1;
     for (let i = 0; i < this.cells.length; i += 1) {
