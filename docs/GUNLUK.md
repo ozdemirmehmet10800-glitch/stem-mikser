@@ -26,6 +26,11 @@
 - **Klipler telefonda saklansın mı?** Yüklediğin klip (videonun kendisi) varsayılan olarak sahne modu için telefonda saklanıyor; klip başına
   onlarca MB tutabilir. İstemezsen Ayarlar > Sahne klipleri'nden kapat; saklananları oradan silebilirsin (şarkılar ve sesleri silinmez).
 
+## Cep (sonra yapılacak fikirler, henüz yapılmadı)
+
+- **Şarkılar arası yumuşak geçiş (crossfade):** Çalma listesinde bir şarkı biterken sıradaki hafifçe girer; süre ayarlanabilir (ör. 0-8 sn).
+- **Kitaplıkta klip önizlemesi:** Klibi olan şarkıda kapak yerine birkaç saniyelik sessiz video döngüsü (yalnız ekranda görünen satırlarda, pil için sınırlı).
+
 ## Genel özet
 
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
