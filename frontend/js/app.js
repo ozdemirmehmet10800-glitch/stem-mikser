@@ -10,6 +10,9 @@ import {
   nativeSampleRate,
 } from "./engine.js";
 import { eightDPlan, nextEightDMode, readEightD, storeEightD, EIGHTD_TEXT } from "./eightd.js";
+import {
+  readCrossfade, crossfadeStep, fadeInSeconds, previewStart, pickPlaying, CROSSFADE_KEY, PREVIEW_KEY, PREVIEW_SECONDS,
+} from "./crossfade.js";
 import { Mixer } from "./mixer.js";
 import {
   snapPoint, barLoop, hasBars, BAR_CHOICES, minLoopLength, dragPoint, normalizeLoop,
@@ -442,6 +445,7 @@ function paintCover(node, id, title) {
     node.classList.add("has-cover");
     node.style.backgroundImage = `url("${url}")`;
     node.textContent = "";
+    attachClipPreview(node, id);
     return;
   }
   const model = autoCoverModel(title);
@@ -449,6 +453,160 @@ function paintCover(node, id, title) {
   node.classList.add("auto-cover");
   node.style.backgroundImage = autoCoverCss(model);
   node.textContent = model.letter;
+  attachClipPreview(node, id);
+}
+
+// ---------------------------------------------------------------- kitaplıkta klip önizlemesi (mantık js/crossfade.js)
+// Klibi saklı şarkının kitaplık kapağında birkaç saniyelik sessiz döngü. Yalnız ekrandaki satırlarda, en çok 3 tanesi aynı anda oynar;
+// video öğesi şarkı başına bir kez kurulur, liste yeniden çizilince yeni kapağa taşınır (yeniden yüklenmez).
+
+const clipPreviews = new Map();        // id -> {video, url, start, visible, top}
+let previewIds = new Set();
+let previewObserver = null;
+
+function previewsOn() {
+  return settingOn(safeStorage().storage, PREVIEW_KEY);
+}
+
+function schedulePreviews() {
+  const visible = [...clipPreviews.entries()].filter(([, item]) => item.visible).map(([id, item]) => ({ id, top: item.top }));
+  const allowed = new Set(previewsOn() && !document.hidden ? pickPlaying(visible) : []);
+  for (const [id, item] of clipPreviews) {
+    if (allowed.has(id)) item.video.play().catch(() => {});
+    else item.video.pause();
+  }
+}
+
+function previewObserverFor() {
+  if (previewObserver || typeof IntersectionObserver === "undefined") return previewObserver;
+  previewObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const item = clipPreviews.get(entry.target.dataset.clip);
+      if (!item) continue;
+      item.visible = entry.isIntersecting;
+      item.top = entry.boundingClientRect.top;
+    }
+    schedulePreviews();
+  });
+  return previewObserver;
+}
+
+async function makeClipPreview(id) {
+  const record = await clipStore.get(id);
+  if (!record || clipPreviews.has(id)) return clipPreviews.get(id) || null;
+  const preview = document.createElement("video");
+  preview.className = "thumb-clip";
+  preview.muted = true;
+  preview.playsInline = true;
+  preview.loop = false;
+  preview.preload = "metadata";
+  preview.setAttribute("aria-hidden", "true");
+  preview.tabIndex = -1;
+  preview.disablePictureInPicture = true;
+  preview.dataset.clip = id;
+  const item = { video: preview, url: URL.createObjectURL(record.blob), start: 1, visible: false, top: 0 };
+  preview.addEventListener("loadedmetadata", () => {
+    item.start = previewStart(preview.duration);
+    preview.currentTime = item.start;
+  });
+  preview.addEventListener("timeupdate", () => {
+    if (preview.currentTime > item.start + PREVIEW_SECONDS || preview.currentTime < item.start - 0.5) preview.currentTime = item.start;
+  });
+  preview.src = item.url;
+  clipPreviews.set(id, item);
+  const observer = previewObserverFor();
+  if (observer) observer.observe(preview);
+  return item;
+}
+
+function attachClipPreview(node, id) {
+  // Yalnız liste satırı kapakları (kimliksiz .song-thumb); oynatıcı/küçük oynatıcı/bilgi kapakları (#player-cover vb.) hariç.
+  // Kapak, satıra eklenmeden ÖNCE boyanabildiği için .song-row atasına bakılmaz.
+  if (!node || node.id || !node.classList || !node.classList.contains("song-thumb") || !previewIds.has(id) || !previewsOn()) return;
+  const item = clipPreviews.get(id);
+  if (item) {
+    if (item.video.parentNode !== node) node.append(item.video);
+    return;
+  }
+  makeClipPreview(id).then((made) => {
+    if (made && node.isConnected && made.video.parentNode !== node) node.append(made.video);
+  }).catch(() => {});
+}
+
+function dropClipPreview(id) {
+  const item = clipPreviews.get(id);
+  if (!item) return;
+  clipPreviews.delete(id);
+  if (previewObserver) previewObserver.unobserve(item.video);
+  item.video.pause();
+  item.video.removeAttribute("src");
+  item.video.remove();
+  URL.revokeObjectURL(item.url);
+}
+
+/** Klip listesi değişince (ekleme/silme/ayar) önizlemeleri günceller. */
+async function refreshClipPreviews() {
+  const list = await clipStore.list();
+  previewIds = new Set(previewsOn() ? list.map((item) => item.id) : []);
+  for (const id of [...clipPreviews.keys()]) if (!previewIds.has(id)) dropClipPreview(id);
+  for (const thumb of document.querySelectorAll(".song-row[data-id] .song-thumb")) {
+    attachClipPreview(thumb, thumb.closest(".song-row").dataset.id);
+  }
+  schedulePreviews();
+}
+document.addEventListener("visibilitychange", () => schedulePreviews());
+refreshClipPreviews();
+
+// ---------------------------------------------------------------- şarkılar arası yumuşak geçiş (mantık js/crossfade.js; ses engine.fadeOutput)
+let crossfadeFading = false;
+
+function crossfadeHasNext() {
+  if (sleepTimer.atEnd) return false;                    // "şarkı sonu" uykusu: sonraki şarkıya geçilmez
+  const now = playlistCtx ? playlistNow() : null;
+  if (now) return nextPlayable(now.list.items, now.at, listContext(now.map)).index >= 0;
+  return playQueue.length > 0;
+}
+
+// Geçiş süs niteliğinde: hata verirse çalma döngüsü ve çalmayı başlatma ASLA etkilenmez (yakalanır, günlüğe yazılır).
+function crossfadeTick(time) {
+  try {
+    crossfadeTickInner(time);
+  } catch (error) {
+    crossfadeFading = false;
+    try { diag.note("error", `gecis: ${error && error.message}`); } catch { /* günlük yazılamadı */ }
+  }
+}
+
+function crossfadeTickInner(time) {
+  const seconds = readCrossfade(safeStorage().storage);
+  if (!seconds && !crossfadeFading) return;
+  const remaining = engine.duration - time;
+  // Sonraki şarkı kontrolü yalnız son saniyelerde (her karede liste taramasın).
+  const near = remaining / (currentRate() || 1) <= seconds + 1;
+  const step = crossfadeStep({
+    seconds, remaining, rate: currentRate(), fading: crossfadeFading, playing: engine.playing,
+    hasNext: near && !crossfadeFading ? crossfadeHasNext() : false, looping: Boolean(engine.loop),
+  });
+  if (!step) return;
+  if (step.action === "start") {
+    crossfadeFading = true;
+    engine.fadeOutput(0, step.seconds);
+  } else if (step.action === "cancel") {
+    crossfadeFading = false;
+    engine.fadeOutput(1, 0.3);
+  }
+}
+
+/** Çalma başladı: önceki şarkı kısılarak bittiyse (ya da kısılırken durdurulduysa) ses yavaşça geri yükselir. */
+function crossfadeArrive() {
+  if (!crossfadeFading) return;
+  crossfadeFading = false;
+  try {
+    engine.fadeOutput(0, 0.02);
+    engine.fadeOutput(1, fadeInSeconds(readCrossfade(safeStorage().storage) || 3));
+  } catch (error) {
+    try { diag.note("error", `gecis: ${error && error.message}`); } catch { /* günlük yazılamadı */ }
+  }
 }
 
 function songTitleOf(id) {
@@ -837,6 +995,7 @@ on("clip-remove", "click", async () => {
 // ---------------------------------------------------------------- Ayarlar: sahne klipleri
 
 async function refreshClipSummary() {
+  refreshClipPreviews();                       // klip eklendi/silindi: kitaplık önizlemeleri de güncellensin
   const node = el("clip-summary");
   if (!node) return;
   const { count, bytes } = summarizeClips(await clipStore.list());
@@ -844,6 +1003,13 @@ async function refreshClipSummary() {
   el("clip-clear").disabled = !count;
 }
 
+on("setting-crossfade", "change", () => {
+  try { safeStorage().storage.setItem(CROSSFADE_KEY, el("setting-crossfade").value); } catch { /* bu oturumda kalmaz */ }
+});
+on("setting-clippreview", "change", () => {
+  try { safeStorage().storage.setItem(PREVIEW_KEY, el("setting-clippreview").checked ? "1" : "0"); } catch { /* bu oturumda kalmaz */ }
+  refreshClipPreviews();
+});
 on("setting-eightd-3d", "change", () => {
   const storage = safeStorage().storage;
   storeEightD(storage, { ...readEightD(storage), space: el("setting-eightd-3d").checked });
@@ -2447,6 +2613,7 @@ async function openSong(song, opts = {}) {
     tempoOffset = 0;
     pitchSemis = 0;
     vinylMode = false;
+    setActiveTempoPreset(null);
     if (el("vinyl-toggle")) el("vinyl-toggle").checked = false;
     appliedSemis = 0;
     stretchGen += 1;
@@ -2766,6 +2933,7 @@ function clampRange(id, value) {
 }
 
 function setTempoOffset(value, measure) {
+  setActiveTempoPreset(null);
   const next = clampRange("tempo-range", value);
   if (next === tempoOffset && !measure) return undefined;
   tempoOffset = next;
@@ -2894,6 +3062,7 @@ function setPlayIcon(playing) {
     stageClipTick(engine.visualTime, true);
   }
   playerClipTick(engine.visualTime, true);
+  if (playing) crossfadeArrive();              // önceki şarkı kısılarak bittiyse ses yavaşça yükselir
   document.body.classList.toggle("is-playing", playing);        // dönen kapak (yalnız transform animasyonu)
   safeHook("icon", playing);
   syncMini();
@@ -2919,6 +3088,7 @@ function startLoop() {
     if (lyricsScreen) lyricsScreen.tick(time);
     if (stageOpen) stageTick(time);
     playerClipTick(time);
+    crossfadeTick(time);
     if (!seeking) {
       el("seek").value = String(Math.round(time * 10));
       wavePlayed(time);
@@ -3598,7 +3768,7 @@ function updatePresetButtons(names) {
       // Alt parçası olmayan (ya da açılamayan) şarkıda pasif.
       button.disabled = !subUsable(preset.group || "vocals");
     } else {
-      button.disabled = !preset || !applyPreset(preset, names);
+      button.disabled = !preset || (!applyPreset(preset, names) && !(preset.tempo && names.length));    // Nightcore: yalnız hız
     }
   }
 }
@@ -3618,6 +3788,17 @@ function buildPresetButtons() {
     button.dataset.preset = preset.id;
     button.textContent = preset.label;
     button.addEventListener("click", async () => {
+      if (preset.tempo && activeTempoPreset === preset.id) {
+        // Aynı hız ön ayarına (Slowed / Nightcore) tekrar dokunuldu: normale dön (hız, ton, karışım, oda).
+        resetMix();
+        tempoOffset = 0;
+        if (el("tempo-range")) el("tempo-range").value = "0";
+        vinylMode = false;
+        setActiveTempoPreset(null);
+        await applyStretch(true);
+        notePlayer(`${preset.label} kapandı; normal hız.`, "ok", 4000);
+        return;
+      }
       const group = preset.group || "vocals";
       if (preset.needsSub && !subExpanded(group)) {
         // Alt parçalar hazır ama kapalı: önce aç (kısa yeniden başlatma; başka
@@ -3629,7 +3810,11 @@ function buildPresetButtons() {
       // Ön ayar "temiz başlangıç": kapalı alt kanalların eski kayıtlı ayarı da gitsin.
       if (states) applyMixStates(states, { replaceAbsent: true });
       if (states && preset.room) setRoomState(preset.room);
-      if (states && preset.tempo) applyTempoPreset(preset.tempo);
+      if ((states || (preset.tempo && engine.channels.size)) && preset.tempo) {
+        await applyTempoPreset(preset.tempo);
+        setActiveTempoPreset(preset.id);
+        notePlayer(`${preset.label} açık. Kapatmak için düğmeye tekrar dokun.`, "ok", 5000);
+      }
     });
     box.append(button);
   }
@@ -4309,6 +4494,16 @@ function setRoomState(room, save = true) {
   engine.setRoom(roomState);
   refreshFxSheet();
   if (save) scheduleMixSave();
+}
+
+// Açık hız ön ayarı (Slowed + reverb / Nightcore): düğmede vurgulu; aynı düğme kapatır. Elle tempo, şarkı değişimi gösterge kaldırır.
+let activeTempoPreset = null;
+function setActiveTempoPreset(id) {
+  activeTempoPreset = id;
+  for (const button of document.querySelectorAll("#mix-presets [data-preset]")) {
+    const preset = PRESETS.find((item) => item.id === button.dataset.preset);
+    if (preset && preset.tempo) button.setAttribute("aria-pressed", String(button.dataset.preset === id));
+  }
 }
 
 // "Slowed + reverb" gibi ön ayarların hız/ton kısmı: plak gibi kipi + oran (tek yeniden çıpalama).
@@ -5957,6 +6152,8 @@ on("open-settings", "click", () => {
   el("setting-spin").checked = applySpinSetting();
   el("setting-clipkeep").checked = settingOn(safeStorage().storage, CLIP_KEEP_KEY);
   el("setting-eightd-speed").value = readEightD(safeStorage().storage).speed;
+  el("setting-crossfade").value = String(readCrossfade(safeStorage().storage));
+  el("setting-clippreview").checked = settingOn(safeStorage().storage, PREVIEW_KEY);
   el("setting-eightd-3d").checked = readEightD(safeStorage().storage).space;
   el("setting-clipview").checked = settingOn(safeStorage().storage, PLAYER_CLIP_KEY);
   refreshClipSummary();

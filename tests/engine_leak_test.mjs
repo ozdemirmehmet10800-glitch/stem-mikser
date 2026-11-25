@@ -82,7 +82,7 @@ const provide = async () => new ArrayBuffer(8);
 // Master'a (dolayli) bagli gain dugumu sayisi.
 function liveGains(engine) {
   return engine.ctx.nodes.filter(
-    (n) => n !== engine.master && n !== engine.seamGain && n.targets.size > 0
+    (n) => n !== engine.master && n !== engine.seamGain && n !== engine.transitionGain && n.targets.size > 0
   ).length;
 }
 

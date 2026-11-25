@@ -447,7 +447,11 @@ export class Engine {
       this.seamGain = this.ctx.createGain();
       this.seamGain.gain.value = 1;
       this.master.connect(this.seamGain);
-      this.seamGain.connect(this.ctx.destination);
+      // seamGain -> transitionGain -> destination: şarkılar arası yumuşak geçiş (fadeOutput); ana ses ve dikişten bağımsız.
+      this.transitionGain = this.ctx.createGain();
+      this.transitionGain.gain.value = 1;
+      this.seamGain.connect(this.transitionGain);
+      this.transitionGain.connect(this.ctx.destination);
       const created = this.ctx;
       created.onstatechange = () => {
         if (created === this.ctx) this.#handleState();
@@ -510,6 +514,16 @@ export class Engine {
     if (!this.ctx) return 0;
     const length = this.loop ? this.loop.b - this.loop.a : 0;
     return this.startedAt + this.latency + (songTime + turn * length - this.offset) / this.rate;
+  }
+
+  /** Şarkılar arası geçiş: çıkışı `seconds` içinde `value`ya (0 = sessiz, 1 = normal) doğrusal götürür. Bağlam yoksa bir şey yapmaz. */
+  fadeOutput(value, seconds) {
+    if (!this.ctx || !this.transitionGain) return;
+    const gain = this.transitionGain.gain;
+    const now = this.ctx.currentTime;
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(gain.value, now);
+    gain.linearRampToValueAtTime(Math.min(Math.max(Number(value) || 0, 0), 1), now + Math.max(0.02, Number(seconds) || 0));
   }
 
   // Motorun ÇIKIŞI (dikiş çukurundan sonra); ölçüm araçları buradan dinler.
@@ -1543,6 +1557,7 @@ export class Engine {
       this.ctx = null;
       this.master = null;
       this.seamGain = null;
+      this.transitionGain = null;
     }
   }
 

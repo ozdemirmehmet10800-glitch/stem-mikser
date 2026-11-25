@@ -98,6 +98,8 @@ export const PRESETS = [
   // Plak gibi yavaşlat (hız ve ton birlikte) + belirgin yankı: önce yavaşlat, sonra yankı ekle.
   { id: "slowed-reverb", label: "Slowed + reverb", send: 0.5, sendBy: { vocals: 0.65, lead: 0.65, backing: 0.65 },
     room: { size: 0.7, decay: 2.2, level: 0.8 }, tempo: { vinyl: true, rate: 0.85 } },
+  // Plak gibi hızlandır (hız ve ton birlikte yükselir); yankı yok.
+  { id: "nightcore", label: "Nightcore", tempo: { vinyl: true, rate: 1.25 } },
 ];
 
 export function cleanStates(names) {

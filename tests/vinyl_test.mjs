@@ -120,7 +120,7 @@ await e4.play();
 for (let i = 0; i < 40; i += 1) {
   await e4.setTempoAndPitch(i % 2 === 0 ? 0.8 : 1, 0, 0.1, i % 2 === 0);      // plak gibi 0.8x <-> bypass (esnetici kurulmaz)
 }
-const live = e4.ctx.nodes.filter((n) => n.kind === "gain" && n !== e4.master && n !== e4.seamGain && n.targets.size > 0).length;
+const live = e4.ctx.nodes.filter((n) => n.kind === "gain" && n !== e4.master && n !== e4.seamGain && n !== e4.transitionGain && n.targets.size > 0).length;
 check("40 kip geçişi: bağlı gain = 6 (sızıntı yok)", live === 6, String(live));
 e4.dispose();
 

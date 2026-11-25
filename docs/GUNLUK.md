@@ -28,8 +28,6 @@
 
 ## Cep (sonra yapılacak fikirler, henüz yapılmadı)
 
-- **Şarkılar arası yumuşak geçiş (crossfade):** Çalma listesinde bir şarkı biterken sıradaki hafifçe girer; süre ayarlanabilir (ör. 0-8 sn).
-- **Kitaplıkta klip önizlemesi:** Klibi olan şarkıda kapak yerine birkaç saniyelik sessiz video döngüsü (yalnız ekranda görünen satırlarda, pil için sınırlı).
 - **Yatay ekran düzeni:** Telefon yan çevrilince klip solda, mikser (kanallar) sağda; ikisi aynı anda görünür.
 
 ## Genel özet
@@ -37,7 +35,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v84 (8D + cızırtısız 3D).
+- **Son sürüm:** SW v85 (Nightcore, yumuşak geçiş, kitaplıkta klip önizlemesi).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -46,6 +44,26 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### Nightcore, şarkılar arası yumuşak geçiş, kitaplıkta klip önizlemesi
+
+- **Slowed + Reverb:** zaten vardı (mikserdeki ön ayar satırı). Artık açıkken düğme vurgulu; tekrar dokununca normale döner (hız, ton, karışım, oda).
+- **Nightcore (yeni):** ön ayar satırında. Plak gibi hızlandırır (1,25x; hız ve ton birlikte yükselir). Tekrar dokununca normale döner.
+  Karışıma dokunmaz. Elle tempo değiştirince ya da şarkı değişince "açık" göstergesi kalkar.
+- **Yumuşak geçiş (Cep'ten):** Çalma listesinde / sırada sonraki şarkı varken şarkı son saniyelerde (varsayılan 5 sn) kısılarak biter, sonraki
+  açılınca ~2,5 sn'de yükselir. Ayarlar > Şarkılar arası geçiş: Kapalı / 3 / 5 / 8 sn. İki şarkı aynı anda belleğe alınmıyor (6 kanal x 2 şarkı
+  telefonda ~1 GB olurdu); arada sonraki şarkının açılması kadar kısa bir sessizlik var. Geri sararsan / döngü açarsan ses geri açılır.
+  Ses motoruna ayrı bir geçiş düğümü eklendi (ana ses ve döngü dikişinden bağımsız). Tarayıcıda ölçüldü: sona 5 sn kala kısma başladı, şarkı
+  bitince 0; sıradaki şarkıda 2,5 sn'de 1'e çıktı. Geçiş kodu hata verse bile çalma döngüsü ve çalmayı başlatma etkilenmez (yakalanır).
+- **Kitaplıkta klip önizlemesi (Cep'ten):** Klibi saklı şarkının kapağında birkaç saniyelik sessiz döngü (klibin %35'inden). Yalnız ekrandaki
+  satırlarda, aynı anda en çok 3; uygulama arka plandayken durur. Ayarlar > Şarkılar arası geçiş bölümünde aç/kapa.
+- **Cep'te kalan:** yatay ekran düzeni.
+- **SW:** v85.
+- **Telefonda kontrol (4 adım):**
+  1. Mikserde "Nightcore"a dokun: hızlı ve tiz çalmalı; tekrar dokun: normale dönmeli. "Slowed + reverb" de aynı.
+  2. Bir listeyi çal, şarkının sonuna sar: son saniyelerde kısılıp sıradaki yavaşça açılmalı.
+  3. Klibi olan bir şarkının kitaplık kapağında video oynamalı.
+  4. Ayarlar'dan geçişi "Kapalı" yap: şarkılar eskisi gibi geçmeli.
 
 ### 8D ses
 

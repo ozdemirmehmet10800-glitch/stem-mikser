@@ -651,6 +651,21 @@
       </div>
 
       <div class="field">
+        <span>Şarkılar arası geçiş</span>
+        <label class="check"><span>Yumuşak geçiş</span>
+          <select id="setting-crossfade" aria-label="Şarkılar arası yumuşak geçiş süresi">
+            <option value="0">Kapalı</option>
+            <option value="3">3 sn</option>
+            <option value="5">5 sn</option>
+            <option value="8">8 sn</option>
+          </select>
+        </label>
+        <small>Çalma listesinde ya da sırada sonraki şarkı varken şarkı son saniyelerde kısılarak biter, sonraki yavaşça açılarak başlar. Arada sonraki şarkının açılması kadar kısa bir sessizlik olabilir (iki şarkıyı birden belleğe almamak için).</small>
+        <label class="check"><span>Kitaplıkta klip önizlemesi</span><input type="checkbox" id="setting-clippreview" role="switch"></label>
+        <small>Klibi saklı şarkıların kapağında birkaç saniyelik sessiz döngü (aynı anda en çok 3).</small>
+      </div>
+
+      <div class="field">
         <span>8D ses</span>
         <label class="check"><span>Dönüş hızı</span>
           <select id="setting-eightd-speed" aria-label="8D dönüş hızı">

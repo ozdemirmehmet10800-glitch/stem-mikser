@@ -298,6 +298,9 @@ html, body {
   display: grid; place-items: center;
 }
 .song-thumb svg { width: 22px; height: 22px; fill: var(--text-dim); }
+.song-thumb { position: relative; overflow: hidden; }
+.thumb-clip { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; pointer-events: none; }
+#mix-presets [data-preset][aria-pressed="true"] { background: var(--accent-dim, rgba(127, 231, 255, 0.18)); border-color: var(--accent, #7fe7ff); color: var(--text); }
 .song-thumb.busy { background: var(--panel-2); }
 
 .song-info { min-width: 0; flex: 1; }
