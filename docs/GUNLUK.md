@@ -30,6 +30,7 @@
 
 - **Şarkılar arası yumuşak geçiş (crossfade):** Çalma listesinde bir şarkı biterken sıradaki hafifçe girer; süre ayarlanabilir (ör. 0-8 sn).
 - **Kitaplıkta klip önizlemesi:** Klibi olan şarkıda kapak yerine birkaç saniyelik sessiz video döngüsü (yalnız ekranda görünen satırlarda, pil için sınırlı).
+- **Yatay ekran düzeni:** Telefon yan çevrilince klip solda, mikser (kanallar) sağda; ikisi aynı anda görünür.
 
 ## Genel özet
 
