@@ -37,7 +37,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v82 (8D ses dahil).
+- **Son sürüm:** SW v83 (8D + gerçek 3D dahil).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -56,8 +56,12 @@
   işlemciyi neredeyse hiç yormaz. Kendi pan ayarın taban olarak kalır. Sunucuya dokunulmadı.
 - **Denendi (tarayıcıda ölçüm):** klasik kipte ses sağ +0,85 ile sol -0,85 arasında 8 sn'lik düzgün dalga; kanal kanalda vokal ortada, bas ±0,2,
   diğerleri farklı evrede; kapatınca dönüşler kalkıyor. Telefonda ve kulaklıkla denenmedi.
-- **Sınırlar:** Dışa aktarılan dosyaya 8D girmez. Gerçek 3 boyutlu (arkadan/yukarıdan) ses yok; şimdilik yalnız sağ-sol dönüş + istersen Yankı.
+- **Sınırlar:** Dışa aktarılan dosyaya 8D girmez.
 - **SW:** v82.
+- **Ek (v83): gerçek 3D.** Kullanıcının telefonu (Galaxy S24 FE) güçlü olduğu için Ayarlar > 8D ses > "Gerçek 3D" eklendi (varsayılan açık).
+  Her kanal kulak modeliyle (HRTF) başın etrafında bir çember üzerinde gezer: önünden, sağından, arkandan, solundan. Dar kanallar (bas) önde
+  küçük elips çizer. Tarayıcı desteklemezse kendiliğinden sağ-sol dönüşe düşer. Ölçüm: 6 kanala HRTF bağlandı, ses 8 sn'lik turla dönüyor;
+  sağ-sol farkı 2D'ye göre daha doğal/yumuşak (yön tını ipuçlarıyla verilir). Daha belirgin sağ-sol isteyen 3D'yi kapatabilir. Telefonda denenmedi.
 - **Telefonda kontrol (3 adım):**
   1. Kulaklık tak, şarkıyı aç, "8D"ye dokun: ses başının etrafında dönmeli.
   2. Bir daha dokun ("8D kanal"): vokal ortada kalmalı, enstrümanlar dönmeli.

@@ -148,7 +148,7 @@ const engine = new Engine();
 // Mikserdeki "8D" düğmesi: kapalı -> klasik (bütün şarkı) -> kanal kanal -> kapalı. Seçim bu telefonda saklanır, her şarkıda geçerli.
 function applyEightD(announce = false) {
   const state = readEightD(safeStorage().storage);
-  engine.setAutoPan(eightDPlan(state));
+  engine.setAutoPan(eightDPlan(state), { hrtf: state.space });
   const chip = document.getElementById("eightd-toggle");
   if (chip) {
     chip.setAttribute("aria-pressed", String(state.mode !== "off"));
@@ -844,6 +844,11 @@ async function refreshClipSummary() {
   el("clip-clear").disabled = !count;
 }
 
+on("setting-eightd-3d", "change", () => {
+  const storage = safeStorage().storage;
+  storeEightD(storage, { ...readEightD(storage), space: el("setting-eightd-3d").checked });
+  applyEightD();
+});
 on("setting-eightd-speed", "change", () => {
   const storage = safeStorage().storage;
   storeEightD(storage, { ...readEightD(storage), speed: el("setting-eightd-speed").value });
@@ -5952,6 +5957,7 @@ on("open-settings", "click", () => {
   el("setting-spin").checked = applySpinSetting();
   el("setting-clipkeep").checked = settingOn(safeStorage().storage, CLIP_KEEP_KEY);
   el("setting-eightd-speed").value = readEightD(safeStorage().storage).speed;
+  el("setting-eightd-3d").checked = readEightD(safeStorage().storage).space;
   el("setting-clipview").checked = settingOn(safeStorage().storage, PLAYER_CLIP_KEY);
   refreshClipSummary();
   refreshSwVersion();

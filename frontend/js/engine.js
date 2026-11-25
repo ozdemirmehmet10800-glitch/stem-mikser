@@ -627,6 +627,7 @@ export class Engine {
     this.#dropLfo(channel);
     const strip = channel.strip;
     if (!strip) return;
+    if (strip.hrtf) this.#fxRelease(strip.hrtf);
     this.#fxRelease(strip.lo, strip.mid, strip.hi, strip.pan, strip.send);
     channel.strip = null;
   }
@@ -655,8 +656,9 @@ export class Engine {
     const fx = effectiveFx(this.channels, name);
     const active = this.#needsStrip(name, channel);
     const sending = active && fx.send > 0 && this.reverbOn;
+    const spatial = active && this.#wants3d(name, channel);
     const strip = channel.strip;
-    if (!force && strip && strip.active === active && strip.sending === sending && active) {
+    if (!force && strip && strip.active === active && strip.sending === sending && active && Boolean(strip.spatial) === spatial) {
       this.#setStripParams(strip, fx, false);
       this.#syncLfo(name, channel);
       return;
@@ -685,6 +687,13 @@ export class Engine {
       } catch {
         /* bağlı değildi */
       }
+      if (strip.hrtf) {
+        try {
+          strip.hrtf.disconnect();
+        } catch {
+          /* bağlı değildi */
+        }
+      }
     }
     if (!active) {
       this.#dropLfo(channel);
@@ -699,7 +708,15 @@ export class Engine {
     const wasActive = live.active;
     if (!wasActive) this.#setStripParams(live, neutralFx(), true);   // kimlik değeriyle gir
     gain.connect(live.lo);
-    live.pan.connect(target);
+    if (spatial) {
+      // 3D (HRTF): panner -> HRTF uzay paneli -> hedef. Konumu LFO'lar başın etrafında çember üzerinde gezdirir.
+      const hrtf = this.#ensureHrtf(live);
+      live.pan.connect(hrtf);
+      hrtf.connect(target);
+    } else {
+      live.pan.connect(target);
+    }
+    live.spatial = spatial;
     live.pan.connect(live.send);
     if (sending) live.send.connect(this.#ensureSendBus());
     live.active = true;
@@ -723,6 +740,35 @@ export class Engine {
     }
   }
 
+  /** 3D (HRTF) istenmiş, kanal dönüyor ve tarayıcı konum parametrelerini destekliyor mu? */
+  #wants3d(name, channel) {
+    if (!this.autoPan3d || !this.ctx) return false;
+    if (this.hrtfSupported === undefined) {
+      try {
+        const probe = this.ctx.createPanner();
+        this.hrtfSupported = Boolean(probe.positionX && probe.positionZ);
+      } catch {
+        this.hrtfSupported = false;
+      }
+    }
+    return this.hrtfSupported && this.#autoPanEntry(name, channel) !== null;
+  }
+
+  #ensureHrtf(strip) {
+    if (strip.hrtf) return strip.hrtf;
+    const node = this.ctx.createPanner();
+    this.fxCreated += 1;
+    node.panningModel = "HRTF";
+    node.distanceModel = "inverse";
+    node.refDistance = 1;
+    node.rolloffFactor = 0;                  // uzaklıkla ses kısılmasın: yalnız yön değişir
+    node.positionX.value = 0;
+    node.positionY.value = 0;
+    node.positionZ.value = -1;               // dinleyici -z'ye bakar: başlangıç önde
+    strip.hrtf = node;
+    return node;
+  }
+
   #needsStrip(name, channel) {
     return !isNeutralFx(effectiveFx(this.channels, name)) || this.#autoPanEntry(name, channel) !== null;
   }
@@ -730,8 +776,10 @@ export class Engine {
   #syncLfo(name, channel) {
     const strip = channel.strip;
     const entry = strip && strip.active ? this.#autoPanEntry(name, channel) : null;
-    const key = entry ? `${this.autoPanVersion}|${entry.rate}|${entry.depth}|${entry.phase}` : "";
-    if (channel.lfo && channel.lfo.key === key && channel.lfo.param === strip.pan.pan) return;
+    const spatial = Boolean(entry && strip.spatial && strip.hrtf);
+    const target = spatial ? strip.hrtf : strip && strip.pan;
+    const key = entry ? `${this.autoPanVersion}|${entry.rate}|${entry.depth}|${entry.phase}|${spatial ? "3d" : "2d"}` : "";
+    if (channel.lfo && channel.lfo.key === key && channel.lfo.target === target) return;
     this.#dropLfo(channel);
     if (!entry) return;
     const ctx = this.ctx;
@@ -741,18 +789,36 @@ export class Engine {
     }
     const startAt = ctx.currentTime + 0.02;
     const phase = entry.phase + 2 * Math.PI * entry.rate * (startAt - this.autoPanEpoch);
-    const osc = ctx.createOscillator();
     // sin(wt + evre) = sin(evre)·cos(wt) + cos(evre)·sin(wt): evre periyodik dalgayla verilir (osilatörün evre ayarı yok).
-    osc.setPeriodicWave(ctx.createPeriodicWave(new Float32Array([0, Math.sin(phase)]), new Float32Array([0, Math.cos(phase)]),
-      { disableNormalization: true }));
-    osc.frequency.value = entry.rate;
-    const depth = ctx.createGain();
-    depth.gain.value = 0;
-    depth.gain.setTargetAtTime(entry.depth, ctx.currentTime, 0.3);     // yumuşak giriş (tık yok)
-    osc.connect(depth);
-    depth.connect(strip.pan.pan);
-    osc.start(startAt);
-    channel.lfo = { osc, depth, key, param: strip.pan.pan };
+    const wave = (shift) => {
+      const osc = ctx.createOscillator();
+      osc.setPeriodicWave(ctx.createPeriodicWave(new Float32Array([0, Math.sin(phase + shift)]),
+        new Float32Array([0, Math.cos(phase + shift)]), { disableNormalization: true }));
+      osc.frequency.value = entry.rate;
+      const depth = ctx.createGain();
+      depth.gain.value = 0;
+      depth.gain.setTargetAtTime(entry.depth, ctx.currentTime, 0.3);   // yumuşak giriş (tık yok)
+      osc.connect(depth);
+      return { osc, depth };
+    };
+    const parts = [];
+    if (spatial) {
+      // Başın etrafında çember (dar kanal önde küçük elips): x = d·sin(θ), z = -(1-d) - d·cos(θ) = -(1-d) + d·sin(θ - π/2).
+      const x = wave(0);
+      const z = wave(-Math.PI / 2);
+      strip.hrtf.positionX.value = 0;
+      strip.hrtf.positionZ.value = -(1 - entry.depth);
+      strip.pan.pan.cancelScheduledValues(ctx.currentTime);
+      x.depth.connect(strip.hrtf.positionX);
+      z.depth.connect(strip.hrtf.positionZ);
+      parts.push(x, z);
+    } else {
+      const p = wave(0);
+      p.depth.connect(strip.pan.pan);
+      parts.push(p);
+    }
+    for (const part of parts) part.osc.start(startAt);
+    channel.lfo = { parts, key, target };
   }
 
   #dropLfo(channel) {
@@ -760,17 +826,19 @@ export class Engine {
     if (!lfo) return;
     channel.lfo = null;
     const now = this.ctx ? this.ctx.currentTime : 0;
-    const release = () => {
-      try { lfo.osc.disconnect(); } catch { /* bağlı değildi */ }
-      try { lfo.depth.disconnect(); } catch { /* bağlı değildi */ }
-    };
-    try {
-      lfo.depth.gain.cancelScheduledValues(now);
-      lfo.depth.gain.setTargetAtTime(0, now, 0.08);                     // yumuşak çıkış
-      lfo.osc.onended = release;
-      lfo.osc.stop(now + 0.4);
-    } catch {
-      release();
+    for (const part of lfo.parts || []) {
+      const release = () => {
+        try { part.osc.disconnect(); } catch { /* bağlı değildi */ }
+        try { part.depth.disconnect(); } catch { /* bağlı değildi */ }
+      };
+      try {
+        part.depth.gain.cancelScheduledValues(now);
+        part.depth.gain.setTargetAtTime(0, now, 0.08);                  // yumuşak çıkış
+        part.osc.onended = release;
+        part.osc.stop(now + 0.4);
+      } catch {
+        release();
+      }
     }
   }
 
@@ -778,14 +846,22 @@ export class Engine {
    * 8D: planFn(kanal adı, ana kanal adı) -> {rate, depth, phase} | null; null/undefined verilirse 8D kapanır.
    * Kanallar yoksa yalnız saklanır; şarkı yüklenince kanal yönlendirmesinde uygulanır.
    */
-  setAutoPan(planFn) {
+  setAutoPan(planFn, { hrtf = false } = {}) {
+    const was3d = Boolean(this.autoPan3d);
     this.autoPanFn = typeof planFn === "function" ? planFn : null;
+    this.autoPan3d = Boolean(hrtf);
     this.autoPanVersion = (this.autoPanVersion || 0) + 1;
     if (!this.autoPanFn) {
       this.autoPanCtx = null;
       for (const channel of this.channels.values()) this.#dropLfo(channel);
     }
     this.#applyStrips();
+    // 2D <-> 3D geçişinde açık şeritlerin çıkışı değişir (panner -> hedef / panner -> HRTF -> hedef): yeniden bağla.
+    if (was3d !== this.autoPan3d && this.ctx && this.fxTarget) {
+      for (const [name, channel] of this.channels) {
+        if (channel.gainNode && channel.strip && channel.strip.active) this.#routeChannel(name, channel, this.fxTarget, true);
+      }
+    }
   }
 
   get autoPanOn() {

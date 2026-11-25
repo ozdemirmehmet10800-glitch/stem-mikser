@@ -4,13 +4,13 @@
 //   "stems"  kanal kanal: vokal ortada sabit, bas ortaya yakın, diğerleri farklı hız/yönde (bu uygulamaya özgü: şarkı kanallara ayrılmış).
 // node tests\eightd_test.mjs
 
-export const EIGHTD_KEY = "stem-mikser.eightd";            // {mode, speed} (bu telefonda)
+export const EIGHTD_KEY = "stem-mikser.eightd";            // {mode, speed, space} (bu telefonda)
 export const EIGHTD_MODES = ["off", "all", "stems"];
 export const EIGHTD_SPEEDS = { slow: 1 / 12, medium: 1 / 8, fast: 1 / 4.5 };   // Hz: tam tur 12 / 8 / 4,5 sn
 export const EIGHTD_WIDTH = 0.9;                             // dönüş genişliği (1 = tamamen sağa/sola)
 export const EIGHTD_TEXT = {
   off: "8D kapalı.",
-  all: "8D açık: bütün şarkı başının etrafında dönüyor. Kulaklıkla dinle.",
+  all: "8D açık: bütün şarkı başının etrafında dönüyor (3D açıksa önünden arkana da). Kulaklıkla dinle.",
   stems: "8D kanal kanal: vokal ortada, enstrümanlar farklı hız ve yönde dönüyor. Kulaklıkla dinle.",
 };
 
@@ -30,7 +30,7 @@ function hashTurn(name) {
   return (h % 1000) / 1000;
 }
 
-/** Saklanan durum: {mode: "off"|"all"|"stems", speed: "slow"|"medium"|"fast"}. Bozuk/eksik -> kapalı, orta. */
+/** Saklanan durum: {mode: "off"|"all"|"stems", speed: "slow"|"medium"|"fast", space: 3D (HRTF) mi}. Bozuk/eksik -> kapalı, orta, 3D açık. */
 export function readEightD(storage) {
   let raw = null;
   try {
@@ -40,12 +40,13 @@ export function readEightD(storage) {
   }
   const mode = raw && EIGHTD_MODES.includes(raw.mode) ? raw.mode : "off";
   const speed = raw && Object.prototype.hasOwnProperty.call(EIGHTD_SPEEDS, raw.speed) ? raw.speed : "medium";
-  return { mode, speed };
+  const space = !(raw && raw.space === false);
+  return { mode, speed, space };
 }
 
 export function storeEightD(storage, state) {
   try {
-    storage.setItem(EIGHTD_KEY, JSON.stringify({ mode: state.mode, speed: state.speed }));
+    storage.setItem(EIGHTD_KEY, JSON.stringify({ mode: state.mode, speed: state.speed, space: state.space !== false }));
     return true;
   } catch {
     return false;
