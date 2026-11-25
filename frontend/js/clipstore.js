@@ -8,8 +8,9 @@ const DB_NAME = "stem-mikser-clips";
 const STORE = "clips";
 export const CLIP_KEEP_KEY = "stem-mikser.clipkeep";       // "0": yüklenen klipleri saklama (varsayılan: sakla)
 export const STAGE_CLIP_KEY = "stem-mikser.stageclip";     // sahnede klip: "0" kapalı, "full" tam (net), başka her şey karartılmış (varsayılan)
-// "0": klibi mikserin arkasında gösterme (varsayılan: göster). Yeni anahtar: v79'daki "klip mikserin yerinde" seçimi buna taşınmaz.
-export const PLAYER_CLIP_KEY = "stem-mikser.mixerclip";
+// Oynatıcıdaki Klip | Mikser anahtarı: "0" mikser görünümü, başka her şey klip görünümü (varsayılan: klip). Yeni anahtar: v79 ("playerclip")
+// ve v80 ("mixerclip") seçimleri buna taşınmaz (o anahtarlar silinmez, yalnız okunmaz); güncellemeden sonra klip yine doğrudan görünür.
+export const PLAYER_CLIP_KEY = "stem-mikser.clipview";
 export const CLIP_MODES = ["dim", "full", "off"];          // sahnedeki film düğmesi bu sırayla döner
 
 /** Ayar açık mı (varsayılan açık; depolama yoksa da açık sayılır). */

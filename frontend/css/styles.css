@@ -1582,16 +1582,31 @@ button.cc.more {
 .stage.clip-full .stage-line { margin-top: 2px; font-size: clamp(16px, 4.6vw, 26px); }
 .stage.clip-full .stage-next-chord, .stage.clip-full .stage-line-next { display: none; }
 .clip-open { flex: 0 0 auto; }
-/* oynatıcıda klip: MİKSERİN ARKASINDA. Video yerleşim dışı (konumu/boyutu JS ile kanal bölgesine oturur), dokunmayı almaz; kanallar önde. */
-.player-clip { position: absolute; z-index: 0; overflow: hidden; border-radius: 12px; background: #000; pointer-events: none; }
-.player-clip[hidden] { display: none; }
-.player-clip::after {
-  content: ""; position: absolute; inset: 0;
-  background: linear-gradient(90deg, rgba(0, 0, 0, 0.66), rgba(0, 0, 0, 0.3) 38%, rgba(0, 0, 0, 0.3) 62%, rgba(0, 0, 0, 0.62));
+/* oynatıcıda klip: KLİP | MİKSER görünümü. Klip görünümünde video akışta, tam genişlikte ve NET (karartma yok); mikser düğmeleri, kanallar
+   ve döngü çubuğu gizlenir (yer videoya ve sözlere kalır). "Mikser" hepsini olduğu gibi geri getirir. Hiçbir şey üst üste binmez. */
+.view-switch { display: flex; flex: 0 0 auto; gap: 4px; padding: 3px; margin: 0 0 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); }
+.view-switch[hidden] { display: none; }
+.view-switch button {
+  position: relative; flex: 1 1 0; min-width: 0; min-height: 32px; padding: 0 12px; border: 0; border-radius: 999px; background: transparent;
+  color: var(--text-dim); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; -webkit-tap-highlight-color: transparent;
 }
-.player-clip-video { display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0.8; }
-#view-player.clip-on .channels { position: relative; z-index: 1; }
-#view-player.clip-on .channel-name, #view-player.clip-on .channel-db { color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); }
+.view-switch button::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 44px; margin-top: -22px; }
+.view-switch button[aria-pressed="true"] { background: var(--accent-dim); color: #fff; }
+.player-clip {
+  position: relative; flex: 0 1 auto; width: 100%; aspect-ratio: var(--clip-ar, 16 / 9); min-height: 110px; max-height: 38vh; margin: 0 0 8px;
+  border-radius: 14px; overflow: hidden; background: #000;
+}
+.player-clip[hidden] { display: none; }
+.player-clip-video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; cursor: pointer; }
+.player-clip-full {
+  position: absolute; top: 8px; right: 8px; width: 40px; height: 40px; border-radius: 50%; border: 0; padding: 0; display: grid; place-items: center;
+  cursor: pointer; background: rgba(0, 0, 0, 0.55); color: #fff; -webkit-tap-highlight-color: transparent;
+}
+.player-clip-full svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+#view-player.clip-on .mix-bar, #view-player.clip-on .mix-notice, #view-player.clip-on .channels, #view-player.clip-on .loop-bar { display: none; }
+#view-player.clip-on .transport { margin-top: auto; }
+#view-player.trainer-on .view-switch, #view-player.trainer-on .player-clip { display: none; }
+.clip-open[hidden] { display: none; }
 .upload-cancel { margin: 6px 0 0; }
 .upload-cancel[hidden] { display: none; }
 .info-clip { display: grid; gap: 6px; margin-top: 10px; }

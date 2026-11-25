@@ -258,6 +258,16 @@
     <div class="sleep-row" id="sleep-row" role="group" aria-label="Uyku zamanlayıcısı" hidden></div>
     <div class="player-method-row" id="player-method-row"><div class="player-method" id="player-method" hidden></div><button type="button" class="chip stage-open" id="stage-open" aria-label="Sahne modu">Sahne</button><button type="button" class="chip clip-open" id="clip-open" aria-label="Bu şarkıya telefondaki klibi ekle">Klip ekle</button></div>
 
+    <!-- Klip | Mikser: yalnız klibi saklı şarkıda görünür. Klip görünümünde video burada NET oynar (sessiz, sesle senkron; ses mikserden),
+         mikser/kanallar/döngü gizlenir; "Mikser" hepsini geri getirir. Seçim hatırlanır. Videoya dokununca tam ekran. -->
+    <div class="view-switch" id="view-switch" role="group" aria-label="Klip ya da mikser görünümü" hidden>
+      <button type="button" id="view-switch-clip" aria-pressed="true">Klip</button>
+      <button type="button" id="view-switch-mixer" aria-pressed="false">Mikser</button>
+    </div>
+    <div class="player-clip" id="player-clip" hidden>
+      <video class="player-clip-video" id="player-clip-video" muted playsinline preload="auto" disablepictureinpicture aria-label="Klip (dokununca tam ekran)"></video>
+      <button type="button" class="player-clip-full" id="player-clip-full" aria-label="Klibi tam ekran aç"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+    </div>
 
     <!-- akor şeridi -->
     <div class="chordstrip" id="chordstrip">
@@ -380,10 +390,6 @@
     <div class="mix-notice" id="mix-notice" hidden>
       <span>Son ayar geri yüklendi</span>
       <button type="button" id="mix-notice-reset">Sıfırla</button>
-    </div>
-    <!-- klip: MİKSERİN ARKASINDA, şarkı açılınca doğrudan (sessiz, sesle senkron; ses mikserden). Kanallar önde kalır; tam ekran üstteki "Klip". -->
-    <div class="player-clip" id="player-clip" aria-hidden="true" hidden>
-      <video class="player-clip-video" id="player-clip-video" muted playsinline preload="auto" disablepictureinpicture tabindex="-1"></video>
     </div>
     <div class="channels" id="channels"></div>
 
@@ -646,7 +652,7 @@
       <div class="field">
         <span>Sahne klipleri</span>
         <label class="check"><span>Yüklediğin klipleri sahne modu için bu telefonda sakla</span><input type="checkbox" id="setting-clipkeep" role="switch"></label>
-        <label class="check"><span>Klibi mikserin arkasında oynat (kanallar önde kalır)</span><input type="checkbox" id="setting-mixerclip" role="switch"></label>
+        <label class="check"><span>Klibi olan şarkı klip görünümünde açılsın (oynatıcıdaki Klip | Mikser anahtarı)</span><input type="checkbox" id="setting-clipview" role="switch"></label>
         <small id="clip-summary">Hesaplanıyor…</small>
         <small>Klip yalnız bu telefonda saklanır, sunucuya gitmez; sahne modunda arka planda sessizce, şarkıyla senkron oynar. Klipler çok yer kaplayabilir. Bir şarkıya sonradan klip eklemek için: şarkı bilgisi &gt; Klip seç.</small>
         <div class="settings-buttons">

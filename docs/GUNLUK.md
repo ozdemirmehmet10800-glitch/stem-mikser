@@ -31,7 +31,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v80 (kayıt 16: klip mikserin arkasında, kanallar önde). 76 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
+- **Son sürüm:** SW v81 (kayıt 17: oynatıcıda Klip | Mikser anahtarı). 77 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -40,6 +40,26 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 17. Klip | Mikser anahtarı: klip NET, mikser tek dokunuşta
+
+- **İstek:** Klibi olan şarkı açılınca klip düğmesiz ve net görünsün; kanallara (solo gitar, vokal...) tek dokunuşla geçilsin, geri dönülsün (v79'daki aç/kapa hâli, v80'den iyi bulundu).
+- **Ne:** Klibi saklı şarkıda başlığın altında **Klip | Mikser** anahtarı çıkar.
+  - **Klip:** video tam genişlikte, karartmasız oynar (sessiz, sesle senkron: oynat, duraklat, sar, tempo). Mikser düğmeleri, kanallar ve döngü çubuğu bu görünümde gizlenir;
+    kalan yer sözlere gider. Videoya (ya da köşedeki düğmeye) dokununca tam ekran.
+  - **Mikser:** her şey eskisi gibi (kanallar, döngü, düğmeler); video durur.
+  - Seçim hatırlanır (yeni anahtar `stem-mikser.clipview`; v79/v80'in anahtarları silinmedi, yalnız okunmuyor, yani güncellemeden sonra klip yine doğrudan açılır).
+    Varsayılanı değiştirmek: Ayarlar > Sahne klipleri > "Klibi olan şarkı klip görünümünde açılsın".
+  - Klip eklenmiş şarkıda üstteki "Klip" düğmesi artık yok (anahtar onun yerine); klibi olmayan şarkıda "Klip ekle" duruyor.
+- **Düzeltilen eski hata:** Müzik çalarken kitaplığa dönünce oynatıcının görünmeyen videosu oynamaya devam ediyordu; artık ekran değişince hemen duruyor (müzik sürer).
+- **Ölçüm (tarayıcı, sahte sunucu):** 375x812'de klip görünümü: üst çubuk 64, Sahne satırı 38, anahtar 38, video 16:9 193 px, akor 64, sözler kalanı, alt çubuk 145; taşma yok.
+  412x860'ta video 214 px. Mikser görünümünde yerleşim v80 öncesiyle aynı (kanallar 88-90 px, kayar). Dikey klipte video en çok ekranın %38'i kadar uzar.
+- **Testler:** 77 dosyanın hepsi yeşil (`clipframe_test` yeni yerleşime göre güncellendi). **SW:** v81. **Telefonda denenmedi.**
+- **Telefonda kontrol (4 adım):**
+  1. Ayarlar'da "Sürüm: SW v81" yazmalı (gerekirse uygulamayı kapat-aç).
+  2. Klibi saklı bir şarkıyı aç: üstte "Klip | Mikser", altında klip net görünmeli; çal: video sesle birlikte oynamalı, duraklatınca durmalı.
+  3. "Mikser"e dokun: bütün kanallar ve döngü gelmeli; şarkıyı kapatıp yeniden aç: Mikser görünümünde açılmalı. "Klip"e dokun: klip geri gelmeli.
+  4. Videoya dokun: tam ekran açılmalı. Geri dön, çalarken kitaplığa geç: müzik sürmeli.
 
 ### 16. Klip mikserin ARKASINDA, kanallar önde
 

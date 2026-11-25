@@ -23,6 +23,7 @@ dönülebilsin (aç/kapa); seçim hatırlansın. Hiçbir şey üst üste binmesi
 | v79 ilk deneme (yayınlanmadı) | Akor şeridinin üstüne 16:9 klip kutusu. | Oynatıcı sabit yükseklikte; kanallar ~88 px'e indi, "Sözler" satırı sıkışıp üst üste bindi. |
 | v79 (a0d7ceb, yayını 36d5ebb) | Klip KANALLARIN YERİNDE (kanallar `display:none`), videoda "Mikser" düğmesi, üstteki "Klip" geri getirir; seçim saklanır. | Kanallar görünmüyordu ("solo gitar gitmiş"). Ama kullanıcı sonradan bunu v80'den iyi buldu (aç/kapa net). |
 | v80 (0eb3db2, yayını 32bbe41) | Klip kanal bölgesinin ARKASINDA (absolute, JS ile kanal kutusuna oturtulur, karartılmış, `pointer-events:none`), kanallar önde. | "Hiç olmamış": video kanalların arkasında kayboluyor, net görünmüyor. |
+| v81 | Fikir 1: başlığın altında "Klip \| Mikser" anahtarı. Klip: video akışta, net, tam genişlik (16:9 193-214 px); mikser düğmeleri, kanallar, döngü gizli, kalan yer sözlere. Mikser: eskisi gibi. Seçim `stem-mikser.clipview`'da. Kitaplığa dönünce video durur (eski hata). | Telefonda bekleniyor. |
 
 ## Yerleşim kısıtı (asıl zorluk)
 

@@ -450,6 +450,13 @@ html.ui-new .loop-saved .chip::after { content: ""; position: absolute; left: -2
 html.ui-new .stage-open { min-height: 32px; padding: 0 14px; border-radius: 999px; border: 0; background: var(--grad); color: var(--on-grad); font-weight: 700; font-size: 12px; margin-bottom: 6px; }
 html.ui-new .player-method-row .stage-open { position: relative; }
 html.ui-new .clip-open { min-height: 32px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--accent); background: var(--panel-2); color: var(--text); font-weight: 700; font-size: 12px; margin-bottom: 6px; }
+html.ui-new .view-switch { border: 0; background: var(--panel-2); flex-shrink: 0; }
+html.ui-new .view-switch button[aria-pressed="true"] { background: var(--grad); color: var(--on-grad); }
+/* klip görünümü: mikser gizli olduğundan söz listesi KALAN yeri doldurur (video + sözler). Listenin tabanı 0: video kendi oranındaki
+   boyunu korur, yalnız yer hiç kalmazsa kısalır. */
+html.ui-new #view-player.clip-on .lyrics:has(> .lyrics-body:not([hidden])) { flex: 1 1 auto; }
+html.ui-new #view-player.clip-on .lyrics-body { flex: 1 1 0; }
+html.ui-new #view-player.clip-on .lyrics-list, html.ui-new #view-player.clip-on .chord-grid { flex: 1 1 0; max-height: none; }
 html.ui-new .stage { z-index: 46; }
 
 /* ================= yükleniyor: dönen halka yerine ekolayzır çubukları ================= */

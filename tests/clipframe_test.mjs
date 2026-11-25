@@ -118,13 +118,16 @@ const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8").split(
   check("uygulama arka plandayken video oynamaz", /playing: engine\.playing && !document\.hidden/.test(fnBody("stageClipTick")));
   check("tüm klipleri silmek onay ister", /window\.confirm\(/.test(app.slice(app.indexOf('on("clip-clear"'), app.indexOf('on("clip-clear"') + 600)));
   const clipOpen = app.slice(app.indexOf('on("clip-open", "click"'), app.indexOf('on("clip-open", "click"') + 600);
-  check("oynatıcıdaki Klip düğmesi: klip varsa TAM ekran, klip yoksa klip seçtirir",
-    /openStage\("full"\)/.test(clipOpen) && /el\("clip-file"\)\.click\(\)/.test(clipOpen));
+  check("oynatıcıdaki 'Klip ekle' düğmesi: klip yoksa klip seçtirir, klip varsa gizlenir (yerine Klip | Mikser anahtarı)",
+    /openStage\("full"\)/.test(clipOpen) && /el\("clip-file"\)\.click\(\)/.test(clipOpen) && /chip\.hidden = clipChipHas;/.test(fnBody("refreshClipChip")));
   check("şarkı açılınca klip oynatıcıda DOĞRUDAN yüklenir", /refreshClipChip\(\);\n\s*playerClipLoad\(\);/.test(app));
   check("oynatıcı klibi mevcut döngüden senkron (duraklatılmışken sarınca da), ek döngü yok",
     /stageTick\(time\);\n\s*playerClipTick\(time\);/.test(app) && /playerClipTick\(engine\.visualTime, true\)/.test(fnBody("setPlayIcon")) && !/requestAnimationFrame/.test(fnBody("playerClipTick")));
-  check("oynatıcı ekranı görünmüyorken (kitaplık, sahne, arka plan) video durur",
-    /!document\.hidden && !el\("view-player"\)\.hidden && !stageOpen/.test(fnBody("playerClipTick")));
+  check("oynatıcı ekranı ya da video görünmüyorken (kitaplık, sahne, antrenör, arka plan) video durur",
+    /!document\.hidden && !el\("view-player"\)\.hidden && !stageOpen/.test(fnBody("playerClipTick")) && /video\.offsetWidth > 0/.test(fnBody("playerClipTick"))
+    && /playing: engine\.playing && shown/.test(fnBody("playerClipTick")));
+  check("ekran değişince (kitaplığa dönünce müzik sürer, döngü durur) video hemen durdurulur",
+    /if \(afterViewChange\) afterViewChange\(\);/.test(fnBody("showView")) && /afterViewChange = \(\) => playerClipTick\(engine\.visualTime, true\);/.test(app));
   check("oynatıcı klibi bırakılır: şarkı silinince, klip kaldırılınca, hepsi silinince",
     /gone\.includes\(playerClip\.id\)\) playerClipUnload\(\)/.test(app) && /URL\.revokeObjectURL\(playerClip\.url\)/.test(fnBody("playerClipUnload")));
   check("Klip düğmesi şarkı açılınca güncellenir", /syncCoverUi\(\);\n\s*refreshArtwork\(\);\n\s*refreshClipChip\(\);/.test(app));
@@ -133,14 +136,24 @@ const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8").split(
   check("oynatıcıda Klip düğmesi var", /id="clip-open"/.test(html));
   check("oynatıcı klibi sessiz ve satır içi", /<video class="player-clip-video" id="player-clip-video" muted playsinline/.test(html));
   const css = read("../frontend/css/styles.css");
-  check("klip mikserin ARKASINDA: kanallar (solo gitar vb.) gizlenmez, önde kalır",
-    !/clip-on #channels \{ display: none/.test(css) && /#view-player\.clip-on \.channels \{ position: relative; z-index: 1; \}/.test(css)
-    && /\.player-clip \{ position: absolute; z-index: 0;[^}]*pointer-events: none; \}/.test(css) && !/id="player-clip-hide"/.test(html));
-  check("video kanal bölgesine oturtulur; kanallar görünmüyorsa (antrenör) video da gizlenir",
-    /channels\.offsetTop/.test(fnBody("playerClipPlace")) && /channels\.offsetHeight >= 40/.test(fnBody("playerClipPlace"))
-    && /playerClipPlace\(\)/.test(fnBody("playerClipTick")) && /addEventListener\("resize", \(\) => playerClipPlace\(\)\)/.test(app));
-  check("Ayarlar: 'Klibi mikserin arkasında oynat' anahtarı (yeni anahtar, eski seçim taşınmaz)",
-    /id="setting-mixerclip"/.test(html) && PLAYER_CLIP_KEY === "stem-mikser.mixerclip");
+  check("Klip | Mikser anahtarı: yalnız klibi olan şarkıda, iki düğme, seçim saklanır",
+    /id="view-switch"[^>]*hidden/.test(html) && /id="view-switch-clip"/.test(html) && /id="view-switch-mixer"/.test(html)
+    && /el\("view-switch"\)\.hidden = !has;/.test(fnBody("playerClipApply"))
+    && /on\("view-switch-clip", "click", \(\) => setPlayerClipPref\(true\)\)/.test(app) && /on\("view-switch-mixer", "click", \(\) => setPlayerClipPref\(false\)\)/.test(app)
+    && /PLAYER_CLIP_KEY, on \? "1" : "0"/.test(fnBody("setPlayerClipPref")));
+  check("klip görünümü: video akışta ve NET (karartma/arka plan yok), kanallar/mikser/döngü gizlenir",
+    /\.player-clip \{\s*position: relative; flex: 0 1 auto;/.test(css) && !/\.player-clip::after/.test(css)
+    && /#view-player\.clip-on \.mix-bar, #view-player\.clip-on \.mix-notice, #view-player\.clip-on \.channels, #view-player\.clip-on \.loop-bar \{ display: none; \}/.test(css)
+    && !/opacity: 0\.8/.test(css.slice(css.indexOf(".player-clip-video"), css.indexOf(".player-clip-video") + 200)));
+  check("mikser görünümünde kanallar eskisi gibi (klip görünümü dışında kanal kuralı yok)", !/clip-on #channels|clip-on \.channels \{ position/.test(css));
+  check("videoya ya da köşe düğmesine dokununca tam ekran",
+    /on\("player-clip-video", "click", \(\) => openStage\("full"\)\)/.test(app) && /on\("player-clip-full", "click", \(\) => openStage\("full"\)\)/.test(app) && /id="player-clip-full"/.test(html));
+  check("anahtar ve video akor şeridinin üstünde (Sahne satırının hemen altında)",
+    html.indexOf('id="player-method-row"') < html.indexOf('id="view-switch"') && html.indexOf('id="player-clip"') < html.indexOf('id="chordstrip"'));
+  check("antrenör açıkken anahtar ve video gizli", /#view-player\.trainer-on \.view-switch, #view-player\.trainer-on \.player-clip \{ display: none; \}/.test(css));
+  check("Ayarlar: 'klip görünümünde açılsın' anahtarı (yeni anahtar; v79/v80 seçimi taşınmaz, eski anahtarlar silinmez)",
+    /id="setting-clipview"/.test(html) && !/setting-mixerclip/.test(html + app) && PLAYER_CLIP_KEY === "stem-mikser.clipview"
+    && !/removeItem\(\s*"stem-mikser\.(playerclip|mixerclip)"/.test(app));
   check("sahne videosu sessiz ve satır içi (ses yalnız mikserden)", /<video class="stage-clip" id="stage-clip" muted playsinline/.test(html));
   const sw = read("../frontend/sw.js");
   check("yeni modüller çevrimdışı kabukta", ['"./js/clipframe.js"', '"./js/clipstore.js"', '"./js/mp4audio.js"'].every((m) => sw.includes(m)));
