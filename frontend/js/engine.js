@@ -452,6 +452,8 @@ export class Engine {
       this.transitionGain.gain.value = 1;
       this.seamGain.connect(this.transitionGain);
       this.transitionGain.connect(this.ctx.destination);
+      this.masterMotion = null;
+      this.#syncMasterMotion();                      // 8D klasik kip açıksa karışıma tek zincir
       const created = this.ctx;
       created.onstatechange = () => {
         if (created === this.ctx) this.#handleState();
@@ -754,7 +756,7 @@ export class Engine {
   // başlangıç anına (dönem) göre evrelenir: sonradan açılan kanal (yeni şarkı, alt parça) da aynı turda döner.
 
   #autoPanEntry(name, channel) {
-    if (!this.autoPanFn || !channel) return null;
+    if (!this.autoPanFn || !channel || this.autoPanUniform) return null;
     try {
       const entry = this.autoPanFn(name, channel.parent || "");
       return entry && entry.depth > 0 && entry.rate > 0 ? entry : null;
@@ -772,8 +774,12 @@ export class Engine {
     return Boolean(this.autoPan3d && this.ctx) && this.#autoPanEntry(name, channel) !== null;
   }
 
-  #ensureSpace(strip) {
-    if (strip.space) return strip.space;
+  /**
+   * 3D zinciri (bölücü -> kulak başına gecikme -> birleştirici -> arka gölgesi). Parametreler k-rate: 128 örnekte bir güncellenir.
+   * Her örnekte (a-rate) güncellemek ölçüldü: 6 kanalda ses işleme yükü ~7 kat (arka planda telefon yetişemiyor, cızırtı); k-rate yarıya
+   * indirir, dönüş çok yavaş olduğu için duyulur fark yok.
+   */
+  #makeSpace() {
     const ctx = this.ctx;
     const split = ctx.createChannelSplitter(2);
     const merge = ctx.createChannelMerger(2);
@@ -785,29 +791,28 @@ export class Engine {
     shade.type = "lowpass";
     shade.Q.value = 0.5;
     shade.frequency.value = SPACE_SHADE_MID + SPACE_SHADE_SWING;
+    for (const param of [left.delayTime, right.delayTime, shade.frequency]) {
+      try { param.automationRate = "k-rate"; } catch { /* eski tarayıcı: a-rate kalır */ }
+    }
     split.connect(left, 0);
     split.connect(right, 1);
     left.connect(merge, 0, 0);
     right.connect(merge, 0, 1);
     merge.connect(shade);
     this.fxCreated += 6;
-    strip.space = { split, merge, left, right, shade };
+    return { split, merge, left, right, shade };
+  }
+
+  #ensureSpace(strip) {
+    if (!strip.space) strip.space = this.#makeSpace();
     return strip.space;
   }
 
-  #needsStrip(name, channel) {
-    return !isNeutralFx(effectiveFx(this.channels, name)) || this.#autoPanEntry(name, channel) !== null;
-  }
-
-  #syncLfo(name, channel) {
-    const strip = channel.strip;
-    const entry = strip && strip.active ? this.#autoPanEntry(name, channel) : null;
-    const spatial = Boolean(entry && strip.spatial && strip.space);
-    const target = spatial ? strip.space : strip && strip.pan;
-    const key = entry ? `${this.autoPanVersion}|${entry.rate}|${entry.depth}|${entry.phase}|${spatial ? "3d" : "2d"}` : "";
-    if (channel.lfo && channel.lfo.key === key && channel.lfo.target === target) return;
-    this.#dropLfo(channel);
-    if (!entry) return;
+  /**
+   * Dönüş LFO'ları: sin θ -> pan (düzey farkı) [+ 3D: sin θ -> kulak gecikmeleri (zıt), cos θ -> arka gölgesi]. Evre ortak döneme göre.
+   * Dönen {oscs, gains} (#dropMotion ile bırakılır).
+   */
+  #motion(entry, pan, space) {
     const ctx = this.ctx;
     if (this.autoPanCtx !== ctx) {
       this.autoPanCtx = ctx;
@@ -835,40 +840,103 @@ export class Engine {
       gains.push(gain);
     };
     const d = entry.depth;
+    try { pan.pan.automationRate = "k-rate"; } catch { /* eski tarayıcı */ }
     const side = wave(0);                                                // sin θ: sağ (+) / sol (-)
-    drive(side, d, strip.pan.pan);                                       // düzey farkı
-    if (spatial) {
+    drive(side, d, pan.pan);                                             // düzey farkı
+    if (space) {
       // θ açısında kaynak: yan = d·sin θ, ön = (1 - d) + d·cos θ (dar kanal önde küçük elips çizer).
       const front = wave(Math.PI / 2);                                   // cos θ
-      drive(side, SPACE_ITD_SWING * d, strip.space.left.delayTime);      // ses sağdaysa sol kulağa geç varır
-      drive(side, -SPACE_ITD_SWING * d, strip.space.right.delayTime);
-      strip.space.shade.frequency.value = SPACE_SHADE_MID + SPACE_SHADE_SWING * (1 - d);
-      drive(front, SPACE_SHADE_SWING * d, strip.space.shade.frequency);  // arkadayken tizler yumuşar
+      drive(side, SPACE_ITD_SWING * d, space.left.delayTime);            // ses sağdaysa sol kulağa geç varır
+      drive(side, -SPACE_ITD_SWING * d, space.right.delayTime);
+      space.shade.frequency.value = SPACE_SHADE_MID + SPACE_SHADE_SWING * (1 - d);
+      drive(front, SPACE_SHADE_SWING * d, space.shade.frequency);        // arkadayken tizler yumuşar
     }
     for (const osc of oscs) osc.start(startAt);
-    channel.lfo = { oscs, gains, key, target };
+    return { oscs, gains };
+  }
+
+  #dropMotion(motion) {
+    if (!motion) return;
+    const now = this.ctx ? this.ctx.currentTime : 0;
+    const release = () => {
+      for (const node of [...motion.oscs, ...motion.gains]) {
+        try { node.disconnect(); } catch { /* bağlı değildi */ }
+      }
+    };
+    try {
+      for (const gain of motion.gains) {
+        gain.gain.cancelScheduledValues(now);
+        gain.gain.setTargetAtTime(0, now, 0.08);                         // yumuşak çıkış
+      }
+      motion.oscs[0].onended = release;
+      for (const osc of motion.oscs) osc.stop(now + 0.4);
+    } catch {
+      release();
+    }
+  }
+
+  #needsStrip(name, channel) {
+    return !isNeutralFx(effectiveFx(this.channels, name)) || this.#autoPanEntry(name, channel) !== null;
+  }
+
+  #syncLfo(name, channel) {
+    const strip = channel.strip;
+    const entry = strip && strip.active ? this.#autoPanEntry(name, channel) : null;
+    const spatial = Boolean(entry && strip.spatial && strip.space);
+    const target = spatial ? strip.space : strip && strip.pan;
+    const key = entry ? `${this.autoPanVersion}|${entry.rate}|${entry.depth}|${entry.phase}|${spatial ? "3d" : "2d"}` : "";
+    if (channel.lfo && channel.lfo.key === key && channel.lfo.target === target) return;
+    this.#dropLfo(channel);
+    if (!entry) return;
+    channel.lfo = { ...this.#motion(entry, strip.pan, spatial ? strip.space : null), key, target };
   }
 
   #dropLfo(channel) {
     const lfo = channel && channel.lfo;
     if (!lfo) return;
     channel.lfo = null;
-    const now = this.ctx ? this.ctx.currentTime : 0;
-    const release = () => {
-      for (const node of [...lfo.oscs, ...lfo.gains]) {
-        try { node.disconnect(); } catch { /* bağlı değildi */ }
-      }
-    };
-    try {
-      for (const gain of lfo.gains) {
-        gain.gain.cancelScheduledValues(now);
-        gain.gain.setTargetAtTime(0, now, 0.08);                         // yumuşak çıkış
-      }
-      lfo.oscs[0].onended = release;
-      for (const osc of lfo.oscs) osc.stop(now + 0.4);
-    } catch {
-      release();
+    this.#dropMotion(lfo);
+  }
+
+  // ------------------------------------------------- 8D tek zincir (klasik kip: bütün kanallar AYNI dönüyor)
+  // Kanal başına zincir yerine karışımın tamamına TEK zincir: master -> pan [-> 3D] -> seamGain. Ölçüldü: 6 zincirin yükü ~1 zincire iner.
+
+  #syncMasterMotion() {
+    if (!this.ctx || !this.master || !this.seamGain) return;
+    const entry = this.autoPanUniform;
+    const want = entry ? `${this.autoPanVersion}|${this.autoPan3d ? "3d" : "2d"}` : "";
+    const current = this.masterMotion;
+    if (current && current.key === want && current.ctx === this.ctx) return;
+    if (current) {
+      this.#dropMotion(current.motion);
+      const old = current;
+      // Önce yeni yol (ya da doğrudan bağlantı) kurulur, eski zincir kısa bir süre sonra sökülür (tık yok).
+      try { this.master.disconnect(old.pan); } catch { /* bağlı değildi */ }
+      setTimeout(() => {
+        const nodes = [old.pan, ...(old.space ? [old.space.split, old.space.merge, old.space.left, old.space.right, old.space.shade] : [])];
+        this.#fxRelease(...nodes);
+      }, 500);
+      this.masterMotion = null;
     }
+    if (!entry) {
+      try { this.master.disconnect(this.seamGain); } catch { /* bağlı değildi */ }
+      this.master.connect(this.seamGain);
+      return;
+    }
+    const pan = this.ctx.createStereoPanner();
+    pan.channelCount = 2;
+    pan.channelCountMode = "explicit";
+    pan.channelInterpretation = "speakers";
+    const space = this.autoPan3d ? this.#makeSpace() : null;
+    if (space) {
+      pan.connect(space.split);
+      space.shade.connect(this.seamGain);
+    } else {
+      pan.connect(this.seamGain);
+    }
+    try { this.master.disconnect(this.seamGain); } catch { /* bağlı değildi */ }
+    this.master.connect(pan);
+    this.masterMotion = { key: want, ctx: this.ctx, pan, space, motion: this.#motion(entry, pan, space) };
   }
 
   /**
@@ -879,12 +947,15 @@ export class Engine {
     const was3d = Boolean(this.autoPan3d);
     this.autoPanFn = typeof planFn === "function" ? planFn : null;
     this.autoPan3d = Boolean(space);
+    // Bütün kanallar aynı dönüyorsa (planFn.uniform) kanal başına değil karışıma tek zincir.
+    this.autoPanUniform = this.autoPanFn && this.autoPanFn.uniform ? this.autoPanFn("", "") : null;
     this.autoPanVersion = (this.autoPanVersion || 0) + 1;
     if (!this.autoPanFn) {
       this.autoPanCtx = null;
       for (const channel of this.channels.values()) this.#dropLfo(channel);
     }
     this.#applyStrips();
+    this.#syncMasterMotion();
     // 2D <-> 3D geçişinde açık şeritlerin çıkışı değişir (panner -> hedef / panner -> 3D zinciri -> hedef): yeniden bağla.
     if (was3d !== this.autoPan3d && this.ctx && this.fxTarget) {
       for (const [name, channel] of this.channels) {

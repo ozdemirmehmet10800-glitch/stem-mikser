@@ -35,7 +35,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v85 (Nightcore, yumuşak geçiş, kitaplıkta klip önizlemesi).
+- **Son sürüm:** SW v86 (8D hafifletildi: arka planda cızırtı).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -44,6 +44,21 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 8D hafifletildi (uygulamadan çıkınca cızırtı)
+
+- **Sorun:** "Uygulamadan çıkınca cızırtı artıyor." Arka planda Android işlemciyi kısıyor; ses ağırsa yetişemiyor.
+- **Ölçüm (tarayıcıda, 20 sn ses, 6 kanal):** 8D kapalı 209 ms; eski 3D 1369 ms (6,5 kat). Ağırlık, 3D zincirindeki ayarların her ses örneğinde
+  (saniyede 48 bin kez) yeniden hesaplanmasından ve 6 kanalın her birinde ayrı zincir olmasından.
+- **Düzeltme:** (1) 8D ayarları 128 örnekte bir güncelleniyor (dönüş çok yavaş, fark duyulmuyor; tık testi 0). (2) Klasik 8D'de bütün kanallar
+  aynı döndüğü için karışıma TEK zincir. Yeni yük: klasik 8D 285 ms (eskisinden ~5 kat hafif, 8D kapalıya göre yalnız 1,4 kat); kanal kanal
+  623 ms (~2 kat hafif). Uygulamada doğrulandı: klasik kipte 1 zincir, ses ±0,85 dönüyor.
+- **Bilinen:** arka planda en hafif kip klasik 8D'dir; hâlâ cızırtı olursa kanal kanal kipten klasiğe geç ya da Ayarlar'dan 3D'yi kapat.
+  Telefonda denenmedi.
+- **SW:** v86.
+- **Telefonda kontrol (2 adım):**
+  1. 8D açıkken uygulamadan çık (ana ekrana dön), birkaç dakika dinle: cızırtı olmamalı.
+  2. Aynısını "8D kanal" ve 8D kapalıyken dene; fark varsa hangisinde olduğunu söyle.
 
 ### Nightcore, şarkılar arası yumuşak geçiş, kitaplıkta klip önizlemesi
 

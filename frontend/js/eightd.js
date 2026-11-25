@@ -66,8 +66,13 @@ export function nextEightDMode(mode) {
 export function eightDPlan({ mode = "off", speed = "medium" } = {}) {
   if (mode !== "all" && mode !== "stems") return null;
   const base = EIGHTD_SPEEDS[speed] || EIGHTD_SPEEDS.medium;
+  if (mode === "all") {
+    // Bütün kanallar aynı: motor kanal başına değil karışıma TEK zincir kurar (6 kat daha hafif; arka planda cızırtı yapmaz).
+    const uniform = () => ({ rate: base, depth: EIGHTD_WIDTH, phase: 0 });
+    uniform.uniform = true;
+    return uniform;
+  }
   return (name, parent = "") => {
-    if (mode === "all") return { rate: base, depth: EIGHTD_WIDTH, phase: 0 };
     const key = String(parent || name || "");
     const motion = Object.prototype.hasOwnProperty.call(STEM_MOTION, key) ? STEM_MOTION[key] : { rate: 1, width: 0.9, phase: hashTurn(key) };
     if (!motion) return null;

@@ -22,6 +22,7 @@ check("kapalı: plan yok (motor 8D'yi kaldırır)", eightDPlan({ mode: "off" }) 
   check("klasik 8D: bütün kanallar AYNI hız, genişlik ve evrede (şarkı birlikte döner)",
     entries.every((e) => e.rate === EIGHTD_SPEEDS.medium && e.depth === EIGHTD_WIDTH && e.phase === 0));
   check("klasik 8D: vokal de döner", plan("vocals") !== null);
+  check("klasik 8D planı 'tek zincir' işaretli (motor karışıma tek zincir kurar)", plan.uniform === true && eightDPlan({ mode: "stems" }).uniform !== true);
 }
 {
   const plan = eightDPlan({ mode: "stems", speed: "slow" });
@@ -77,17 +78,22 @@ check("8D düğmesi: kapalı -> klasik -> kanal kanal -> kapalı", nextEightDMod
   check("motor: 8D açıkken kanal şeridi devrede (pan nötr olsa da)", /const active = this\.#needsStrip\(name, channel\);/.test(engine) && /#autoPanEntry\(name, channel\) !== null/.test(body("#needsStrip")));
   check("motor: nötre dönen şerit kontrolü 8D'yi hesaba katar (açıkken şerit sökülmez)", (engine.match(/!this\.#needsStrip\(name, channel\)/g) || []).length === 2);
   check("motor: dönüş ses kartında (osilatör -> derinlik -> StereoPanner.pan), kare döngüsü yok",
-    /drive\(side, d, strip\.pan\.pan\)/.test(body("#syncLfo")) && /createOscillator\(\)/.test(body("#syncLfo")) && !/requestAnimationFrame|setInterval/.test(body("#syncLfo")));
-  check("motor: ortak döneme göre evre (sonradan açılan kanal aynı turda)", /entry\.rate \* \(startAt - this\.autoPanEpoch\)/.test(body("#syncLfo")) && /setPeriodicWave/.test(body("#syncLfo")));
-  check("motor: yumuşak giriş/çıkış (tık yok)", /setTargetAtTime\(amount/.test(body("#syncLfo")) && /setTargetAtTime\(0, now/.test(body("#dropLfo")));
+    /drive\(side, d, pan.pan\)/.test(body("#motion")) && /createOscillator\(\)/.test(body("#motion")) && !/requestAnimationFrame|setInterval/.test(body("#motion")));
+  check("motor: ortak döneme göre evre (sonradan açılan kanal aynı turda)", /entry\.rate \* \(startAt - this\.autoPanEpoch\)/.test(body("#motion")) && /setPeriodicWave/.test(body("#motion")));
+  check("motor: yumuşak giriş/çıkış (tık yok)", /setTargetAtTime\(amount/.test(body("#motion")) && /setTargetAtTime\(0, now/.test(body("#dropMotion")));
   check("motor 3D: tarayıcının HRTF düğümü KULLANILMAZ (hareketli kaynakta cızırtı yapıyor, ölçüldü)", !/createPanner\(|panningModel/.test(engine));
   check("motor 3D: kulak başına gecikme (zaman farkı) ve arka gölgesi süzgeci",
-    /createDelay\(0\.01\)/.test(body("#ensureSpace")) && /type = "lowpass"/.test(body("#ensureSpace")) && /SPACE_ITD_SWING = 0\.0006/.test(engine));
+    /createDelay\(0\.01\)/.test(body("#makeSpace")) && /type = "lowpass"/.test(body("#makeSpace")) && /SPACE_ITD_SWING = 0\.0006/.test(engine));
   check("motor 3D: değerler LFO'larla pürüzsüz sürülür (gecikmeler zıt yönde, süzgeç ön-arka ile)",
-    /drive\(side, SPACE_ITD_SWING \* d, strip\.space\.left\.delayTime\)/.test(body("#syncLfo")) && /drive\(side, -SPACE_ITD_SWING \* d, strip\.space\.right\.delayTime\)/.test(body("#syncLfo"))
-    && /drive\(front, SPACE_SHADE_SWING \* d, strip\.space\.shade\.frequency\)/.test(body("#syncLfo")) && /wave\(Math\.PI \/ 2\)/.test(body("#syncLfo")));
+    /drive\(side, SPACE_ITD_SWING \* d, space.left\.delayTime\)/.test(body("#motion")) && /drive\(side, -SPACE_ITD_SWING \* d, space.right\.delayTime\)/.test(body("#motion"))
+    && /drive\(front, SPACE_SHADE_SWING \* d, space.shade\.frequency\)/.test(body("#motion")) && /wave\(Math\.PI \/ 2\)/.test(body("#motion")));
   check("motor 3D: 2D <-> 3D geçişinde açık şeritler yeniden bağlanır", /was3d !== this\.autoPan3d/.test(body("setAutoPan")) && /Boolean\(strip\.spatial\) === spatial/.test(engine));
   check("Ayarlar: '3D' anahtarı", /id="setting-eightd-3d"/.test(read("../frontend/index.html")) && /on\("setting-eightd-3d", "change"/.test(read("../frontend/js/app.js")));
+  check("hafif: 8D parametreleri k-rate (128 örnekte bir; her örnekte güncellemek yükü ~7 kat artırıyordu)",
+    /param\.automationRate = "k-rate"/.test(body("#makeSpace")) && /pan\.pan\.automationRate = "k-rate"/.test(body("#motion")));
+  check("hafif: klasik 8D karışıma TEK zincir (kanal başına değil)", /this\.master\.connect\(pan\)/.test(body("#syncMasterMotion"))
+    && /this\.autoPanUniform\) return null;/.test(body("#autoPanEntry")) && /this\.#syncMasterMotion\(\);/.test(body("setAutoPan")));
+  check("hafif: 8D kapanınca karışım doğrudan bağlanır (master -> seamGain)", /if \(!entry\) \{\s*try \{ this\.master\.disconnect\(this\.seamGain\); \}[\s\S]{0,80}this\.master\.connect\(this\.seamGain\);/.test(body("#syncMasterMotion")));
   check("motor: şerit atılınca LFO da atılır", /#disposeStrip\(channel\) \{\n    this\.#dropLfo\(channel\);/.test(engine));
 }
 
