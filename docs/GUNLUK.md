@@ -37,7 +37,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v83 (8D + gerçek 3D dahil).
+- **Son sürüm:** SW v84 (8D + cızırtısız 3D).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -62,6 +62,11 @@
   Her kanal kulak modeliyle (HRTF) başın etrafında bir çember üzerinde gezer: önünden, sağından, arkandan, solundan. Dar kanallar (bas) önde
   küçük elips çizer. Tarayıcı desteklemezse kendiliğinden sağ-sol dönüşe düşer. Ölçüm: 6 kanala HRTF bağlandı, ses 8 sn'lik turla dönüyor;
   sağ-sol farkı 2D'ye göre daha doğal/yumuşak (yön tını ipuçlarıyla verilir). Daha belirgin sağ-sol isteyen 3D'yi kapatabilir. Telefonda denenmedi.
+- **Düzeltme (v84): 3D'de cızırtı.** Kullanıcı "güzel ama cızırtı oluyor" dedi. Ölçüldü: tarayıcının HRTF 3D düğümü HAREKETLİ seste tık/sıçrama
+  üretiyor (8 sn'de kanal başına ~370; 2D dönüşte 0). Konumu adım adım ya da rampayla güncellemek de düzeltmedi. HRTF bırakıldı; 3D artık kulağın
+  yön ipuçlarıyla kendi zincirimizde: düzey farkı + uzak kulağa <1 ms gecikme (zaman farkı) + ses arkadayken tizleri yumuşatan süzgeç (arka gölgesi),
+  hepsi pürüzsüz LFO ile. Aynı ölçümde dönüş boyunca 0 sıçrama (yalnız sesin başladığı ilk 4 ms'de gecikme hattı dolarken). Sağ-sol hareketi de
+  daha belirgin (±0,86). 3D açılıp kapanırken bir kez küçük bir geçiş olabilir. Telefonda denenmedi.
 - **Telefonda kontrol (3 adım):**
   1. Kulaklık tak, şarkıyı aç, "8D"ye dokun: ses başının etrafında dönmeli.
   2. Bir daha dokun ("8D kanal"): vokal ortada kalmalı, enstrümanlar dönmeli.

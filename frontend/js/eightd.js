@@ -30,7 +30,7 @@ function hashTurn(name) {
   return (h % 1000) / 1000;
 }
 
-/** Saklanan durum: {mode: "off"|"all"|"stems", speed: "slow"|"medium"|"fast", space: 3D (HRTF) mi}. Bozuk/eksik -> kapalı, orta, 3D açık. */
+/** Saklanan durum: {mode: "off"|"all"|"stems", speed: "slow"|"medium"|"fast", space: 3D mi (önden-arkadan)}. Bozuk/eksik -> kapalı, orta, 3D açık. */
 export function readEightD(storage) {
   let raw = null;
   try {

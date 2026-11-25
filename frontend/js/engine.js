@@ -39,6 +39,12 @@ import {
 } from "./fx.js";
 import { mapLoop, turnAt, normalizeLoop, seekClosesLoop } from "./loop.js";
 
+// 8D 3D zinciri: kulak başına gecikme (taban 0,7 ms, ±0,6 ms: baş genişliği kadar) ve arka gölgesi süzgeci (önde ~20 kHz, arkada ~3,5 kHz).
+const SPACE_ITD_BASE = 0.0007;
+const SPACE_ITD_SWING = 0.0006;
+const SPACE_SHADE_MID = 11750;
+const SPACE_SHADE_SWING = 8250;
+
 export const STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"];
 
 export const STEM_LABELS = {
@@ -627,7 +633,10 @@ export class Engine {
     this.#dropLfo(channel);
     const strip = channel.strip;
     if (!strip) return;
-    if (strip.hrtf) this.#fxRelease(strip.hrtf);
+    if (strip.space) {
+      const { split, merge, left, right, shade } = strip.space;
+      this.#fxRelease(split, merge, left, right, shade);
+    }
     this.#fxRelease(strip.lo, strip.mid, strip.hi, strip.pan, strip.send);
     channel.strip = null;
   }
@@ -687,9 +696,9 @@ export class Engine {
       } catch {
         /* bağlı değildi */
       }
-      if (strip.hrtf) {
+      if (strip.space) {
         try {
-          strip.hrtf.disconnect();
+          strip.space.shade.disconnect();
         } catch {
           /* bağlı değildi */
         }
@@ -709,10 +718,10 @@ export class Engine {
     if (!wasActive) this.#setStripParams(live, neutralFx(), true);   // kimlik değeriyle gir
     gain.connect(live.lo);
     if (spatial) {
-      // 3D (HRTF): panner -> HRTF uzay paneli -> hedef. Konumu LFO'lar başın etrafında çember üzerinde gezdirir.
-      const hrtf = this.#ensureHrtf(live);
-      live.pan.connect(hrtf);
-      hrtf.connect(target);
+      // 3D: panner (düzey farkı) -> kulak başına gecikme (zaman farkı) -> arka gölgesi -> hedef. Değerleri LFO'lar sürer (#syncLfo).
+      const space = this.#ensureSpace(live);
+      live.pan.connect(space.split);
+      space.shade.connect(target);
     } else {
       live.pan.connect(target);
     }
@@ -740,33 +749,36 @@ export class Engine {
     }
   }
 
-  /** 3D (HRTF) istenmiş, kanal dönüyor ve tarayıcı konum parametrelerini destekliyor mu? */
+  /**
+   * 3D istenmiş ve kanal dönüyor mu? Tarayıcının HRTF PannerNode'u HAREKETLİ kaynakta tık/cızırtı üretiyor (ölçüldü: 8 sn'de kanal
+   * başına ~370 sıçrama), o yüzden kullanılmıyor. Yerine kulağın yön ipuçları ayrı ayrı ve pürüzsüz verilir: düzey farkı (StereoPanner),
+   * varış zamanı farkı (kulak başına <1 ms gecikme) ve arka gölgesi (ses arkadayken tizleri yumuşatan alçak geçiren süzgeç).
+   */
   #wants3d(name, channel) {
-    if (!this.autoPan3d || !this.ctx) return false;
-    if (this.hrtfSupported === undefined) {
-      try {
-        const probe = this.ctx.createPanner();
-        this.hrtfSupported = Boolean(probe.positionX && probe.positionZ);
-      } catch {
-        this.hrtfSupported = false;
-      }
-    }
-    return this.hrtfSupported && this.#autoPanEntry(name, channel) !== null;
+    return Boolean(this.autoPan3d && this.ctx) && this.#autoPanEntry(name, channel) !== null;
   }
 
-  #ensureHrtf(strip) {
-    if (strip.hrtf) return strip.hrtf;
-    const node = this.ctx.createPanner();
-    this.fxCreated += 1;
-    node.panningModel = "HRTF";
-    node.distanceModel = "inverse";
-    node.refDistance = 1;
-    node.rolloffFactor = 0;                  // uzaklıkla ses kısılmasın: yalnız yön değişir
-    node.positionX.value = 0;
-    node.positionY.value = 0;
-    node.positionZ.value = -1;               // dinleyici -z'ye bakar: başlangıç önde
-    strip.hrtf = node;
-    return node;
+  #ensureSpace(strip) {
+    if (strip.space) return strip.space;
+    const ctx = this.ctx;
+    const split = ctx.createChannelSplitter(2);
+    const merge = ctx.createChannelMerger(2);
+    const left = ctx.createDelay(0.01);
+    const right = ctx.createDelay(0.01);
+    left.delayTime.value = SPACE_ITD_BASE;
+    right.delayTime.value = SPACE_ITD_BASE;
+    const shade = ctx.createBiquadFilter();
+    shade.type = "lowpass";
+    shade.Q.value = 0.5;
+    shade.frequency.value = SPACE_SHADE_MID + SPACE_SHADE_SWING;
+    split.connect(left, 0);
+    split.connect(right, 1);
+    left.connect(merge, 0, 0);
+    right.connect(merge, 0, 1);
+    merge.connect(shade);
+    this.fxCreated += 6;
+    strip.space = { split, merge, left, right, shade };
+    return strip.space;
   }
 
   #needsStrip(name, channel) {
@@ -776,8 +788,8 @@ export class Engine {
   #syncLfo(name, channel) {
     const strip = channel.strip;
     const entry = strip && strip.active ? this.#autoPanEntry(name, channel) : null;
-    const spatial = Boolean(entry && strip.spatial && strip.hrtf);
-    const target = spatial ? strip.hrtf : strip && strip.pan;
+    const spatial = Boolean(entry && strip.spatial && strip.space);
+    const target = spatial ? strip.space : strip && strip.pan;
     const key = entry ? `${this.autoPanVersion}|${entry.rate}|${entry.depth}|${entry.phase}|${spatial ? "3d" : "2d"}` : "";
     if (channel.lfo && channel.lfo.key === key && channel.lfo.target === target) return;
     this.#dropLfo(channel);
@@ -789,36 +801,38 @@ export class Engine {
     }
     const startAt = ctx.currentTime + 0.02;
     const phase = entry.phase + 2 * Math.PI * entry.rate * (startAt - this.autoPanEpoch);
+    const oscs = [];
+    const gains = [];
     // sin(wt + evre) = sin(evre)·cos(wt) + cos(evre)·sin(wt): evre periyodik dalgayla verilir (osilatörün evre ayarı yok).
     const wave = (shift) => {
       const osc = ctx.createOscillator();
       osc.setPeriodicWave(ctx.createPeriodicWave(new Float32Array([0, Math.sin(phase + shift)]),
         new Float32Array([0, Math.cos(phase + shift)]), { disableNormalization: true }));
       osc.frequency.value = entry.rate;
-      const depth = ctx.createGain();
-      depth.gain.value = 0;
-      depth.gain.setTargetAtTime(entry.depth, ctx.currentTime, 0.3);   // yumuşak giriş (tık yok)
-      osc.connect(depth);
-      return { osc, depth };
+      oscs.push(osc);
+      return osc;
     };
-    const parts = [];
+    const drive = (osc, amount, param) => {
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      gain.gain.setTargetAtTime(amount, ctx.currentTime, 0.3);           // yumuşak giriş (tık yok)
+      osc.connect(gain);
+      gain.connect(param);
+      gains.push(gain);
+    };
+    const d = entry.depth;
+    const side = wave(0);                                                // sin θ: sağ (+) / sol (-)
+    drive(side, d, strip.pan.pan);                                       // düzey farkı
     if (spatial) {
-      // Başın etrafında çember (dar kanal önde küçük elips): x = d·sin(θ), z = -(1-d) - d·cos(θ) = -(1-d) + d·sin(θ - π/2).
-      const x = wave(0);
-      const z = wave(-Math.PI / 2);
-      strip.hrtf.positionX.value = 0;
-      strip.hrtf.positionZ.value = -(1 - entry.depth);
-      strip.pan.pan.cancelScheduledValues(ctx.currentTime);
-      x.depth.connect(strip.hrtf.positionX);
-      z.depth.connect(strip.hrtf.positionZ);
-      parts.push(x, z);
-    } else {
-      const p = wave(0);
-      p.depth.connect(strip.pan.pan);
-      parts.push(p);
+      // θ açısında kaynak: yan = d·sin θ, ön = (1 - d) + d·cos θ (dar kanal önde küçük elips çizer).
+      const front = wave(Math.PI / 2);                                   // cos θ
+      drive(side, SPACE_ITD_SWING * d, strip.space.left.delayTime);      // ses sağdaysa sol kulağa geç varır
+      drive(side, -SPACE_ITD_SWING * d, strip.space.right.delayTime);
+      strip.space.shade.frequency.value = SPACE_SHADE_MID + SPACE_SHADE_SWING * (1 - d);
+      drive(front, SPACE_SHADE_SWING * d, strip.space.shade.frequency);  // arkadayken tizler yumuşar
     }
-    for (const part of parts) part.osc.start(startAt);
-    channel.lfo = { parts, key, target };
+    for (const osc of oscs) osc.start(startAt);
+    channel.lfo = { oscs, gains, key, target };
   }
 
   #dropLfo(channel) {
@@ -826,19 +840,20 @@ export class Engine {
     if (!lfo) return;
     channel.lfo = null;
     const now = this.ctx ? this.ctx.currentTime : 0;
-    for (const part of lfo.parts || []) {
-      const release = () => {
-        try { part.osc.disconnect(); } catch { /* bağlı değildi */ }
-        try { part.depth.disconnect(); } catch { /* bağlı değildi */ }
-      };
-      try {
-        part.depth.gain.cancelScheduledValues(now);
-        part.depth.gain.setTargetAtTime(0, now, 0.08);                  // yumuşak çıkış
-        part.osc.onended = release;
-        part.osc.stop(now + 0.4);
-      } catch {
-        release();
+    const release = () => {
+      for (const node of [...lfo.oscs, ...lfo.gains]) {
+        try { node.disconnect(); } catch { /* bağlı değildi */ }
       }
+    };
+    try {
+      for (const gain of lfo.gains) {
+        gain.gain.cancelScheduledValues(now);
+        gain.gain.setTargetAtTime(0, now, 0.08);                         // yumuşak çıkış
+      }
+      lfo.oscs[0].onended = release;
+      for (const osc of lfo.oscs) osc.stop(now + 0.4);
+    } catch {
+      release();
     }
   }
 
@@ -846,17 +861,17 @@ export class Engine {
    * 8D: planFn(kanal adı, ana kanal adı) -> {rate, depth, phase} | null; null/undefined verilirse 8D kapanır.
    * Kanallar yoksa yalnız saklanır; şarkı yüklenince kanal yönlendirmesinde uygulanır.
    */
-  setAutoPan(planFn, { hrtf = false } = {}) {
+  setAutoPan(planFn, { space = false } = {}) {
     const was3d = Boolean(this.autoPan3d);
     this.autoPanFn = typeof planFn === "function" ? planFn : null;
-    this.autoPan3d = Boolean(hrtf);
+    this.autoPan3d = Boolean(space);
     this.autoPanVersion = (this.autoPanVersion || 0) + 1;
     if (!this.autoPanFn) {
       this.autoPanCtx = null;
       for (const channel of this.channels.values()) this.#dropLfo(channel);
     }
     this.#applyStrips();
-    // 2D <-> 3D geçişinde açık şeritlerin çıkışı değişir (panner -> hedef / panner -> HRTF -> hedef): yeniden bağla.
+    // 2D <-> 3D geçişinde açık şeritlerin çıkışı değişir (panner -> hedef / panner -> 3D zinciri -> hedef): yeniden bağla.
     if (was3d !== this.autoPan3d && this.ctx && this.fxTarget) {
       for (const [name, channel] of this.channels) {
         if (channel.gainNode && channel.strip && channel.strip.active) this.#routeChannel(name, channel, this.fxTarget, true);

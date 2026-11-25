@@ -148,7 +148,7 @@ const engine = new Engine();
 // Mikserdeki "8D" düğmesi: kapalı -> klasik (bütün şarkı) -> kanal kanal -> kapalı. Seçim bu telefonda saklanır, her şarkıda geçerli.
 function applyEightD(announce = false) {
   const state = readEightD(safeStorage().storage);
-  engine.setAutoPan(eightDPlan(state), { hrtf: state.space });
+  engine.setAutoPan(eightDPlan(state), { space: state.space });
   const chip = document.getElementById("eightd-toggle");
   if (chip) {
     chip.setAttribute("aria-pressed", String(state.mode !== "off"));

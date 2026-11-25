@@ -73,20 +73,21 @@ check("8D düğmesi: kapalı -> klasik -> kanal kanal -> kapalı", nextEightDMod
     const next = engine.indexOf("\n  }\n", start);
     return start < 0 ? "" : engine.slice(start, next);
   };
-  check("motor: setAutoPan var; kapanınca bütün LFO'lar bırakılır", /setAutoPan\(planFn, \{ hrtf = false \} = \{\}\)/.test(engine) && /for \(const channel of this\.channels\.values\(\)\) this\.#dropLfo\(channel\)/.test(body("setAutoPan")));
+  check("motor: setAutoPan var; kapanınca bütün LFO'lar bırakılır", /setAutoPan\(planFn, \{ space = false \} = \{\}\)/.test(engine) && /for \(const channel of this\.channels\.values\(\)\) this\.#dropLfo\(channel\)/.test(body("setAutoPan")));
   check("motor: 8D açıkken kanal şeridi devrede (pan nötr olsa da)", /const active = this\.#needsStrip\(name, channel\);/.test(engine) && /#autoPanEntry\(name, channel\) !== null/.test(body("#needsStrip")));
   check("motor: nötre dönen şerit kontrolü 8D'yi hesaba katar (açıkken şerit sökülmez)", (engine.match(/!this\.#needsStrip\(name, channel\)/g) || []).length === 2);
   check("motor: dönüş ses kartında (osilatör -> derinlik -> StereoPanner.pan), kare döngüsü yok",
-    /depth\.connect\(strip\.pan\.pan\)/.test(body("#syncLfo")) && /createOscillator\(\)/.test(body("#syncLfo")) && !/requestAnimationFrame|setInterval/.test(body("#syncLfo")));
+    /drive\(side, d, strip\.pan\.pan\)/.test(body("#syncLfo")) && /createOscillator\(\)/.test(body("#syncLfo")) && !/requestAnimationFrame|setInterval/.test(body("#syncLfo")));
   check("motor: ortak döneme göre evre (sonradan açılan kanal aynı turda)", /entry\.rate \* \(startAt - this\.autoPanEpoch\)/.test(body("#syncLfo")) && /setPeriodicWave/.test(body("#syncLfo")));
-  check("motor: yumuşak giriş/çıkış (tık yok)", /setTargetAtTime\(entry\.depth/.test(body("#syncLfo")) && /setTargetAtTime\(0, now/.test(body("#dropLfo")));
-  check("motor 3D: HRTF uzay paneli, uzaklıkla kısılma yok, başlangıç önde",
-    /panningModel = "HRTF"/.test(body("#ensureHrtf")) && /rolloffFactor = 0/.test(body("#ensureHrtf")) && /positionZ\.value = -1/.test(body("#ensureHrtf")));
-  check("motor 3D: konum LFO'larla çember üzerinde (x ve z), StereoPanner'a ayrıca dönüş verilmez",
-    /x\.depth\.connect\(strip\.hrtf\.positionX\)/.test(body("#syncLfo")) && /z\.depth\.connect\(strip\.hrtf\.positionZ\)/.test(body("#syncLfo")) && /wave\(-Math\.PI \/ 2\)/.test(body("#syncLfo")));
-  check("motor 3D: desteklenmeyen tarayıcıda 2D'ye düşer", /probe\.positionX && probe\.positionZ/.test(body("#wants3d")));
+  check("motor: yumuşak giriş/çıkış (tık yok)", /setTargetAtTime\(amount/.test(body("#syncLfo")) && /setTargetAtTime\(0, now/.test(body("#dropLfo")));
+  check("motor 3D: tarayıcının HRTF düğümü KULLANILMAZ (hareketli kaynakta cızırtı yapıyor, ölçüldü)", !/createPanner\(|panningModel/.test(engine));
+  check("motor 3D: kulak başına gecikme (zaman farkı) ve arka gölgesi süzgeci",
+    /createDelay\(0\.01\)/.test(body("#ensureSpace")) && /type = "lowpass"/.test(body("#ensureSpace")) && /SPACE_ITD_SWING = 0\.0006/.test(engine));
+  check("motor 3D: değerler LFO'larla pürüzsüz sürülür (gecikmeler zıt yönde, süzgeç ön-arka ile)",
+    /drive\(side, SPACE_ITD_SWING \* d, strip\.space\.left\.delayTime\)/.test(body("#syncLfo")) && /drive\(side, -SPACE_ITD_SWING \* d, strip\.space\.right\.delayTime\)/.test(body("#syncLfo"))
+    && /drive\(front, SPACE_SHADE_SWING \* d, strip\.space\.shade\.frequency\)/.test(body("#syncLfo")) && /wave\(Math\.PI \/ 2\)/.test(body("#syncLfo")));
   check("motor 3D: 2D <-> 3D geçişinde açık şeritler yeniden bağlanır", /was3d !== this\.autoPan3d/.test(body("setAutoPan")) && /Boolean\(strip\.spatial\) === spatial/.test(engine));
-  check("Ayarlar: 'Gerçek 3D' anahtarı", /id="setting-eightd-3d"/.test(read("../frontend/index.html")) && /on\("setting-eightd-3d", "change"/.test(read("../frontend/js/app.js")));
+  check("Ayarlar: '3D' anahtarı", /id="setting-eightd-3d"/.test(read("../frontend/index.html")) && /on\("setting-eightd-3d", "change"/.test(read("../frontend/js/app.js")));
   check("motor: şerit atılınca LFO da atılır", /#disposeStrip\(channel\) \{\n    this\.#dropLfo\(channel\);/.test(engine));
 }
 
@@ -97,7 +98,7 @@ check("8D düğmesi: kapalı -> klasik -> kanal kanal -> kapalı", nextEightDMod
   const sw = read("../frontend/sw.js");
   check("mikserde 8D düğmesi", /id="eightd-toggle"[^>]*aria-pressed="false"/.test(html));
   check("düğme kipi döndürür, saklar ve uygular", /storeEightD\(storage, \{ \.\.\.state, mode: nextEightDMode\(state\.mode\) \}\);\n\s*applyEightD\(true\);/.test(app));
-  check("açılışta saklı 8D seçimi uygulanır (her şarkıda geçerli)", /\napplyEightD\(\);\n/.test(app) && /engine\.setAutoPan\(eightDPlan\(state\), \{ hrtf: state\.space \}\)/.test(app));
+  check("açılışta saklı 8D seçimi uygulanır (her şarkıda geçerli)", /\napplyEightD\(\);\n/.test(app) && /engine\.setAutoPan\(eightDPlan\(state\), \{ space: state\.space \}\)/.test(app));
   check("Ayarlar: dönüş hızı seçimi", /id="setting-eightd-speed"/.test(html) && /on\("setting-eightd-speed", "change"/.test(app));
   check("8D modülü çevrimdışı kabukta", sw.includes('"./js/eightd.js"'));
   check("eightd.js ağa bağlanmaz", !/\bfetch\(|XMLHttpRequest/.test(read("../frontend/js/eightd.js")));
