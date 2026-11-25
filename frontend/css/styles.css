@@ -1582,6 +1582,7 @@ button.cc.more {
 .stage.clip-full .stage-line { margin-top: 2px; font-size: clamp(16px, 4.6vw, 26px); }
 .stage.clip-full .stage-next-chord, .stage.clip-full .stage-line-next { display: none; }
 .clip-open { flex: 0 0 auto; }
+#eightd-toggle[aria-pressed="true"] { background: var(--accent-dim, rgba(127, 231, 255, 0.18)); border-color: var(--accent, #7fe7ff); color: var(--text); }
 /* oynatıcıda klip: KLİP | MİKSER görünümü. Klip görünümünde video akışta, tam genişlikte ve NET (karartma yok); mikser düğmeleri, kanallar
    ve döngü çubuğu gizlenir (yer videoya ve sözlere kalır). "Mikser" hepsini olduğu gibi geri getirir. Hiçbir şey üst üste binmez. */
 .view-switch { display: flex; flex: 0 0 auto; gap: 4px; padding: 3px; margin: 0 0 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); }

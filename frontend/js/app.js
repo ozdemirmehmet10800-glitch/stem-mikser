@@ -9,6 +9,7 @@ import {
   Engine, STEM_ORDER, STEM_LABELS, gainToDb, isMobile, longSongThresholdSec,
   nativeSampleRate,
 } from "./engine.js";
+import { eightDPlan, nextEightDMode, readEightD, storeEightD, EIGHTD_TEXT } from "./eightd.js";
 import { Mixer } from "./mixer.js";
 import {
   snapPoint, barLoop, hasBars, BAR_CHOICES, minLoopLength, dragPoint, normalizeLoop,
@@ -142,6 +143,21 @@ const views = {
 let settings = loadSettings();
 let api = new Api(settings);
 const engine = new Engine();
+
+// ---------------------------------------------------------------- 8D (mantık js/eightd.js; dönüş ses motorunda, engine.setAutoPan)
+// Mikserdeki "8D" düğmesi: kapalı -> klasik (bütün şarkı) -> kanal kanal -> kapalı. Seçim bu telefonda saklanır, her şarkıda geçerli.
+function applyEightD(announce = false) {
+  const state = readEightD(safeStorage().storage);
+  engine.setAutoPan(eightDPlan(state));
+  const chip = document.getElementById("eightd-toggle");
+  if (chip) {
+    chip.setAttribute("aria-pressed", String(state.mode !== "off"));
+    chip.textContent = state.mode === "stems" ? "8D kanal" : "8D";
+    chip.setAttribute("aria-label", EIGHTD_TEXT[state.mode]);
+  }
+  if (announce) notePlayer(EIGHTD_TEXT[state.mode], "ok", 6000);
+}
+applyEightD();
 let mixer = null;
 let strip = null;
 let pollTimer = null;
@@ -828,6 +844,11 @@ async function refreshClipSummary() {
   el("clip-clear").disabled = !count;
 }
 
+on("setting-eightd-speed", "change", () => {
+  const storage = safeStorage().storage;
+  storeEightD(storage, { ...readEightD(storage), speed: el("setting-eightd-speed").value });
+  applyEightD();
+});
 on("setting-clipkeep", "change", () => {
   try { safeStorage().storage.setItem(CLIP_KEEP_KEY, el("setting-clipkeep").checked ? "1" : "0"); } catch { /* bu oturumda kalmaz */ }
 });
@@ -4379,6 +4400,12 @@ function buildFxSheet() {
   el("fx-decay").max = String(DECAY_MAX);
   on("fx-close", "click", () => requestBack("fx"));
   on("room-open", "click", () => openFxSheet("room"));
+  on("eightd-toggle", "click", () => {
+    const storage = safeStorage().storage;
+    const state = readEightD(storage);
+    storeEightD(storage, { ...state, mode: nextEightDMode(state.mode) });
+    applyEightD(true);
+  });
   on("fx-pan", "input", () => applyChannelFx({ pan: Number(el("fx-pan").value) / 100 }));
   on("fx-pan", "dblclick", () => applyChannelFx({ pan: 0 }));
   EQ_IDS.forEach((id, i) => on(id, "input", () => {
@@ -5924,6 +5951,7 @@ on("open-settings", "click", () => {
   el("setting-songtheme").checked = songThemeEnabled();
   el("setting-spin").checked = applySpinSetting();
   el("setting-clipkeep").checked = settingOn(safeStorage().storage, CLIP_KEEP_KEY);
+  el("setting-eightd-speed").value = readEightD(safeStorage().storage).speed;
   el("setting-clipview").checked = settingOn(safeStorage().storage, PLAYER_CLIP_KEY);
   refreshClipSummary();
   refreshSwVersion();

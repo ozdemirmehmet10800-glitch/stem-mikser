@@ -624,6 +624,7 @@ export class Engine {
   }
 
   #disposeStrip(channel) {
+    this.#dropLfo(channel);
     const strip = channel.strip;
     if (!strip) return;
     this.#fxRelease(strip.lo, strip.mid, strip.hi, strip.pan, strip.send);
@@ -652,11 +653,12 @@ export class Engine {
     const gain = channel.gainNode;
     if (!gain) return;
     const fx = effectiveFx(this.channels, name);
-    const active = !isNeutralFx(fx);
+    const active = this.#needsStrip(name, channel);
     const sending = active && fx.send > 0 && this.reverbOn;
     const strip = channel.strip;
     if (!force && strip && strip.active === active && strip.sending === sending && active) {
       this.#setStripParams(strip, fx, false);
+      this.#syncLfo(name, channel);
       return;
     }
     if (!force && !active && !strip) return;                       // nötr ve zaten doğrudan bağlı
@@ -664,6 +666,7 @@ export class Engine {
     if (!force && !active && strip && strip.active) {
       // Nötre dönüyor: önce kimlik değerine KAY (tıksız), zincirden çıkarma #applyStrips'in zamanlayıcısında.
       this.#setStripParams(strip, neutralFx(), false);
+      this.#dropLfo(channel);
       return;
     }
     try {
@@ -684,6 +687,7 @@ export class Engine {
       }
     }
     if (!active) {
+      this.#dropLfo(channel);
       gain.connect(target);
       if (strip) {
         strip.active = false;
@@ -701,6 +705,91 @@ export class Engine {
     live.active = true;
     live.sending = sending;
     this.#setStripParams(live, fx, false);
+    this.#syncLfo(name, channel);
+  }
+
+  // ------------------------------------------------- 8D (otomatik dönen pan; mantık eightd.js)
+  // Her kanalın StereoPanner.pan'ına bir LFO (sinüs osilatör -> derinlik kazancı) bağlanır: dönüş SES KARTINDA, kare döngüsü yok,
+  // ekran kapalıyken de sürer. Kullanıcının kendi pan ayarı taban olarak kalır, LFO onun üstüne eklenir. Tüm LFO'lar ortak bir
+  // başlangıç anına (dönem) göre evrelenir: sonradan açılan kanal (yeni şarkı, alt parça) da aynı turda döner.
+
+  #autoPanEntry(name, channel) {
+    if (!this.autoPanFn || !channel) return null;
+    try {
+      const entry = this.autoPanFn(name, channel.parent || "");
+      return entry && entry.depth > 0 && entry.rate > 0 ? entry : null;
+    } catch {
+      return null;
+    }
+  }
+
+  #needsStrip(name, channel) {
+    return !isNeutralFx(effectiveFx(this.channels, name)) || this.#autoPanEntry(name, channel) !== null;
+  }
+
+  #syncLfo(name, channel) {
+    const strip = channel.strip;
+    const entry = strip && strip.active ? this.#autoPanEntry(name, channel) : null;
+    const key = entry ? `${this.autoPanVersion}|${entry.rate}|${entry.depth}|${entry.phase}` : "";
+    if (channel.lfo && channel.lfo.key === key && channel.lfo.param === strip.pan.pan) return;
+    this.#dropLfo(channel);
+    if (!entry) return;
+    const ctx = this.ctx;
+    if (this.autoPanCtx !== ctx) {
+      this.autoPanCtx = ctx;
+      this.autoPanEpoch = ctx.currentTime;
+    }
+    const startAt = ctx.currentTime + 0.02;
+    const phase = entry.phase + 2 * Math.PI * entry.rate * (startAt - this.autoPanEpoch);
+    const osc = ctx.createOscillator();
+    // sin(wt + evre) = sin(evre)·cos(wt) + cos(evre)·sin(wt): evre periyodik dalgayla verilir (osilatörün evre ayarı yok).
+    osc.setPeriodicWave(ctx.createPeriodicWave(new Float32Array([0, Math.sin(phase)]), new Float32Array([0, Math.cos(phase)]),
+      { disableNormalization: true }));
+    osc.frequency.value = entry.rate;
+    const depth = ctx.createGain();
+    depth.gain.value = 0;
+    depth.gain.setTargetAtTime(entry.depth, ctx.currentTime, 0.3);     // yumuşak giriş (tık yok)
+    osc.connect(depth);
+    depth.connect(strip.pan.pan);
+    osc.start(startAt);
+    channel.lfo = { osc, depth, key, param: strip.pan.pan };
+  }
+
+  #dropLfo(channel) {
+    const lfo = channel && channel.lfo;
+    if (!lfo) return;
+    channel.lfo = null;
+    const now = this.ctx ? this.ctx.currentTime : 0;
+    const release = () => {
+      try { lfo.osc.disconnect(); } catch { /* bağlı değildi */ }
+      try { lfo.depth.disconnect(); } catch { /* bağlı değildi */ }
+    };
+    try {
+      lfo.depth.gain.cancelScheduledValues(now);
+      lfo.depth.gain.setTargetAtTime(0, now, 0.08);                     // yumuşak çıkış
+      lfo.osc.onended = release;
+      lfo.osc.stop(now + 0.4);
+    } catch {
+      release();
+    }
+  }
+
+  /**
+   * 8D: planFn(kanal adı, ana kanal adı) -> {rate, depth, phase} | null; null/undefined verilirse 8D kapanır.
+   * Kanallar yoksa yalnız saklanır; şarkı yüklenince kanal yönlendirmesinde uygulanır.
+   */
+  setAutoPan(planFn) {
+    this.autoPanFn = typeof planFn === "function" ? planFn : null;
+    this.autoPanVersion = (this.autoPanVersion || 0) + 1;
+    if (!this.autoPanFn) {
+      this.autoPanCtx = null;
+      for (const channel of this.channels.values()) this.#dropLfo(channel);
+    }
+    this.#applyStrips();
+  }
+
+  get autoPanOn() {
+    return Boolean(this.autoPanFn);
   }
 
   // Tüm şeritleri günceller (parametre değişimi, mikser yükleme, grup açma/kapama sonrası).
@@ -711,7 +800,7 @@ export class Engine {
       if (!channel.gainNode) continue;
       this.#routeChannel(name, channel, this.fxTarget, false);
       const strip = channel.strip;
-      if (strip && strip.active && isNeutralFx(effectiveFx(this.channels, name))) anyNeutralActive = true;
+      if (strip && strip.active && !this.#needsStrip(name, channel)) anyNeutralActive = true;
     }
     this.#updateReverbIdle();
     // Nötre dönen şerit önce kimlik değerine KAYAR (yukarıda), sonra zincirden çıkarılır (tıksız).
@@ -722,7 +811,7 @@ export class Engine {
         if (!this.ctx || !this.fxTarget) return;
         for (const [name, channel] of this.channels) {
           const strip = channel.strip;
-          if (strip && strip.active && isNeutralFx(effectiveFx(this.channels, name))) {
+          if (strip && strip.active && !this.#needsStrip(name, channel)) {
             this.#routeChannel(name, channel, this.fxTarget, true);
           }
         }

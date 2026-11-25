@@ -37,7 +37,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v81 (kayıt 17: oynatıcıda Klip | Mikser anahtarı). 77 test dosyasının hepsi yeşil, Pages dağıtımı yeşil. Denemeler bilgisayarda 375x812 tarayıcıda ve sahte
+- **Son sürüm:** SW v82 (8D ses dahil).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -46,6 +46,22 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### 8D ses
+
+- **Ne:** Mikserde "8D" düğmesi. Dokundukça: kapalı -> bütün şarkı başının etrafında döner -> kanal kanal (vokal ortada sabit, bas ortaya yakın,
+  davul/gitar/piyano/diğer farklı hız ve yönde) -> kapalı. Seçim bu telefonda saklanır, her şarkıda geçerli; sahne modunda da çalışır.
+  Ayarlar > 8D ses: dönüş hızı (yavaş 12 sn / orta 8 sn / hızlı 4,5 sn tam tur). Kulaklıkla dinlenmeli.
+- **Nasıl:** Her kanalın sağ-sol ayarına ses motorunun kendi yavaş osilatörü bağlanır; dönüş ses kartında, pürüzsüz, ekran kapalıyken de sürer,
+  işlemciyi neredeyse hiç yormaz. Kendi pan ayarın taban olarak kalır. Sunucuya dokunulmadı.
+- **Denendi (tarayıcıda ölçüm):** klasik kipte ses sağ +0,85 ile sol -0,85 arasında 8 sn'lik düzgün dalga; kanal kanalda vokal ortada, bas ±0,2,
+  diğerleri farklı evrede; kapatınca dönüşler kalkıyor. Telefonda ve kulaklıkla denenmedi.
+- **Sınırlar:** Dışa aktarılan dosyaya 8D girmez. Gerçek 3 boyutlu (arkadan/yukarıdan) ses yok; şimdilik yalnız sağ-sol dönüş + istersen Yankı.
+- **SW:** v82.
+- **Telefonda kontrol (3 adım):**
+  1. Kulaklık tak, şarkıyı aç, "8D"ye dokun: ses başının etrafında dönmeli.
+  2. Bir daha dokun ("8D kanal"): vokal ortada kalmalı, enstrümanlar dönmeli.
+  3. Bir daha dokun: normale dönmeli; mikser ayarların bozulmamalı.
 
 ### 17. Klip | Mikser anahtarı: klip NET, mikser tek dokunuşta
 
