@@ -35,7 +35,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v86 (8D hafifletildi: arka planda cızırtı).
+- **Son sürüm:** SW v87 (genel optimizasyon).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -44,6 +44,23 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### Genel optimizasyon (ölçüme dayalı)
+
+- **Yedek:** GitHub'da etiket `yedek-optimizasyon-oncesi-20261126` (SW v86, commit 9bdcfac) + bilgisayarda `C:\Users\user\stem-mikser-yedek-20261126.zip`.
+  Geri dönmek gerekirse bu etikete dönülür.
+- **Ölçülen sorun:** Oynatıcı ekranında her karede (120 Hz ekranda saniyede 120 kez) geçen/kalan süre yazıları değişmese de yeniden yazılıyordu:
+  duraklatılmışken bile saniyede ~330 sayfa değişikliği. Akor şeridi her karede ekran genişliğini ölçüyordu. Geçiş ayarı her karede hafızadan okunuyordu.
+- **Yapılan:** kare döngüsü yalnız değişeni yazar; duraklatılmışken ve hiçbir şey değişmiyorken kare işi atlanır (dokunuş, boyut değişimi, geri
+  dönüş ve akor şeridi kurulunca bir kare yeniden değerlendirilir); akor şeridi genişliği yalnız boyut değişince ölçer, aynı konumu yazmaz;
+  geçiş ayarı bellekte tutulur. Nadiren kullanılan klip ayıklayıcı, kapak karesi ve Takeout okuyucu açılışta değil ilk gerektiğinde yüklenir
+  (~47 KB; çevrimdışı için önbellekte durmaya devam eder).
+- **Sonuç (masaüstü tarayıcı, 375x812):** duraklatılmışken sayfa değişikliği 331/sn -> 0/sn, JS işi 18,7 -> 2,2 ms/sn (-%88);
+  çalarken 342/sn -> 15/sn (-%96), JS işi 20,4 -> 8,6 ms/sn (-%58). Saat, sarma, sahne modu, klip yükleme ve Takeout içe aktarma denendi.
+  Yeni test: tests/perf_test.mjs (akor şeridi gerçek sınıfla, döngü kaynak taramasıyla). Commit 86a9dd5.
+- **Bilerek dokunulmayanlar:** kanal çözme (zaten ölçülerek 3 paralel), kitaplık yenilemesi (atlamak favori/etiket/çevrimdışı işaretlerini
+  bayatlatabilirdi), kodu küçültme/paketleme (testler ve yayın düzeni ham dosyaya dayanıyor; risk/kazanç oranı düşük), sunucu.
+- **SW:** v87. Telefonda denenmedi; pil ve ısınmadaki fark özellikle oynatıcı ekranı açıkken (duraklatılmış da olsa) hissedilmeli.
 
 ### 8D hafifletildi (uygulamadan çıkınca cızırtı)
 
