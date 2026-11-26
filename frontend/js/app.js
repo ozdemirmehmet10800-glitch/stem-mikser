@@ -43,7 +43,7 @@ import {
 import {
   BG_MODES, BG_LABELS, normalizeBg, wantsPulse, onsetsFromBuffer, pickBeats, readKicks, writeKicks, classifyBackground,
 } from "./beatpulse.js";
-import { getBackground, putBackground, clearBackground } from "./bgstore.js";
+import { getBackground, putBackground, clearBackground, dropBackgrounds } from "./bgstore.js";
 import { MediaBridge } from "./media.js";
 import { badgeOf, upgradeOf, describeMethod, upgradeConfirmText } from "./quality.js";
 import { versionLabel } from "./swversion.js";
@@ -1500,6 +1500,7 @@ async function deleteSelected() {
       peaksCache.removeSongs(gone);       // dalga verisi de gitsin
       melodyCache.removeSongs(gone);      // hedef melodi de gitsin
       covers.drop(gone).catch(() => {});  // kapak resmi de gitsin
+      dropBackgrounds(gone);               // şarkıya özel söz arka planı da
       clipStore.remove(gone).then(() => refreshClipSummary());   // sahne klibi de gitsin
       if (playerClip.id && gone.includes(playerClip.id)) playerClipUnload();
       dropLoops(safeStorage().storage, gone);   // adlı döngüler de gitsin
@@ -3349,9 +3350,22 @@ bindExport({ engine, hideMessage, isOffline, masterPercent, pushLayer, requestBa
 // (settings.lyricsBg); kendi dosyan yalnız cihazda (bgstore.js, IndexedDB).
 
 let kickState = { id: null, tag: null, times: null };
-let bgInfo = null;                 // {name, size, kind} ya da null (kayıtlı özel dosya)
+let bgInfo = null;                 // {name, size, kind, scope: "song"|"all"} ya da null (açık şarkının kullandığı özel dosya)
 let bgMediaGen = 0;
 let bgNote = { text: "", warn: false };
+
+// Özel arka plan ŞARKI BAŞINA: açık şarkı varsa seçilen dosya yalnız ona; yoksa varsayılan (kendi dosyası olmayan şarkılar).
+function bgSongId() {
+  return currentSong ? currentSong.id : null;
+}
+
+async function refreshBgInfo() {
+  const id = bgSongId();
+  const record = await getBackground(id);
+  if (id !== bgSongId()) return;                       // bu arada şarkı değişti
+  bgInfo = record ? { name: record.name, size: record.size, kind: classifyBackground(record.blob).kind, scope: record.scope } : null;
+  refreshBgChoosers();
+}
 
 function kickTag() {
   return String(subTag("drums"));
@@ -3407,7 +3421,7 @@ async function ensureKicks() {
 
 async function loadScreenMedia() {
   const gen = ++bgMediaGen;
-  const record = await getBackground();
+  const record = await getBackground(bgSongId());
   if (gen !== bgMediaGen || !lyricsScreen.isOpen || settings.lyricsBg !== "custom" || !record) return;
   const { kind } = classifyBackground(record.blob);
   if (!kind) return;
@@ -3415,7 +3429,9 @@ async function loadScreenMedia() {
   lyricsScreen.setMedia({ kind, url, revoke: () => URL.revokeObjectURL(url) });
 }
 
-function openLyricsScreen() {
+async function openLyricsScreen() {
+  if (!lyricsDoc || !currentSong || lyricsScreen.isOpen) return;
+  await refreshBgInfo();                              // bu şarkının (ya da varsayılan) dosyası
   if (!lyricsDoc || !currentSong || lyricsScreen.isOpen) return;
   const mode = normalizeBg(settings.lyricsBg);
   lyricsScreen.open({
@@ -3512,7 +3528,8 @@ function refreshBgChoosers() {
   for (const chooser of bgChoosers) {
     for (const [value, input] of chooser.radios) input.checked = value === mode;
     chooser.remove.disabled = !bgInfo;
-    const fileText = bgInfo ? `${bgInfo.name} (${bgMb(bgInfo.size)})` : "Dosya seçilmedi";
+    const whose = !bgInfo ? "" : bgInfo.scope === "song" ? "Bu şarkının: " : bgSongId() ? "Tüm şarkılar (bu şarkıya ayrı seçebilirsin): " : "Tüm şarkılar: ";
+    const fileText = bgInfo ? `${whose}${bgInfo.name} (${bgMb(bgInfo.size)})` : "Dosya seçilmedi";
     chooser.note.textContent = bgNote.text || (mode === "custom" || bgInfo ? fileText : "");
     chooser.note.classList.toggle("warn", bgNote.warn);
   }
@@ -3546,10 +3563,10 @@ function onBgChoice(mode) {
 }
 
 async function removeBgFile() {
-  await clearBackground();
-  bgInfo = null;
-  if (normalizeBg(settings.lyricsBg) === "custom") setLyricsBg("plain");
-  else refreshBgChoosers();
+  await clearBackground(bgSongId());                 // önce şarkının kendi dosyası; yoksa varsayılan
+  await refreshBgInfo();                             // şarkınınki silindiyse varsayılana düşer
+  if (!bgInfo && normalizeBg(settings.lyricsBg) === "custom") setLyricsBg("plain");
+  else setLyricsBg(normalizeBg(settings.lyricsBg));  // açık ekranda yeni dosya (varsayılan) görünsün
 }
 
 async function onBgFilePicked() {
@@ -3566,13 +3583,13 @@ async function onBgFilePicked() {
   if (warn && !window.confirm(`Bu dosya büyük (${bgMb(file.size)}). Telefonda yavaşlık ya da bellek sorunu olabilir. Yine de kullanılsın mı?`)) {
     return;
   }
-  const saved = await putBackground(file);
+  const saved = await putBackground(file, bgSongId());
   if (!saved) {
     bgNote = { text: "Dosya telefona kaydedilemedi (yer yok olabilir).", warn: true };
     refreshBgChoosers();
     return;
   }
-  bgInfo = { name: file.name, size: file.size, kind };
+  bgInfo = { name: file.name, size: file.size, kind, scope: bgSongId() ? "song" : "all" };
   setLyricsBg("custom");
 }
 
@@ -3610,12 +3627,7 @@ on("lyrics-add-reading", "click", () => startTranslation(true));
 on("lyrics-tr-toggle", "click", () => setTrShow("tr", !trShow.tr));
 on("lyrics-ro-toggle", "click", () => setTrShow("ro", !trShow.ro));
 refreshBgChoosers();
-getBackground().then((record) => {
-  if (record) {
-    bgInfo = { name: record.name, size: record.size, kind: classifyBackground(record.blob).kind };
-    refreshBgChoosers();
-  }
-});
+refreshBgInfo();
 on("bg-file", "change", onBgFilePicked);
 on("lyrics-full-open", "click", openLyricsScreen);
 
@@ -5415,6 +5427,7 @@ on("open-settings", "click", () => {
   el("setting-spin").checked = applySpinSetting();
   refreshLookOnlySettings();
   el("setting-wordglow").checked = wordGlowOn;
+  refreshBgInfo();                     // söz arka planı notu: açık şarkının ya da varsayılan dosya
   el("setting-splash").checked = Boolean(globalThis.StemLook && globalThis.StemLook.readSplash(globalThis.localStorage));
   el("setting-clipkeep").checked = settingOn(safeStorage().storage, CLIP_KEEP_KEY);
   el("setting-eightd-speed").value = readEightD(safeStorage().storage).speed;

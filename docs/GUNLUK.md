@@ -35,7 +35,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v93 (açılış ekranı; v92 kod sadeleştirme; v91 karaoke; v90 Sözleri bul; v89 Rusça + okunuş, yatay ekran).
+- **Son sürüm:** SW v94 (söz arka planı şarkı başına; v93 açılış ekranı; v92 kod sadeleştirme; v91 karaoke; v90 Sözleri bul; v89 Rusça + okunuş, yatay ekran).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -44,6 +44,22 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### Tam ekran söz arka planı artık ŞARKI BAŞINA (bir şarkıya koyulan resim diğerlerini değiştirmiyor)
+
+- **Belirti (kullanıcı):** iki Rusça şarkıya farklı resim koydu, ikisi de aynı resmi gösteriyordu.
+- **Neden:** tam ekran sözlerin "kendi resmim / videom" arka planı tasarım gereği TEK kayıttı (tüm şarkılar için tek ayar); her seçim
+  öncekini eziyordu. Kapak resimleri zaten şarkı başına (onlarda sorun yok).
+- **Ne:** `js/bgstore.js` şarkı başına saklar (`song:<id>`). Açık şarkıda seçilen dosya YALNIZ o şarkıya. Kendi dosyası olmayan şarkı
+  varsayılanı kullanır: varsayılan = eski tek kayıt (şimdiye kadar koyulan son resim kaybolmadı). Ayarlar'da şarkı açık değilken seçilen
+  dosya varsayılan olur. "Kaldır": önce şarkının kendi dosyası (şarkı varsayılana döner), kendi dosyası yoksa varsayılan. Notta hangisi
+  olduğu yazar ("Bu şarkının: ..." / "Tüm şarkılar ..."). Silinen şarkıların dosyası da silinir.
+- **Denendi (tarayıcı, gerçek IndexedDB):** şarkı A'ya kırmızı, B'ye mavi resim; B'den sonra A'ya dönünce A hâlâ kırmızı, B mavi;
+  konsolda hata yok. **Test:** yeni `bgstore_test.mjs` (sahte IndexedDB: ezmeme, varsayılana düşme, Kaldır sırası, silme, IndexedDB yok).
+  88 dosya yeşil. **SW:** v94. **Telefonda denenmedi.**
+- **Not:** iki Rusça şarkının şu anki ortak resmi "varsayılan" olarak kaldı; her birine resmini YENİDEN seçince artık ayrı kalır.
+- **Telefonda kontrol:** 1) "SW v94". 2) Rusça şarkı 1: tam ekran sözler > ayar > Dosya seç > resim A. 3) Rusça şarkı 2: resim B.
+  4) Şarkı 1'e dön: resim A görünmeli.
 
 ### Açılış ekranı: logo, uygulama adı ve "Geliştiren: Berkay Özdemir"
 

@@ -1,12 +1,14 @@
 // Tam ekran sözlerin "kendi resmim / videom" arka planı: dosya YALNIZ bu cihazda, IndexedDB'de
-// (localStorage'a sığmaz). Sunucuya ve depoya hiçbir şey gitmez. Tek kayıt: tüm şarkılar için tek ayar.
+// (localStorage'a sığmaz). Sunucuya ve depoya hiçbir şey gitmez. ŞARKI BAŞINA (2026-11-26): her şarkının kendi dosyası
+// ("song:<id>"); kendi dosyası olmayan şarkı varsayılanı kullanır ("lyrics-bg": eski tek kayıt, tüm şarkılar).
 //
 // IndexedDB yoksa/reddedilirse (özel pencere gibi) hata atmaz: null/false döner, uygulama
 // "sade" arka planla devam eder.
 
 const DB_NAME = "stem-mikser-bg";
 const STORE = "files";
-const KEY = "lyrics-bg";
+const KEY = "lyrics-bg";                       // varsayılan (tüm şarkılar)
+const songKey = (id) => `song:${id}`;
 
 function openDb() {
   return new Promise((resolve, reject) => {
@@ -37,31 +39,54 @@ async function run(mode, action) {
   }
 }
 
-/** {blob, name, type, size} ya da null. */
-export async function getBackground() {
+/** {blob, name, type, size, scope} ya da null. songId verilirse önce o şarkının kendi dosyası ("song"), yoksa varsayılan ("all"). */
+export async function getBackground(songId = null) {
   try {
+    if (songId) {
+      const own = await run("readonly", (store) => store.get(songKey(songId)));
+      if (own && own.blob) return { ...own, scope: "song" };
+    }
     const record = await run("readonly", (store) => store.get(KEY));
-    return record && record.blob ? record : null;
+    return record && record.blob ? { ...record, scope: "all" } : null;
   } catch {
     return null;
   }
 }
 
-/** Dosyayı kaydeder. Başarılıysa true (kota dolduysa false). */
-export async function putBackground(file) {
+/** Dosyayı kaydeder: songId varsa YALNIZ o şarkıya, yoksa varsayılan (tüm şarkılar). Başarılıysa true (kota dolduysa false). */
+export async function putBackground(file, songId = null) {
   try {
     await run("readwrite", (store) => store.put(
       { blob: file, name: file.name || "arka plan", type: file.type || "", size: file.size || 0, savedAt: Date.now() },
-      KEY));
+      songId ? songKey(songId) : KEY));
     return true;
   } catch {
     return false;
   }
 }
 
-export async function clearBackground() {
+/** "Kaldır": şarkının kendi dosyası varsa onu siler ("song"), yoksa varsayılanı ("all"). Hata: null. */
+export async function clearBackground(songId = null) {
   try {
+    if (songId) {
+      const own = await run("readonly", (store) => store.get(songKey(songId)));
+      if (own) {
+        await run("readwrite", (store) => store.delete(songKey(songId)));
+        return "song";
+      }
+    }
     await run("readwrite", (store) => store.delete(KEY));
+    return "all";
+  } catch {
+    return null;
+  }
+}
+
+/** Silinen şarkıların kendi arka plan dosyaları da gitsin. */
+export async function dropBackgrounds(ids) {
+  if (!ids || !ids.length) return true;
+  try {
+    await run("readwrite", (store) => { for (const id of ids) store.delete(songKey(id)); return null; });
     return true;
   } catch {
     return false;
