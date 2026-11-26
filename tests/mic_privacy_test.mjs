@@ -52,7 +52,7 @@ check("mic.js: varsayılan / communications / Bluetooth aygıt start'ta reddedil
 check("mic.js: mesaj işleyicisi alanları tek tek SAYI olarak süzer (ham veri geçemez)", /typeof data\.t !== "number"/.test(micCode) && /typeof data\.hz === "number"/.test(micCode) && /typeof data\.clarity === "number"/.test(micCode) && /typeof data\.rmsDb === "number"/.test(micCode));
 
 // --- app.js antrenör bölümü
-const app = read("../frontend/js/app.js");
+const app = [read("../frontend/js/app.js"), read("../frontend/js/ui/trainerui.js"), read("../frontend/js/ui/trainerroll.js")].join(String.fromCharCode(10));   // antrenör 2026-11-26'da js/ui/trainerui.js + trainerroll.js'e taşındı (işaretler orada)
 const region = strip(app.slice(app.indexOf("// TRAINER-BAŞLANGIÇ"), app.indexOf("// TRAINER-BİTİŞ")));
 check("antrenör bölümü işaretli ve boş değil", region.length > 2000);
 for (const [name, pattern] of FORBIDDEN.filter(([name]) => !["localStorage", "console"].includes(name))) {
@@ -70,7 +70,7 @@ check("kare önce validHz(eşik) ile süzülür, sonra düzgünleştirici, sonra
 check("rulo izine yalnız kabul edilen perde girer (midi !== null koşulu)", /if \(midi !== null\) \{\s*const plotted[\s\S]*?trainer\.trail\.push/.test(region) && (region.match(/trail\.push\(/g) || []).length === 1);
 check("kalibrasyon yalnız seviye SAYILARI (rmsDb) toplar; ses örneği yok", /trainer\.calib\.values\.push\(frame\.rmsDb\)/.test(region));
 check("gürültü bastırma / yankı / otomatik kazanç KAPALI kalır (perdeyi bozar)", /noiseSuppression: \{ exact: false \}|noiseSuppression: false/.test(sources["mic.js"]) && !/noiseSuppression: (true|\{ exact: true)/.test(sources["mic.js"]));
-const apiCalls = [...new Set([...region.matchAll(/\bapi\.(\w+)/g)].map((m) => m[1]))].sort().join();
+const apiCalls = [...new Set([...region.matchAll(/\bapi(?:\(\))?\.(\w+)/g)].map((m) => m[1]))].sort().join();   // api. ya da api(). (getter)
 check("ağ çağrıları yalnız getMelody / startMelody / getSong (mikrofon verisi taşıyan çağrı yok)", apiCalls === "getMelody,getSong,startMelody", apiCalls);
 check("mikrofon yalnız hazırlanan DAHİLİ aygıtla açılır (trainerMic.start(..., prepared.device))", /trainerMic\.start\(engine\.ctx, onTrainerFrame, prepared\.device\)/.test(region)
   && (region.match(/trainerMic\.start\(/g) || []).length === 1);

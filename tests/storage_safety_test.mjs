@@ -5,6 +5,7 @@
 //     node tests\storage_safety_test.mjs
 
 import { readFileSync, readdirSync } from "node:fs";
+import { appSource } from "./appsource.mjs";
 import { COLLECTION_KEY, COLLECTION_BAD_KEY } from "../frontend/js/collection.js";
 
 let failed = 0;
@@ -14,7 +15,8 @@ function check(name, ok, detail = "") {
 }
 
 const dir = new URL("../frontend/js/", import.meta.url);
-const files = readdirSync(dir).filter((name) => name.endsWith(".js"));
+const files = readdirSync(dir).filter((name) => name.endsWith(".js"))
+  .concat(readdirSync(new URL("ui/", dir)).filter((name) => name.endsWith(".js")).map((name) => "ui/" + name));   // js/ui/ dahil
 const source = Object.fromEntries(files.map((name) => [name, readFileSync(new URL(name, dir), "utf8")]));
 const sw = readFileSync(new URL("../frontend/sw.js", import.meta.url), "utf8");
 const strip = (text) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");   // yorumlar sayılmasın
@@ -50,9 +52,10 @@ check("collection.js depoda yalnız TEK removeItem çağırıyor (safeStorage yo
   storageRemovals.length <= 1 && !/storage\s*\.\s*removeItem\s*\(\s*COLLECTION/.test(collectionSource), String(storageRemovals.length));
 
 // 4) "Önbelleği temizle" işleyicisi yalnız Cache Storage + SW
-const app = strip(source["app.js"]);
+const app = strip(appSource());          // app.js + js/ui/*.js
 const start = app.indexOf('on("clear-cache"');
-const body = app.slice(start, app.indexOf("\n});", start) + 4);
+const indent = start > 0 ? app.slice(app.lastIndexOf("\n", start) + 1, start) : "";       // js/ui/ modülünde bind() içinde girintili
+const body = app.slice(start, app.indexOf(`\n${indent}});`, start) + indent.length + 4);
 check('"Önbelleği temizle" işleyicisi bulundu', start > 0 && body.includes("caches"));
 check('"Önbelleği temizle" localStorage/indexedDB\'ye DOKUNMUYOR (yalnız caches + serviceWorker)', !/localStorage|sessionStorage|indexedDB/.test(body)
   && /caches\.delete/.test(body) && /unregister/.test(body));

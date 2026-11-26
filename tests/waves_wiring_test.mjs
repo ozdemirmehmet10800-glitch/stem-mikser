@@ -7,6 +7,7 @@
 //     node tests\waves_wiring_test.mjs
 
 import { readFileSync } from "node:fs";
+import { appSource } from "./appsource.mjs";
 
 let failed = 0;
 function check(name, ok, detail = "") {
@@ -15,7 +16,7 @@ function check(name, ok, detail = "") {
 }
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const strip = (text) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
-const app = strip(read("../frontend/js/app.js"));
+const app = strip(appSource());          // app.js + js/ui/*.js
 const sw = strip(read("../frontend/sw.js"));
 const css = strip(read("../frontend/css/styles.css"));
 
@@ -39,7 +40,7 @@ const fill = between(app, "async function fillPeaks(", "function queueSubPeaks")
 check("hesap dilimler arasında denetimi tarayıcıya bırakır (await nextSlice)", /job\.step\(PEAK_SLICE_MS\)[\s\S]*await nextSlice\(\)/.test(fill));
 check("şarkı / kanal değişince hesap kendiliğinden vazgeçer (nesil + tampon denetimi)", /gen !== peakGen/.test(fill) && /live\.buffer !== buffer/.test(fill));
 check("sonuç cihaz önbelleğine yazılır, önbellekte varsa hesaplanmaz", /peaksCache\.put\(/.test(app) && /peaksCache\.get\(/.test(app) && /peakSet\.has\(name\)\) continue/.test(fill));
-check("silinen şarkıların ve 'çevrimdışı kopyaları sil'in dalga verisi de temizlenir", /peaksCache\.removeSongs\(gone\)/.test(app) && /peaksCache\.clear\(\)/.test(app));
+check("silinen şarkıların ve 'çevrimdışı kopyaları sil'in dalga verisi de temizlenir", /peaksCache\.removeSongs\(gone\)/.test(app) && /peaksCache(?:\(\))?\.clear\(\)/.test(app));   // js/ui/pwaui.js'te getter: peaksCache()
 
 // 2) kare başına çizim yok
 const loop = between(app, "function startLoop()", "function handleSongEnded");

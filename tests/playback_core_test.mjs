@@ -5,6 +5,7 @@
 //     node tests\playback_core_test.mjs
 
 import { readFileSync } from "node:fs";
+import { appSource } from "./appsource.mjs";
 
 let failed = 0;
 function check(name, ok, detail = "") {
@@ -12,7 +13,7 @@ function check(name, ok, detail = "") {
   if (!ok) failed += 1;
 }
 
-const app = readFileSync(new URL("../frontend/js/app.js", import.meta.url), "utf8");
+const app = appSource();                 // app.js + js/ui/*.js
 const slice = (from, to) => {
   const a = app.indexOf(from);
   const b = app.indexOf(to, a);

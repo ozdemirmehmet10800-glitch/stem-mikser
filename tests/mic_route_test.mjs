@@ -3,6 +3,7 @@
 //   node tests\mic_route_test.mjs
 
 import { readFileSync } from "node:fs";
+import { appSource } from "./appsource.mjs";
 
 let failed = 0;
 function check(name, ok, detail = "") {
@@ -10,7 +11,7 @@ function check(name, ok, detail = "") {
   if (!ok) failed += 1;
 }
 
-const app = readFileSync(new URL("../frontend/js/app.js", import.meta.url), "utf8").replaceAll(String.fromCharCode(13), "");
+const app = appSource();                 // app.js + js/ui/*.js (satır sonları LF)
 const body = /function settleOutputAfterMic\(\) \{([\s\S]*?)\n\}\n/.exec(app);
 check("settleOutputAfterMic var", Boolean(body));
 const text = body ? body[1] : "";

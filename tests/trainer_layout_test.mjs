@@ -16,7 +16,7 @@ const strip = (code) => code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\
 
 const css = read("../frontend/css/styles.css").replace(/\/\*[\s\S]*?\*\//g, "");
 const html = read("../frontend/index.html");
-const appRaw = read("../frontend/js/app.js");
+const appRaw = [read("../frontend/js/app.js"), read("../frontend/js/ui/trainerui.js"), read("../frontend/js/ui/trainerroll.js")].join(String.fromCharCode(10));   // antrenör 2026-11-26'da js/ui/trainerui.js + trainerroll.js'e taşındı (işaretler orada)
 const app = strip(appRaw);
 const region = strip(appRaw.slice(appRaw.indexOf("// TRAINER-BAŞLANGIÇ"), appRaw.indexOf("// TRAINER-BİTİŞ")));
 

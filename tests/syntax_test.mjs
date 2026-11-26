@@ -1,4 +1,4 @@
-// Tüm arayüz modülleri (frontend/js/*.js ve sw.js) sözdizimi olarak geçerli mi? Bir modülde sözdizimi hatası ya da aynı adın iki kez
+// Tüm arayüz modülleri (frontend/js/*.js, js/ui/*.js ve sw.js) sözdizimi olarak geçerli mi? Bir modülde sözdizimi hatası ya da aynı adın iki kez
 // tanımlanması uygulamayı BOŞ açar; diğer testler app.js'i yüklemediği için bunu yakalamıyordu. Ağ/DOM yok, kod ÇALIŞTIRILMAZ (yalnız ayrıştırılır).
 //
 //     node tests\syntax_test.mjs
@@ -11,7 +11,8 @@ const child = `
 import { readFileSync, readdirSync } from "node:fs";
 import vm from "node:vm";
 const root = ${JSON.stringify(root)};
-const files = readdirSync(root + "js").filter((f) => f.endsWith(".js")).map((f) => "js/" + f);
+const files = readdirSync(root + "js").filter((f) => f.endsWith(".js")).map((f) => "js/" + f)
+  .concat(readdirSync(root + "js/ui").filter((f) => f.endsWith(".js")).map((f) => "js/ui/" + f));
 let bad = 0;
 for (const file of files) {
   const source = readFileSync(root + file, "utf8");

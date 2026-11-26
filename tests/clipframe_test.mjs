@@ -2,6 +2,7 @@
 // "clip" kapak kaynağının önceliği (cover.js), kapak yedeği, ve uygulamadaki bağlantılar (kaynak taraması).   node tests\clipframe_test.mjs
 
 import { readFileSync } from "node:fs";
+import { appSource } from "./appsource.mjs";
 import { frameTimes, squareCrop, frameStats, goodFrame, frameScore, DARK_LUMA } from "../frontend/js/clipframe.js";
 import { clipSync, CLIP_DRIFT_S } from "../frontend/js/stage.js";
 import { settingOn, summarizeClips, clipMode, nextClipMode, storedClipMode, CLIP_KEEP_KEY, STAGE_CLIP_KEY, PLAYER_CLIP_KEY } from "../frontend/js/clipstore.js";
@@ -94,7 +95,7 @@ const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8").split(
 
 // ------------------------------------------------------------------ uygulamadaki bağlantılar (kaynak taraması)
 {
-  const app = read("../frontend/js/app.js");
+  const app = appSource();                 // app.js + js/ui/*.js
   const fnBody = (name) => {
     const start = app.indexOf(`function ${name}(`);
     if (start < 0) return "";

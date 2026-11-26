@@ -1,6 +1,7 @@
 // Şarkılar arası yumuşak geçiş + kitaplıkta klip önizlemesi + Nightcore ön ayarı (saf mantık ve kaynak taraması).   node tests\crossfade_test.mjs
 
 import { readFileSync } from "node:fs";
+import { appSource } from "./appsource.mjs";
 import {
   readCrossfade, crossfadeStep, fadeInSeconds, previewStart, pickPlaying, CROSSFADE_DEFAULT, CROSSFADE_KEY, PREVIEW_MAX_PLAYING,
 } from "../frontend/js/crossfade.js";
@@ -57,7 +58,7 @@ const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8").split(
 
 // ------------------------------------------------------------------ uygulama bağlantıları
 {
-  const app = read("../frontend/js/app.js");
+  const app = appSource();                 // app.js + js/ui/*.js
   const engine = read("../frontend/js/engine.js");
   const html = read("../frontend/index.html");
   const sw = read("../frontend/sw.js");
