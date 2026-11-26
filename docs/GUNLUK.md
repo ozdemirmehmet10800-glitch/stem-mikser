@@ -35,7 +35,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v91 (karaoke kelime vurgusu; v90 Sözleri bul; v89 Rusça + okunuş, yatay ekran).
+- **Son sürüm:** SW v92 (kod sadeleştirme; v91 karaoke; v90 Sözleri bul; v89 Rusça + okunuş, yatay ekran).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -44,6 +44,32 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### Kod sadeleştirme: app.js 9.664 -> 7.468 satır (14 bölüm ayrı dosyaya), davranış aynı
+
+- **Yedek:** git etiketi `yedek-sadelestirme-oncesi-20261126` (push edildi) + `C:\Users\user\stem-mikser-yedek-sadelestirme-20261126.zip`.
+- **Ölçüm:** kullanılmayan kod neredeyse yok (yalnız 3 gereksiz içe aktarım). Asıl sorun tek dev dosya: 45 bölüm, çoğu ortak değişkenlerle
+  birbirine bağlı. Her bölümün bağımlılığı ölçüldü; ana dosyadaki ortak bir değişkeni DEĞİŞTİREN bölümler taşınmadı (riskli).
+- **Taşınanlar (`frontend/js/ui/`):** klip önizlemesi, uyku zamanlayıcısı, etiket sayfası, hiza testi, miks dışa aktarma, şarkı söyleme
+  antrenörü + çizimi, paylaş menüsü, PWA, çevrimdışı, açılış bilgi önbelleği, çalma listeleri ekranı, kapaklar, klipten ses ayıklama.
+  Ortak `el`/`on` yardımcıları `js/dom.js`'e. Ana dosyadan kullanılmayan 89 içe aktarım silindi.
+- **Yöntem:** bölümler elle değil bir araçla taşındı (satır kaybı denetimi: her bölümde "eksik satır yok"). Her bölüm `bind(...)` ile
+  ana dosyadan ihtiyacını alır; değişen değerler (şarkı, ayarlar, döngü...) her kullanımda güncel okunur (getter). Başlatma sırası korundu
+  (bind bölümün eski yerinde çağrılır).
+- **Yakalanan hatalar (hepsi yayından ÖNCE, tarayıcıda/testte):** (1) hiza testi açılmıyordu (sonradan yüklenen dosyanın göreli yolu),
+  (2) açılışta "peaksCache before initialization" (henüz tanımlanmamış değer erken istendi), (3) Listeler sekmesi açılmıyordu (bir yerde
+  güncel değer okunmuyordu). Üçü de düzeltildi ve her biri için kalıcı test kuralı eklendi.
+- **Yeni testler:** `ui_modules_test.mjs` (her bölüm: bind bir kez çağrılır, verilmeyen ad yok, değişen değer getter, getter hep çağrılır,
+  bind'e verilen değer önceden tanımlı, göreli yollar doğru, çevrimdışı kabukta; kuralların hatayı yakaladığı denendi);
+  `appsource.mjs` (kaynak taraması yapan testler app.js + ui/*.js okur); `syntax_test` ui/ klasörünü de ayrıştırır. Mikrofon gizlilik
+  testleri antrenörün yeni dosyalarını tarar (denetim aynı sıkılıkta).
+- **Taşınmayanlar (bilerek):** şarkı sözleri, döngü, hız/ton, mikser hafızası, Eklenecekler, çalma sırası, dalga şeritleri, tam ekran sözler
+  vb.: ortak durumu değiştiriyorlar; ayırmak için durumun sahipliğini yeniden düzenlemek gerekir (ayrı, daha riskli iş).
+- **Denendi (tarayıcı, 375x812, sahte sunucu):** açılış, kitaplık + kapaklar + klip önizlemesi, şarkı açma/çalma, uyku zamanlayıcısı
+  (geri sayım), dışa aktarma paneli, etiket ekleme, liste oluşturma, Listeler sekmesi, Ayarlar'da SW/önbellek bilgisi, hiza testi
+  başlıyor, antrenör paneli; konsolda hata yok. **Testler:** 86 dosya yeşil. **SW:** v92. **Telefonda denenmedi.** Commit a7b384f.
+- **Telefonda kontrol:** 1) Ayarlar'da "SW v92". 2) Bir şarkı aç, çal, uyku zamanlayıcısını kur ve iptal et. 3) Listeler sekmesi ve
+  etiketler açılmalı. 4) Dışa aktar panelini aç-kapat. Sorun olursa yedek etikete dönülebilir.
 
 ### Otomatik söz çıkarma güçlendirildi: daha geniş arama (ölçüme dayalı)
 
