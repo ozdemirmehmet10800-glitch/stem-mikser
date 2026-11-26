@@ -95,6 +95,7 @@ import {
   caaFrontUrl, Throttle,
 } from "./cover.js";
 import { lyricsSearchTerms, searchLyrics, guessLanguage, formatDuration as foundLength } from "./lyricsfind.js";
+import { WordGlow, readWordGlow, writeWordGlow } from "./karaoke.js";
 import { coverStore } from "./coverstore.js";
 import { encodeBackup, parseBackup } from "./coverbackup.js";
 import { summarizeBySong, formatSize as formatCacheSize, buildReport } from "./cachelist.js";
@@ -185,6 +186,9 @@ let rafHandle = 0;
 let seeking = false;
 let currentSong = null;
 let lyricsScreen = null;       // tam ekran sözler (Aşama 13); aşağıda kurulur
+// Karaoke kelime vurgusu tercihi ve oynatıcı listesindeki parlatıcı (tam ekran sözler kurulurken okunduğu için burada).
+let wordGlowOn = (() => { try { return readWordGlow(globalThis.localStorage); } catch { return true; } })();
+const playerGlow = new WordGlow((tag) => document.createElement(tag));
 // Söz çevirisi durumu (Aşama 14): işlevler aşağıda (refreshLyricSubs vb.)
 let trMap = null;                 // Map normKey -> {tr, ro?} ya da null
 let trVersion = 0;                // eldeki çevirinin sunucu sürümü
@@ -4505,7 +4509,7 @@ lyricsScreen = new LyricsScreen({
     closeBtn: el("lf-close"), playBtn: el("lf-play"), settingsBtn: el("lf-settings"),
     followBtn: el("lf-follow"),
   },
-  doc: document, win: window, rows: normalizeRows(settings.lyricsRows),
+  doc: document, win: window, rows: normalizeRows(settings.lyricsRows), wordGlow: wordGlowOn,
   wakeLock, keepAwake: () => engine.playing,
   reducedMotion: () => Boolean(reducedMotion && reducedMotion.matches),
   onSeek: seekFromScreen,
@@ -5405,8 +5409,25 @@ function renderLyricsList() {
   syncScreenLines(lyricsScreen, lyricsDoc, lyricsDoc ? currentSubs() : [], playlistCtx ? lyricsEmptyText : null);
 }
 
+// Karaoke kelime vurgusu (karaoke.js): yalnız ÇALAN satır kelimelere bölünür; akorlu söz sayfası açıkken satırlar akorla çizildiği için kapalı.
+function attachPlayerGlow(index) {
+  playerGlow.detach();
+  if (!wordGlowOn || sheetRendered || !lyricsDoc || index < 0) return;
+  const item = el("lyrics-list").children[index];
+  if (item && item.children[0]) playerGlow.attach(item.children[0], lyricsDoc.lines[index], lyricsDoc.language);
+}
+
+function setWordGlow(on) {
+  wordGlowOn = Boolean(on);
+  try { writeWordGlow(globalThis.localStorage, wordGlowOn); } catch { /* tercih bu oturumda kalır */ }
+  attachPlayerGlow(lyricsIndex);
+  if (playerGlow.active) playerGlow.update(highlightTime(engine.visualTime));
+  if (lyricsScreen) lyricsScreen.setWordGlow(wordGlowOn);
+}
+
 function renderLyricsPanel() {
   const list = el("lyrics-list");
+  playerGlow.forget();                   // düğümler baştan kuruluyor
   list.textContent = "";
   lyricsIndex = -2;
   lyricsFollow = true;
@@ -5495,6 +5516,7 @@ function rebuildChordSheet() {
   list.classList.toggle("chords", on);
   sheetChords = on ? prepareChords(data) : [];
   if (!on && !sheetRendered && !grid.firstChild) return;            // kapalı ve zaten düz: yapacak iş yok
+  playerGlow.forget();                                               // satır düğümleri yeniden çiziliyor (aşağıda yeniden bağlanır)
   const duration = engine.duration || Number(currentSong && currentSong.duration) || 0;
   const map = on && lyricsDoc ? mapSheet({ lines: lyricsDoc.lines, chords: sheetChords, duration }) : null;
   const create = (tag) => document.createElement(tag);
@@ -5529,6 +5551,7 @@ function rebuildChordSheet() {
   sheetRendered = on;
   applyChordLabels(true);
   chordSheetTick(engine.visualTime, true);
+  attachPlayerGlow(lyricsIndex);
 }
 
 // Ton değişince (mikser ton kaydırıcısı / "Plak gibi") akor metinleri yeniden yazılır; sayfa yeniden KURULMAZ.
@@ -5837,14 +5860,17 @@ function paintLyrics(index) {
     if (items[index]) items[index].classList.add("active");
   }
   lyricsIndex = index;
+  attachPlayerGlow(index);
   if (index >= 0 && lyricsFollow) scrollLyricsTo(index);
 }
 
 // Her karede çağrılıyor: satır değişmedikçe DOM'a dokunmaz.
 function lyricsTick(time) {
   if (!lyricsDoc || el("lyrics-body").hidden) return;
-  const index = findLine(lyricsDoc.lines, highlightTime(time));
+  const probe = highlightTime(time);
+  const index = findLine(lyricsDoc.lines, probe);
   if (index !== lyricsIndex) paintLyrics(index);
+  if (playerGlow.active) playerGlow.update(probe);
 }
 
 function lyricsUserScrolled() {
@@ -6314,6 +6340,7 @@ on("open-settings", "click", () => {
   el("setting-songtheme").checked = songThemeEnabled();
   el("setting-spin").checked = applySpinSetting();
   refreshLookOnlySettings();
+  el("setting-wordglow").checked = wordGlowOn;
   el("setting-clipkeep").checked = settingOn(safeStorage().storage, CLIP_KEEP_KEY);
   el("setting-eightd-speed").value = readEightD(safeStorage().storage).speed;
   el("setting-crossfade").value = String(readCrossfade(safeStorage().storage));
@@ -7935,6 +7962,7 @@ function applySpinSetting() {
   return on;
 }
 
+on("setting-wordglow", "change", () => setWordGlow(el("setting-wordglow").checked));
 on("setting-spin", "change", () => {
   try { localStorage.setItem("stem-mikser.spin", el("setting-spin").checked ? "1" : "0"); } catch { /* bu oturumda kalır */ }
   applySpinSetting();

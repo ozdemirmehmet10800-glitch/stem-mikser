@@ -1409,6 +1409,12 @@ button.cc.more {
 .lyric-line.active .lyric-sub { color: var(--text-dim); font-weight: 400; }
 
 .lf-main { display: block; }
+/* Karaoke kelime vurgusu (karaoke.js): yalnız çalan satır kelimelere bölünür. Yalnız renk/opaklık: satır yerleşimi kaymaz. */
+.kw { transition: opacity 0.15s ease, color 0.15s ease, text-shadow 0.15s ease; }
+.lyric-line.active .kw, .lf-line.cur .kw { opacity: 0.5; }
+.lyric-line.active .kw.done, .lf-line.cur .kw.done { opacity: 1; }
+.lyric-line.active .kw.now, .lf-line.cur .kw.now { opacity: 1; color: var(--accent); text-shadow: 0 0 14px var(--accent-dim, transparent); }
+@media (prefers-reduced-motion: reduce) { .kw { transition: none; } }
 .lf-sub { display: block; font-size: 0.56em; line-height: 1.3; font-weight: 400; margin-top: 0.15em; opacity: 0.78; }
 .lf-sub[hidden] { display: none; }
 .lf-ro { font-style: italic; letter-spacing: 0.01em; }

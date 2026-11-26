@@ -21,6 +21,7 @@
 
 import { findLine, highlightTime, scrollTarget } from "./lyrics.js";
 import { BeatTracker, wantsFlow, wantsPulse } from "./beatpulse.js";
+import { WordGlow } from "./karaoke.js";
 
 // Ortadaki satırın üstünde ve altında görünen satır sayısı (1-5, ayar: settings.lyricsRows).
 // CSS opaklık/ölçek kademesi bu sayıya göre hesaplanır (--lf-span). Ekran kısaysa sığmayanlar
@@ -53,7 +54,7 @@ export function syncScreenLines(screen, doc, subs, emptyText) {
 export class LyricsScreen {
   constructor({
     ui, createEl, doc = globalThis.document, win = globalThis.window,
-    rows = ROWS_DEFAULT, reducedMotion = () => false, wakeLock = null, keepAwake = () => false,
+    rows = ROWS_DEFAULT, reducedMotion = () => false, wakeLock = null, keepAwake = () => false, wordGlow = false,
     onSeek = () => {}, onTogglePlay = () => {}, onRequestClose = () => {}, onClosed = () => {}, onSettings = () => {},
   }) {
     this.ui = ui;
@@ -87,6 +88,9 @@ export class LyricsScreen {
     this.following = true;
     this.padded = 0;
     this.lastTime = 0;
+    this.glowOn = Boolean(wordGlow);       // karaoke: çalan satırda kelime kelime parlama
+    this.lang = null;
+    this.glow = new WordGlow(this.createEl);
 
     this.rows = normalizeRows(rows);
     ui.root.style.setProperty("--lf-span", String(Math.max(this.rows - 1, 1)));
@@ -142,6 +146,7 @@ export class LyricsScreen {
   close(quiet = false) {
     if (!this.isOpen) return;
     this.isOpen = false;
+    this.glow.detach();
     this.doc.removeEventListener("visibilitychange", this.#onVisibility);
     this.win.removeEventListener("resize", this.#onResize);
     if (this.instantFrame) {
@@ -372,6 +377,7 @@ export class LyricsScreen {
     const index = findLine(lines, probe);
     const center = index >= 0 ? index : scrollTarget(lines, probe);
     if (force || index !== this.index || center !== this.center) this.#paint(index, center);
+    if (this.glow.active) this.glow.update(probe);
     if (this.pulseOn && this.playing) {
       const fired = this.tracker.poll(time);
       if (fired >= 0) this.#pulse(fired);
@@ -400,6 +406,7 @@ export class LyricsScreen {
         }
       }
     }
+    if (index !== this.index || !this.glow.active) this.#glowLine(index);
     this.index = index;
     this.center = center;
     if (this.following) this.#position();
@@ -447,8 +454,25 @@ export class LyricsScreen {
 
   // ------------------------------------------------------------ satırlar
 
+  /** Karaoke kelime vurgusunu aç/kapa (Ayarlar > Sözler). */
+  setWordGlow(on) {
+    this.glowOn = Boolean(on);
+    if (!this.isOpen) return;
+    this.#glowLine(this.index);
+    if (this.glow.active) this.glow.update(highlightTime(this.lastTime));
+  }
+
+  #glowLine(index) {
+    this.glow.detach();
+    if (!this.glowOn || index < 0) return;
+    const item = this.ui.track.children[index];
+    if (item && item.children[0]) this.glow.attach(item.children[0], this.lines[index], this.lang);
+  }
+
   #buildLines(lang) {
     const track = this.ui.track;
+    this.glow.forget();                 // düğümler baştan kuruluyor
+    this.lang = lang;
     track.textContent = "";
     if (lang) track.lang = lang;
     else track.removeAttribute("lang");

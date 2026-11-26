@@ -35,7 +35,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v90 (Sözleri bul: LRCLIB; önceki v89 Rusça sözler + okunuş, yatay ekran düzeni).
+- **Son sürüm:** SW v91 (karaoke kelime vurgusu; v90 Sözleri bul; v89 Rusça + okunuş, yatay ekran).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -44,6 +44,21 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### Karaoke kelime vurgusu (oynatıcı ve tam ekran sözler) + Ayarlar'da aç/kapa
+
+- **Ne:** Çalan satırda o an söylenen kelime vurgu renginde parlar, söylenmiş kelimeler tam parlak, sıradakiler sönük. Oynatıcıdaki söz
+  listesinde ve tam ekran sözlerde (Sahne modunda zaten vardı). Kelime zamanları sözlerle birlikte zaten geliyordu (`w`), yeni sunucu işi yok.
+- **Ayar:** Ayarlar > **Sözler** > "Kelime kelime parlasın (karaoke)"; varsayılan AÇIK, `stem-mikser.wordglow`. Kapatınca satır eskisi gibi bütün parlar.
+- **Ne zaman çalışmaz:** kelime zamanı olmayan ya da sonradan metni elle değiştirilmiş satır (kelimeler metinle uyuşmazsa) düz kalır;
+  akorlu söz sayfası açıkken kapalı (satırlar akorla çiziliyor).
+- **Yük:** yalnız çalan satır kelimelere bölünür; kare başına yalnız kelime değişince sınıf yazılır (yerleşim değişmez, yalnız renk/opaklık).
+- **Kod:** yeni `js/karaoke.js` (`WordGlow`, `sungIndex`), `lyricsscreen.js` (`wordGlow`, `setWordGlow`), app.js. Test: `karaoke_test.mjs`.
+- **Denendi (tarayıcı, 375x812, sahte sunucu):** çalarken kelimeler sırayla "now -> done" oldu (listede ve tam ekranda), ayar kapatınca
+  ikisi de düz metne döndü, açınca geri geldi. **Testler:** 85 dosya yeşil. **SW:** v91. **Telefonda denenmedi.**
+- **Telefonda kontrol:** 1) Ayarlar'da "SW v91". 2) Sözü olan şarkıyı çal: çalan satırda kelimeler sırayla parlamalı. 3) Tam ekran sözlerde de.
+  4) Ayarlar > Sözler'den kapat: satır bütün parlamalı.
+
 
 ### "Sözleri bul": doğru söz metni açık söz veritabanından (LRCLIB), sonra sese hizalama
 
