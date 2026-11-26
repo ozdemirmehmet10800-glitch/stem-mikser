@@ -5415,6 +5415,7 @@ on("open-settings", "click", () => {
   el("setting-spin").checked = applySpinSetting();
   refreshLookOnlySettings();
   el("setting-wordglow").checked = wordGlowOn;
+  el("setting-splash").checked = Boolean(globalThis.StemLook && globalThis.StemLook.readSplash(globalThis.localStorage));
   el("setting-clipkeep").checked = settingOn(safeStorage().storage, CLIP_KEEP_KEY);
   el("setting-eightd-speed").value = readEightD(safeStorage().storage).speed;
   el("setting-crossfade").value = String(readCrossfade(safeStorage().storage));
@@ -6791,6 +6792,9 @@ function applySpinSetting() {
 }
 
 on("setting-wordglow", "change", () => setWordGlow(el("setting-wordglow").checked));
+on("setting-splash", "change", () => {
+  if (globalThis.StemLook) globalThis.StemLook.setSplash(el("setting-splash").checked, globalThis.localStorage);   // sonraki açılışta geçerli
+});
 on("setting-spin", "change", () => {
   try { localStorage.setItem("stem-mikser.spin", el("setting-spin").checked ? "1" : "0"); } catch { /* bu oturumda kalır */ }
   applySpinSetting();

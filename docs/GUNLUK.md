@@ -35,7 +35,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v92 (kod sadeleştirme; v91 karaoke; v90 Sözleri bul; v89 Rusça + okunuş, yatay ekran).
+- **Son sürüm:** SW v93 (açılış ekranı; v92 kod sadeleştirme; v91 karaoke; v90 Sözleri bul; v89 Rusça + okunuş, yatay ekran).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -44,6 +44,21 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### Açılış ekranı: logo, uygulama adı ve "Geliştiren: Berkay Özdemir"
+
+- **Ne:** Uygulama açılırken ~2,4 sn'lik şık bir açılış ekranı: mikser sürgülerini andıran beş renkli düğme sırayla yerine kayar, ardından
+  "Stem Mikser", alt yazı ("Şarkıyı kanallarına ayır, istediğin gibi çal") ve altta ince çizgiyle "GELİŞTİREN" + renk geçişli
+  **Berkay Özdemir**. Arkada vurgu renklerinden yumuşak ışık. Temaya uyar (koyu / sahne siyahı / aydınlık; klasik görünümde de çalışır).
+- **Davranış:** yalnız sayfa ilk yüklenirken; dokununca hemen geçer; paylaş menüsünden gelinince gösterilmez (onay kartı beklemesin).
+  Ayarlar > Görünüm > "Açılış ekranı" ile kapatılabilir (`stem-mikser.splash`, varsayılan açık; sonraki açılışta geçerli).
+- **Sağlamlık:** zamanlama tamamen CSS'te; ana betik geç yüklense ya da yüklenemese de ekran kendiliğinden kalkar. Mantık `look.js`'te
+  (sayfa boyanmadan önce çalışan küçük betik): kapalıysa hiç boyanmaz. Yalnız transform/opacity animasyonu; azaltılmış harekette sade.
+- **Denendi (tarayıcı, 375x812):** koyu ve aydınlık temada görüntü, 3,2 sn sonra kalkıyor, dokununca 0,45 sn içinde gidiyor, Ayarlar'dan
+  kapatınca görünmüyor. **Test:** yeni `splash_test.mjs`; 87 dosya yeşil. **SW:** v93. **Telefonda denenmedi.**
+- **Not:** ad "Berkay Özdemir" olarak yazıldı (kullanıcının mesajındaki yazım hatası yorumlandı); farklıysa `index.html` #splash.
+- **Telefonda kontrol:** 1) Uygulamayı kapatıp aç: açılış ekranı gelip ~2 sn'de kaybolmalı. 2) Dokununca hemen geçmeli.
+  3) Ayarlar > Görünüm'den kapatıp uygulamayı yeniden aç: gelmemeli. 4) Tekrar aç.
 
 ### Nothing Else Matters'ta sözler satır atlıyordu: yeni yöntemle yeniden hizalandı (kullanıcı onayıyla)
 

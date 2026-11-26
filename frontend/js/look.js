@@ -102,9 +102,57 @@
     }
   }
 
+  // Açılış ekranı (logo + "Geliştiren"): yalnız sayfa İLK yüklenirken, ~2,2 sn. Zamanlama tamamen CSS'te (index.html #splash): ana betik
+  // geç yüklense ya da hiç yüklenmese de ekran kendiliğinden kalkar. Burada yalnız: kapalıysa hiç gösterme (boyamadan önce), dokununca
+  // hemen geç, bitince düğümü kaldır. Paylaş menüsünden gelinince gösterilmez (onay kartı beklemesin). Ayrı anahtar: "0" = kapalı.
+  var SPLASH_KEY = "stem-mikser.splash";
+
+  function readSplash(storage) {
+    try {
+      return (storage && storage.getItem(SPLASH_KEY)) !== "0";
+    } catch (error) {
+      return true;
+    }
+  }
+
+  function setSplash(on, storage) {
+    try {
+      if (storage) storage.setItem(SPLASH_KEY, on ? "1" : "0");
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function wantsSplash(search, storage) {
+    if (/(?:^|[?&])paylasim(?:[=&#]|$)/.test(String(search || ""))) return false;
+    return readSplash(storage);
+  }
+
+  function wireSplash(doc, win) {
+    if (!doc || !doc.addEventListener) return;
+    function done(node) {
+      if (node && node.parentNode) node.parentNode.removeChild(node);
+    }
+    function setup() {
+      var node = doc.getElementById("splash");
+      if (!node) return;
+      if (doc.documentElement.classList.contains("no-splash")) { done(node); return; }
+      node.addEventListener("animationend", function (event) {
+        if (event.target === node) done(node);              // çıkış animasyonu bitti
+      });
+      node.addEventListener("pointerdown", function () { node.classList.add("skip"); });
+      // Güvence: animasyon olayı gelmese de (arka planda açılış vb.) kaldır.
+      if (win && win.setTimeout) win.setTimeout(function () { done(node); }, 4000);
+    }
+    if (doc.readyState === "loading") doc.addEventListener("DOMContentLoaded", setup);
+    else setup();
+  }
+
   var api = {
     KEY: KEY, NEW: NEW, CLASSIC: CLASSIC, paramOf: paramOf, resolve: resolve, apply: apply, set: set, current: current, readStored: readStored,
     THEME_KEY: THEME_KEY, THEMES: THEMES, readTheme: readTheme, applyTheme: applyTheme, setTheme: setTheme,
+    SPLASH_KEY: SPLASH_KEY, readSplash: readSplash, setSplash: setSplash, wantsSplash: wantsSplash,
   };
   root.StemLook = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
@@ -114,5 +162,7 @@
     try { storage = root.localStorage; } catch (error) { storage = null; }
     apply(resolve(location.search, storage).look, document);
     applyTheme(readTheme(storage), document);
+    if (!wantsSplash(location.search, storage)) document.documentElement.classList.add("no-splash");
+    wireSplash(document, root);
   }
 })(typeof globalThis !== "undefined" ? globalThis : this);

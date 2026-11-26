@@ -25,6 +25,15 @@
 </head>
 <body>
 
+<!-- Açılış ekranı: yalnız sayfa ilk yüklenirken ~2,4 sn (zamanlama tamamen CSS'te; dokununca geçer). Ayarlar > Görünüm'den kapatılabilir (look.js). -->
+<div class="splash" id="splash" aria-hidden="true">
+  <div class="splash-glow"></div>
+  <div class="splash-mark"><i style="--t:48px"></i><i style="--t:14px"></i><i style="--t:34px"></i><i style="--t:6px"></i><i style="--t:40px"></i></div>
+  <div class="splash-name">Stem Mikser</div>
+  <div class="splash-tag">Şarkıyı kanallarına ayır, istediğin gibi çal</div>
+  <div class="splash-credit"><span>Geliştiren</span><strong>Berkay Özdemir</strong></div>
+</div>
+
 <!-- Yeni görünümün simge seti (docs/TASARIM.md): 24x24, çizgi 2, yuvarlak uç, currentColor. Bu projede çizildi. -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
   <symbol id="i-library" viewBox="0 0 24 24"><path d="M4 6h10M4 12h10M4 18h6"/><path d="M18 16.5V8l3-1"/><circle cx="16.3" cy="17.2" r="1.8"/></symbol>
@@ -612,6 +621,7 @@
         <label class="check"><span>Vurgu rengi çalan şarkının kapağından gelsin</span><input type="checkbox" id="setting-songtheme" role="switch"></label>
         <small id="look-only-note" hidden>Tema ve kapaktan vurgu rengi yalnız yeni görünümde geçerli (klasik görünüm kendi renklerinde kalır).</small>
         <label class="check"><span>Kapak çalarken dönsün (plak gibi)</span><input type="checkbox" id="setting-spin" role="switch"></label>
+        <label class="check"><span>Açılış ekranı (logo ve geliştiren adı)</span><input type="checkbox" id="setting-splash" role="switch"></label>
       </div>
 
       <div class="field">
