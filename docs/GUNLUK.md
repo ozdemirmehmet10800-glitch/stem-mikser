@@ -45,6 +45,34 @@
 
 ## Kayıtlar (en yeni üstte)
 
+### Otomatik söz çıkarma güçlendirildi: daha geniş arama (ölçüme dayalı)
+
+- **Onay:** GPU denemesi için kullanıcı "4 olsun" dedi (tahmin ~0,05 $ söylenmişti). **Harcanan: 0,049 $** (0,035 + 0,014), tek konteyner.
+- **Deney:** yeni `backend/lyrics_tune.py` (ayrı Modal uygulaması; canlıdaki `_lyr_*` kodunun aynısını AST ile alıp çalıştırır, canlı imajla aynı
+  tanım, Volume yalnız okundu, hiçbir şarkıya iş başlatılmadı/yazılmadı). 4 şarkı, referans sözlerle kelime hata oranı (WER, düşük iyi):
+
+  | Şarkı | Canlı ayar | Ad ipucu | Geniş arama | İpucu + geniş |
+  |---|---|---|---|---|
+  | Zeus (tr) | 0,328 | 0,328 | 0,328 | 0,232 |
+  | Madem (tr) | 0,275 | 0,275 | 0,270 | 0,311 |
+  | ADDICT (en) | 0,379 | 0,335 | 0,332 | 0,332 |
+  | холод по спине (ru) | 0,336 | 0,314 | 0,200 | 0,200 |
+  | **Ortalama** | **0,330** | 0,313 | **0,283** | 0,269 |
+
+  Referanslar: Zeus eski referans, Madem/ADDICT LRCLIB, Rusça kullanıcının yapıştırdığı metin (hepsi `backend/lyrics_ref/`, gitignore'lı).
+  Rusça dil algılama 4/4 doğru (ru dahil).
+- **Karar:** yalnız **geniş arama** (`beam_size=10, patience=2`, `LYRICS_SEARCH`): hiçbir şarkıda kötüleşmedi, ortalama %14 daha az hata.
+  Ad ipucu (initial_prompt) ALINMADI: bir şarkıda (Madem) bozdu ve başlığın söze sızma riski var.
+- **Bedel:** otomatik çıkarma ~%30 daha uzun (şarkı başı birkaç saniye; maliyet şarkı başı ~0,003 $ -> ~0,004 $).
+- **Değişmeyen:** yapıştır-hizala (çapa kelimeleri eski ayarda; hizalama böyle ölçülmüştü). Mevcut sözler değişmez; yeni ayar yalnız
+  bundan sonra "Sözleri çıkar"a basılınca kullanılır.
+- **Sınır:** 4 şarkıyla ölçüldü; ses kaydına göre kazanç değişir. "Kusursuz" için hâlâ en iyi yol **Sözleri bul** (doğru metin + hizalama).
+- **Sunucu:** `app.py` satır sayısı 9296 (yorum satırı birleştirildi), deploy edildi. **Test:** `test_lyrics_gate.py` (auto'da arama var,
+  çapada yok); 85 dosya yeşil. Arayüz değişmedi (SW v91 aynı).
+- **Telefonda kontrol:** sözü olmayan (ya da yeniden çıkarmak istediğin) bir şarkıda "Sözleri çıkar": birkaç saniye daha uzun sürebilir,
+  sözler öncekinden daha az hatalı gelmeli.
+
+
 ### Karaoke kelime vurgusu (oynatıcı ve tam ekran sözler) + Ayarlar'da aç/kapa
 
 - **Ne:** Çalan satırda o an söylenen kelime vurgu renginde parlar, söylenmiş kelimeler tam parlak, sıradakiler sönük. Oynatıcıdaki söz

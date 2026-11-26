@@ -3336,14 +3336,14 @@ def sub_cleanup(yes: bool = False, only: str = ""):
 # yapıştırdığı metin sese hizalanır). Girdi SW vokal stem'i. VAD YOK (reverb'li
 # vokalde sesi konuşma saymıyor: NEM slowed'da söz hata oranı 0.97), onun yerine
 # vokal enerjisinden enerji maskesi. Ölçümler PLAN.md Aşama 11'de.
-# Ana şarkı yeniden işlenince sözler SİLİNMEZ: `parent_stems_version` ile
-# karşılaştırılıp "eski ayrıştırmadan" diye işaretlenir (`_lyr_stale`).
+# Ana şarkı yeniden işlenince sözler SİLİNMEZ: `parent_stems_version` ile karşılaştırılıp "eski ayrıştırmadan" (`_lyr_stale`).
 # Yapıştırılan metin yalnız Volume'da (lyrics.json) durur; depoya girmez.
 # --------------------------------------------------------------------------
 
 LYRICS_LANGS = ("tr", "en", "ja", "ru")
 LYRICS_MODES = ("auto", "pasted")
 LYRICS_MODEL = "large-v3"
+LYRICS_SEARCH = {"beam_size": 10, "patience": 2.0}   # auto: geniş arama (backend/lyrics_tune.py, 4 şarkı: WER 0.330 -> 0.283)
 LYRICS_HF_HOME = "/data/weights-lyrics/hf"      # deneyde indirilen faster-whisper ağırlığı
 LYRICS_RATE = 16000
 LYRICS_HOP = 0.05                    # sn: enerji çerçevesi
@@ -4115,7 +4115,7 @@ def _lyr_save_auto_words(song_dir: pathlib.Path, status: dict, language: str, wo
 
 
 def _lyr_transcribe_words(model, audio, active, language: str) -> list:
-    """Otomatik çıkarma (auto moduyla AYNI ayar) + enerji maskesi; kelime listesi [(s, e, w)]."""
+    """Yapıştır-hizala çapası: otomatik çıkarma (LYRICS_SEARCH YOK, hizalama böyle ölçüldü) + enerji maskesi; [(s, e, w)]."""
     result = model.transcribe(audio, language=language, vad=False, word_timestamps=True,
                               condition_on_previous_text=False, regroup=True)
     lines = _lyr_mask_filter(_lyr_segments(result), active)
@@ -4228,7 +4228,7 @@ def _extract_lyrics_impl(song_id: str, mode: str, language: str, text: str, prev
     song_dir = _song_dir(song_id)
     if mode == "auto":
         result = model.transcribe(audio, language=lang, vad=False, word_timestamps=True,
-                                  condition_on_previous_text=False, regroup=True)
+                                  condition_on_previous_text=False, regroup=True, **LYRICS_SEARCH)
         raw = _lyr_segments(result)
         lines = _lyr_clean_lines(_lyr_mask_filter(raw, active))
         dropped = len(raw) - len(lines)
@@ -4270,7 +4270,7 @@ def _extract_lyrics_impl(song_id: str, mode: str, language: str, text: str, prev
         "parent_stems_version": status.get("stems_version"),
         "parent_pipeline": status.get("pipeline"),
         "model": {"name": f"faster-whisper {LYRICS_MODEL} + stable-ts", "vad": False,
-                  "input": "stem"},
+                  "input": "stem", "search": dict(LYRICS_SEARCH)},
         "thresholds": {"silent_dbfs": LYRICS_SILENT_DBFS, "activity_dbfs": round(threshold, 1),
                        "mismatch_prob": LYRICS_MISMATCH_PROB},
         "seconds": {"model_load": load_seconds, "work": work_seconds, "wall": wall},

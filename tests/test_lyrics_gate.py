@@ -257,6 +257,12 @@ def test_constants(app):
           app.LYRICS_LANGS == ("tr", "en", "ja", "ru") and app.LYRICS_MODES == ("auto", "pasted"))
     check("imaj ayri: separate_image ve sub_image'dan farkli nesne",
           app.lyrics_image is not app.separate_image and app.lyrics_image is not app.sub_image)
+    import inspect
+    impl = inspect.getsource(app._extract_lyrics_impl)
+    anchor = inspect.getsource(app._lyr_transcribe_words)
+    check("auto: genis arama (beam 10, patience 2) yalniz otomatik cikarmada; yapistir-hizala capasi degismedi",
+          app.LYRICS_SEARCH == {"beam_size": 10, "patience": 2.0} and "regroup=True, **LYRICS_SEARCH)" in impl
+          and "LYRICS_SEARCH)" not in anchor.split('"""')[-1] and '"search": dict(LYRICS_SEARCH)' in impl)
 
 
 def main():
