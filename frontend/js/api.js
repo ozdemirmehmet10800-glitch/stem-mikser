@@ -208,7 +208,7 @@ export class Api {
   }
 
   // Şarkı sözleri (Aşama 11). mode "auto" (çıkar) | "pasted" (verilen metni sese hizala);
-  // language "auto" | "tr" | "en" | "ja"; replace: mevcut sonucun üstüne yaz (auto için).
+  // language "auto" | "tr" | "en" | "ja" | "ru"; replace: mevcut sonucun üstüne yaz (auto için).
   // Dönen `state`: "running" | "no_vocals" | "done" | "no_lyrics" (+ existing: true).
   async startLyrics(id, { mode = "auto", language = "auto", text = "", replace = false, manual = [] } = {}) {
     const body = { mode, language, replace };

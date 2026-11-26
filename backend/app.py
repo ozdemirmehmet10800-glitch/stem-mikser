@@ -3341,7 +3341,7 @@ def sub_cleanup(yes: bool = False, only: str = ""):
 # Yapıştırılan metin yalnız Volume'da (lyrics.json) durur; depoya girmez.
 # --------------------------------------------------------------------------
 
-LYRICS_LANGS = ("tr", "en", "ja")
+LYRICS_LANGS = ("tr", "en", "ja", "ru")
 LYRICS_MODES = ("auto", "pasted")
 LYRICS_MODEL = "large-v3"
 LYRICS_HF_HOME = "/data/weights-lyrics/hf"      # deneyde indirilen faster-whisper ağırlığı
@@ -3602,9 +3602,9 @@ def _lyr_language_windows(audio, count: int = 4):
 
 
 def _lyr_pick_language(window_scores) -> tuple:
-    """Pencere başına {dil: olasılık} listesinden tr/en/ja içinde kazanan.
+    """Pencere başına {dil: olasılık} listesinden tr/en/ja/ru içinde kazanan.
 
-    Yalnız desteklenen üç dil sayılır (ilk sürümde tek dil, tr/en/ja). Dönen:
+    Yalnız desteklenen dört dil sayılır (ilk sürümde tek dil, tr/en/ja/ru). Dönen:
     (dil, ayrıntı). Skor yoksa dil None."""
     totals = {lang: 0.0 for lang in LYRICS_LANGS}
     for scores in window_scores:
@@ -5838,7 +5838,7 @@ def _sign_download(key: str, song_id: str, name: str, fmt: str, exp: int) -> str
 # --------------------------------------------------------------------------
 
 TRANSLATE_SECRET_NAME = "stem-mikser-gemini"
-TRANSLATE_LANGS = ("en", "ja")                 # çevrilebilir kaynak diller (tr çevrilmez)
+TRANSLATE_LANGS = ("en", "ja", "ru")           # çevrilebilir kaynak diller (tr çevrilmez; ru okunuşu telefonda)
 TRANSLATE_API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 TRANSLATE_DEFAULT_MODEL = "gemini-3.8-flash"
 TRANSLATE_DEFAULT_FALLBACK = "gemini-3.5-flash-lite"
@@ -5850,7 +5850,7 @@ TRANSLATE_RUNNING_STALE_SECONDS = 900
 TRANSLATE_BUSY_MESSAGE = "Çeviri servisi şu an meşgul, biraz sonra tekrar dene."
 TRANSLATE_KANJI_RE = re.compile(r"[㐀-䶿一-鿿]")
 TRANSLATE_NUMBERING_RE = re.compile(r"^\s*(\d{1,3}\s*[:.)\]-]|\[\d{1,3}\])\s")
-TRANSLATE_LANG_NAMES = {"en": "English", "ja": "Japanese"}
+TRANSLATE_LANG_NAMES = {"en": "English", "ja": "Japanese", "ru": "Russian"}
 
 
 class TranslateError(Exception):

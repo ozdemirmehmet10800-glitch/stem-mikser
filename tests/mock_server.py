@@ -385,7 +385,7 @@ class Handler(BaseHTTPRequestHandler):
             mode = (body or {}).get("mode", "auto")
             language = (body or {}).get("language", "auto")
             replace = (body or {}).get("replace") is True
-            if mode not in ("auto", "pasted") or language not in ("auto", "tr", "en", "ja"):
+            if mode not in ("auto", "pasted") or language not in ("auto", "tr", "en", "ja", "ru"):
                 self._json(400, {"detail": "Gecersiz mod ya da dil"})
                 return
             lines = []
@@ -955,7 +955,7 @@ class Handler(BaseHTTPRequestHandler):
         if doc["language"] == "tr":
             self._json(400, {"detail": "Turkce sozler cevrilmez"})
             return
-        if doc["language"] not in ("en", "ja"):
+        if doc["language"] not in ("en", "ja", "ru"):
             self._json(400, {"detail": "Bu dildeki sozler cevrilemez"})
             return
         current = song["status"].get("translation") or {}
@@ -1124,7 +1124,7 @@ def main():
                         help="hedef melodi taklidi (Mikrofon paketi 9)")
     parser.add_argument("--melody-polls", type=int, default=0,
                         help="melodi POST sonrasi bu kadar durum sorgusu boyunca running kalsin")
-    parser.add_argument("--lyrics-lang", default="tr", choices=["tr", "en", "ja"],
+    parser.add_argument("--lyrics-lang", default="tr", choices=["tr", "en", "ja", "ru"],
                         help="otomatik soz cikarmada dil (cevirinin denenebilmesi icin)")
     parser.add_argument("--stem-delay", type=float, default=0.0,
                         help="her stem istegini bu kadar saniye beklet (yavas ag taklidi)")

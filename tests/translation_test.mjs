@@ -53,7 +53,7 @@ const both = { tr: true, ro: true };
 const entry = { tr: "Merhaba", ro: "konnichiwa" };
 check("alt yazı: ja'da okunuş + çeviri", JSON.stringify(subsFor(entry, both, "ja")) === '{"ro":"konnichiwa","tr":"Merhaba"}');
 check("alt yazı: en'de de okunuş (Türkçe harfli telaffuz) + çeviri", subsFor(entry, both, "en").ro === "konnichiwa" && subsFor(entry, both, "en").tr === "Merhaba");
-check("alt yazı: ja/en dışında okunuş yok", subsFor(entry, both, "tr").ro === "" && subsFor(entry, both, "de").ro === "" && READING_LANGS.join() === "ja,en");
+check("alt yazı: ja/en dışında okunuş yok", subsFor(entry, both, "tr").ro === "" && subsFor(entry, both, "de").ro === "" && READING_LANGS.join() === "ja,en,ru");
 check("alt yazı: kapalıysa boş", subsFor(entry, { tr: false, ro: true }, "ja").tr === "" && subsFor(entry, { tr: true, ro: false }, "ja").ro === "");
 check("alt yazı: kayıt yoksa boş", subsFor(null, both, "ja").tr === "" && subsFor({ tr: "x" }, both, "ja").ro === "");
 const list = subsList(lines, map, both, "ja");

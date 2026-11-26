@@ -28,14 +28,14 @@
 
 ## Cep (sonra yapılacak fikirler, henüz yapılmadı)
 
-- **Yatay ekran düzeni:** Telefon yan çevrilince klip solda, mikser (kanallar) sağda; ikisi aynı anda görünür.
+- (şu an boş)
 
 ## Genel özet
 
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v88 (teknik denetim düzeltmeleri).
+- **Son sürüm:** SW v89 (Rusça sözler + okunuş, yatay ekran düzeni).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -44,6 +44,33 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### Rusça sözler ve okunuşu; yatay ekran düzeni (klip solda, mikser sağda)
+
+- **Yedek:** git etiketi `yedek-rusca-yatay-oncesi-20261126` (v88).
+- **Rusça sözler:** Sözler ekranındaki dil seçicide artık **Русский** var; "Otomatik" de Rusçayı tanıyor (Whisper large-v3 Rusçayı destekliyor;
+  sunucudaki dil listesine "ru" eklendi). Yapıştır ve hizala da Rusça metinle çalışır.
+- **Çeviri:** Rusça sözlerde **Çevir** düğmesi çıkar: Gemini Rusçadan Türkçeye satır satır çevirir (İngilizce ve Japoncadaki gibi).
+- **Okunuş:** Her Rusça satırın altında Türkçe harflerle okunuşu çıkar (örnek: "Привет, мой друг" -> "Privet, moy drug"). Telefonda
+  kural tabanlı hesaplanır (yeni `js/rureading.js`): **ücretsiz, anında, internetsiz** ve çeviri yapılmadan da görünür. "Okunuş" düğmesiyle aç/kapa.
+  Sık söyleyiş kuralları var: что -> şto, -ого/-его -> -ovo/-evo (ничего -> niçevo), -тся/-ться -> -tsa, ж/ш/ц'den sonra и -> ı.
+  **Sınır:** Rusçada vurgu yazıda görünmez, vurgusuz "o"nun "a" gibi okunması yapılmaz (хорошо -> "horoşo"; gerçekte "haraşo").
+- **Sunucu:** `backend/app.py` yalnız 4 satırda yerinde değişti (satır sayısı 9296, imaj yeniden kurulmadı, deploy 6,6 sn). GPU işi
+  başlatılmadı, Volume'a dokunulmadı. Rusça sözü telefondan sen istediğinde her zamanki söz çıkarma kadar GPU harcar.
+- **Yatay ekran (Cep'ten):** Klibi olan şarkıda telefonu yan çevirince **klip solda, altında sözler; sağda kanallar, ön ayarlar ve alt çubuk**,
+  hepsi aynı anda. Klip | Mikser anahtarı yatayda gizlenir (seçimin değişmez; dik çevirince eski hâline döner). Yer kalmadığı için yatayda
+  **akor şeridi, döngü çubuğu ve Sahne/yöntem satırı gizli**; döngüyü soldaki sözlerde satıra uzun basarak kurabilirsin. Antrenör açıkken
+  yatay düzen devre dışı (eski düzen).
+- **Ölçüm (tarayıcı, sahte sunucu, 892x400 yatay):** klip 446x216, sözler 160 px yükseklik (kendi içinde kayar), sağda üst çubuk 54,
+  ön ayarlar 46, kanallar 181 (~3 kanal, kayar), alt çubuk 119; ekrandan taşma ve yana kayma yok (yeni ve klasik görünüm). 375x812 dikeyde
+  yerleşim eskisiyle aynı.
+- **Testler:** 82 dosyanın hepsi yeşil (yeni `rureading_test.mjs`; `clipframe_test`, `lyrics_test`, `translation_test`,
+  `trainer_layout_test`, `test_lyrics_gate.py` güncellendi). **SW:** v89. **Telefonda denenmedi.**
+- **Telefonda kontrol (4 adım):**
+  1. Ayarlar'da "Sürüm: SW v89" yazmalı (gerekirse uygulamayı kapat-aç).
+  2. Rusça bir şarkıda Sözler > dil "Русский" (ya da Otomatik) ile sözleri çıkar: satırların altında Türkçe harfli okunuş görünmeli.
+  3. "Çevir"e bas: Türkçe çeviri gelmeli; "Okunuş" düğmesi okunuşu gizleyip göstermeli.
+  4. Klibi olan şarkıyı açıp telefonu yan çevir: klip solda, kanallar sağda; çalınca video sesle birlikte oynamalı. Dik çevir: eski düzen.
 
 ### Teknik ve ayar denetimi
 

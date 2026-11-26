@@ -253,8 +253,8 @@ def test_stale_and_drop(app):
 
 def test_constants(app):
     check("kapi: vokal yok esigi alt parcayla ayni (-50 dBFS)", app.LYRICS_SILENT_DBFS == app.SUB_SILENT_DBFS == -50.0)
-    check("dil kumesi tr/en/ja, modlar auto/pasted",
-          app.LYRICS_LANGS == ("tr", "en", "ja") and app.LYRICS_MODES == ("auto", "pasted"))
+    check("dil kumesi tr/en/ja/ru, modlar auto/pasted",
+          app.LYRICS_LANGS == ("tr", "en", "ja", "ru") and app.LYRICS_MODES == ("auto", "pasted"))
     check("imaj ayri: separate_image ve sub_image'dan farkli nesne",
           app.lyrics_image is not app.separate_image and app.lyrics_image is not app.sub_image)
 

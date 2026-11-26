@@ -1613,6 +1613,47 @@ button.cc.more {
 #view-player.clip-on .mix-bar, #view-player.clip-on .mix-notice, #view-player.clip-on .channels, #view-player.clip-on .loop-bar { display: none; }
 #view-player.clip-on .transport { margin-top: auto; }
 #view-player.trainer-on .view-switch, #view-player.trainer-on .player-clip { display: none; }
+/* Yatay telefon + klip (.clip-land, JS yalnız yatay telefonda koyar): klip ve sözler SOLDA, mikser (kanallar, düğmeler) SAĞDA. */
+#view-player.clip-land:not(.trainer-on) {
+  --land-w: min(50vw, 600px); --land-x: calc(8px + env(safe-area-inset-left, 0px)); --land-clip: 54%;
+  position: relative; max-width: none; margin: 0;
+  padding-left: calc(var(--land-x) + var(--land-w) + 12px); padding-right: calc(12px + env(safe-area-inset-right, 0px));
+}
+#view-player.clip-land:not(.trainer-on):has(> .lyrics[hidden]) { --land-clip: calc(100% - 16px); }
+/* sözler yok ya da kapalı (yalnız başlık satırı): klip daha uzun */
+#view-player.clip-land:not(.trainer-on):has(> .lyrics:not([hidden]):not(:has(> .lyrics-body:not([hidden])))) { --land-clip: 66%; }
+#view-player.clip-land:not(.trainer-on) .lyrics:not(:has(> .lyrics-body:not([hidden]))) { bottom: auto; }
+#view-player.clip-land:not(.trainer-on) .player-clip {
+  position: absolute; left: var(--land-x); top: 8px; width: var(--land-w); height: var(--land-clip);
+  min-height: 0; max-height: none; aspect-ratio: auto; margin: 0; border-radius: 12px;
+}
+#view-player.clip-land:not(.trainer-on) .lyrics {
+  position: absolute; left: var(--land-x); width: var(--land-w); top: calc(var(--land-clip) + 16px); bottom: 8px; margin: 0;
+  display: flex; flex-direction: column; min-height: 0; overflow-x: hidden; overflow-y: auto;
+}
+/* başlık ve düğmeler TEK satır (düğmeler yana kayar): söz satırlarına yer kalsın */
+#view-player.clip-land:not(.trainer-on) .lyrics-head { flex-wrap: nowrap; }
+#view-player.clip-land:not(.trainer-on) .lyrics-actions { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+#view-player.clip-land:not(.trainer-on) .lyrics[hidden] { display: none; }
+#view-player.clip-land:not(.trainer-on) .lyrics > :not(.lyrics-body) { flex-shrink: 0; }
+#view-player.clip-land:not(.trainer-on) .lyrics-body { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; }
+#view-player.clip-land:not(.trainer-on) .lyrics-body[hidden] { display: none; }
+#view-player.clip-land:not(.trainer-on) .lyrics-list, #view-player.clip-land:not(.trainer-on) .chord-grid { flex: 1 1 0; height: auto; min-height: 3.5rem; max-height: none; }
+#view-player.clip-land:not(.trainer-on) .chord-grid[hidden] { display: none; }
+#view-player.clip-land:not(.trainer-on) .player-method-row, #view-player.clip-land:not(.trainer-on) .chordstrip,
+#view-player.clip-land:not(.trainer-on) .loop-bar { display: none; }   /* yer yok: döngü soldaki sözlerde uzun basmayla kurulur */
+#view-player.clip-land:not(.trainer-on) > .topbar { min-height: 0; padding: 6px 0 4px; }
+#view-player.clip-land:not(.trainer-on) .mix-bar { margin-top: 0; }
+#view-player.clip-land:not(.trainer-on) .channels { flex: 1 1 0; min-height: 0; }
+#view-player.clip-land:not(.trainer-on) .transport { margin-top: auto; padding: 6px 0 calc(8px + env(safe-area-inset-bottom, 0px)); }
+#view-player.clip-land:not(.trainer-on) .play-btn { width: 52px; height: 52px; }
+/* sağ sütun dar (~yarım ekran): klasik görünümün dar ekran kuralları burada da geçerli (sayfa yana taşmasın) */
+#view-player.clip-land:not(.trainer-on) .transport-row { grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr); column-gap: 6px; }
+#view-player.clip-land:not(.trainer-on) .master { max-width: 150px; min-width: 0; }
+#view-player.clip-land:not(.trainer-on) .master input { min-width: 0; width: 100%; }
+#view-player.clip-land:not(.trainer-on) .master-value { display: none; }
+#view-player.clip-land:not(.trainer-on) .channel { grid-template-columns: 84px 1fr 36px 36px 36px; }
+#view-player.clip-land:not(.trainer-on) .channel-db { display: none; }
 .clip-open[hidden] { display: none; }
 .upload-cancel { margin: 6px 0 0; }
 .upload-cancel[hidden] { display: none; }

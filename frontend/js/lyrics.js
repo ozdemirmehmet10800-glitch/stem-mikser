@@ -2,16 +2,16 @@
 // node ile test ediliyor: node tests\lyrics_test.mjs
 //
 // Sunucu şeması (lyrics.json, schema 1): zamanlar ŞARKI saniyesinde (hızdan bağımsız):
-//   { schema, version, source: "auto"|"pasted", language: "tr"|"en"|"ja", duration,
+//   { schema, version, source: "auto"|"pasted", language: "tr"|"en"|"ja"|"ru", duration,
 //     lines: [{ t: başlangıç, e: bitiş, text, w: [[bas, bit, kelime], ...] }] }
 // Durum (status.lyrics): running | done | no_vocals | no_lyrics | error (yoksa: hiç
 // istenmemiş). done iken: source, language, version, warning ("text_mismatch"),
 // parent_stems_version (ana şarkı sonradan yeniden işlendiyse stale), last_attempt.
 
 export const LANG_CHOICES = [
-  ["auto", "Otomatik"], ["tr", "Türkçe"], ["en", "English"], ["ja", "日本語"],
+  ["auto", "Otomatik"], ["tr", "Türkçe"], ["en", "English"], ["ja", "日本語"], ["ru", "Русский"],
 ];
-export const LANGS = ["tr", "en", "ja"];
+export const LANGS = ["tr", "en", "ja", "ru"];
 
 // Şu anki satır: son başlayan satır; sonrasında bu kadar sn geçtiyse (ara müzik)
 // vurgu kalkar.

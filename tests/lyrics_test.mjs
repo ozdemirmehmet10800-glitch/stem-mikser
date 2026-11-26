@@ -23,7 +23,7 @@ const L = (t, e, text = `satir ${t}`) => ({ t, e, text, w: [] });
 const lines = [L(2, 5), L(6, 9), L(10, 12), L(30, 33), L(33, 36)];
 
 // --- dil secenekleri
-check("dil secici: otomatik/tr/en/ja", LANG_CHOICES.map((c) => c[0]).join() === "auto,tr,en,ja");
+check("dil secici: otomatik/tr/en/ja/ru", LANG_CHOICES.map((c) => c[0]).join() === "auto,tr,en,ja,ru");
 
 // --- satir bulma
 check("findLine: ilk satirdan once -1", findLine(lines, 0) === -1 && findLine(lines, 1.99) === -1);

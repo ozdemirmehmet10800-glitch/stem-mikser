@@ -142,9 +142,21 @@ const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8").split(
   const css = read("../frontend/css/styles.css");
   check("Klip | Mikser anahtarı: yalnız klibi olan şarkıda, iki düğme, seçim saklanır",
     /id="view-switch"[^>]*hidden/.test(html) && /id="view-switch-clip"/.test(html) && /id="view-switch-mixer"/.test(html)
-    && /el\("view-switch"\)\.hidden = !has;/.test(fnBody("playerClipApply"))
+    && /el\("view-switch"\)\.hidden = !has \|\| land;/.test(fnBody("playerClipApply"))
     && /on\("view-switch-clip", "click", \(\) => setPlayerClipPref\(true\)\)/.test(app) && /on\("view-switch-mixer", "click", \(\) => setPlayerClipPref\(false\)\)/.test(app)
     && /PLAYER_CLIP_KEY, on \? "1" : "0"/.test(fnBody("setPlayerClipPref")));
+  check("yatay telefon: klip ve mikser birlikte (.clip-land), anahtar gizli, seçim değişmez, dönünce yeniden uygulanır",
+    /matchMedia\("\(orientation: landscape\) and \(max-height: 600px\)/.test(app)
+    && /const on = has && \(land \|\| settingOn\(/.test(fnBody("playerClipApply"))
+    && /classList\.toggle\("clip-on", on && !land\)/.test(fnBody("playerClipApply"))
+    && /classList\.toggle\("clip-land", land\)/.test(fnBody("playerClipApply"))
+    && /classList\.remove\("clip-on", "clip-land"\)/.test(fnBody("playerClipUnload"))
+    && /clipLandQuery\.addEventListener\("change"/.test(app));
+  check("yatay düzen CSS: klip ve sözler solda, kanallar ve alt çubuk görünür, antrenörde devre dışı, gizli sözler gizli kalır",
+    /#view-player\.clip-land:not\(\.trainer-on\) \.player-clip \{\s*position: absolute;/.test(css)
+    && /#view-player\.clip-land:not\(\.trainer-on\) \.lyrics \{\s*position: absolute;/.test(css)
+    && /#view-player\.clip-land:not\(\.trainer-on\) \.lyrics\[hidden\] \{ display: none; \}/.test(css)
+    && !/clip-land[^{]*\.(channels|transport|mix-bar)[^{]*\{[^}]*display: none/.test(css));
   check("klip görünümü: video akışta ve NET (karartma/arka plan yok), kanallar/mikser/döngü gizlenir",
     /\.player-clip \{\s*position: relative; flex: 0 1 auto;/.test(css) && !/\.player-clip::after/.test(css)
     && /#view-player\.clip-on \.mix-bar, #view-player\.clip-on \.mix-notice, #view-player\.clip-on \.channels, #view-player\.clip-on \.loop-bar \{ display: none; \}/.test(css)

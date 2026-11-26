@@ -7,12 +7,17 @@
 // İstemci çeviriyi SATIR METNİNE göre tutar (Map: normKey(metin) -> {tr, ro}), indekse DEĞİL: sözler
 // yeniden hizalansa/sıra değişse de çeviri doğru satırda kalır, metni değişen satır "çevrilmedi" olur
 // (sunucudaki hash mantığının aynısı). Cihaz önbelleği de bu biçimde (çevrimdışı açılış).
+//
+// Rusça (ru): sunucu yalnız çevirir; okunuş telefonda kural tabanlı üretilir (rureading.js), çeviri olmasa da görünür.
+
+import { ruReading } from "./rureading.js";
 
 export const SHOW_KEY = "stem-mikser.lyrics.show";
 export const CACHE_PREFIX = "stem-mikser.translation.";
 export const CACHE_LIMIT = 40;
-export const TRANSLATE_LANGS = ["en", "ja"];
-export const READING_LANGS = ["ja", "en"];     // ja: romaji, en: Türkçe harfli telaffuz
+export const TRANSLATE_LANGS = ["en", "ja", "ru"];
+export const READING_LANGS = ["ja", "en", "ru"];     // ja: romaji, en/ru: Türkçe harfli telaffuz (ru telefonda)
+export const LOCAL_READING_LANGS = ["ru"];          // okunuşu sunucuya sormadan, satır metninden
 export const BUSY_TEXT = "Çeviri servisi şu an meşgul, biraz sonra tekrar dene.";
 export const RUNNING_STALE_SECONDS = 900;
 
@@ -122,6 +127,12 @@ export function subsFor(entry, show, lang) {
 }
 
 export function subsList(lyricLines, map, show, lang) {
+  if (LOCAL_READING_LANGS.includes(lang)) {
+    return (lyricLines || []).map((line) => {
+      const entry = lookup(map, line.text);
+      return { ro: show.ro ? ruReading(line.text) : "", tr: show.tr && entry && entry.tr ? entry.tr : "" };
+    });
+  }
   return (lyricLines || []).map((line) => subsFor(lookup(map, line.text), show, lang));
 }
 
@@ -172,7 +183,8 @@ export function actionView({ lang, hasDoc, record, map, lines, offline = false, 
   const has = Boolean(map && map.size);
   const missing = missingCount(lines, map);
   const readingMissing = lang === "en" ? readingMissingCount(lines, map) : 0;
-  const view = { ...base, showTr: has, showRo: has && READING_LANGS.includes(lang) && hasAnyReading(map),
+  const localRo = LOCAL_READING_LANGS.includes(lang) && (lines || []).some((line) => ruReading(line.text));
+  const view = { ...base, showTr: has, showRo: localRo || (has && READING_LANGS.includes(lang) && hasAnyReading(map)),
     addReading: has && readingMissing > 0, readingMissing };
   if (starting || isRunning(record, nowSec)) {
     return { ...view, kind: "running", addReading: false, note: { tone: "info", text: "Çeviri hazırlanıyor… (bu ekranda kalabilirsin)" } };

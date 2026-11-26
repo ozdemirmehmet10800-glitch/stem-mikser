@@ -3485,6 +3485,9 @@ on("stage-clip-toggle", "click", () => {
 // Oynatıcı ya da video görünmüyorken (kitaplık, sahne, antrenör, arka plan) video durur.
 
 let playerClip = { id: "", url: "", lastSync: 0 };
+// Yatay telefon: klip (ve sözler) solda, mikser sağda AYNI ANDA (CSS: .clip-land). Klip | Mikser anahtarı o sırada gizli, seçim korunur.
+const clipLandQuery = typeof matchMedia === "function"
+  ? matchMedia("(orientation: landscape) and (max-height: 600px) and (min-width: 560px)") : null;
 
 function setPlayerClipPref(on, apply = true) {
   try { safeStorage().storage.setItem(PLAYER_CLIP_KEY, on ? "1" : "0"); } catch { /* bu oturumda kalmaz */ }
@@ -3495,12 +3498,14 @@ function playerClipApply() {
   const box = el("player-clip");
   if (!box) return;
   const has = Boolean(playerClip.url);
-  const on = has && settingOn(safeStorage().storage, PLAYER_CLIP_KEY);
-  el("view-switch").hidden = !has;                           // anahtar yalnız klibi olan şarkıda
+  const land = has && Boolean(clipLandQuery && clipLandQuery.matches);
+  const on = has && (land || settingOn(safeStorage().storage, PLAYER_CLIP_KEY));
+  el("view-switch").hidden = !has || land;                   // anahtar yalnız klibi olan şarkıda (yatayda ikisi birden görünür)
   el("view-switch-clip").setAttribute("aria-pressed", String(on));
   el("view-switch-mixer").setAttribute("aria-pressed", String(!on));
   box.hidden = !on;
-  el("view-player").classList.toggle("clip-on", on);        // mikser düğmeleri, kanallar, döngü çubuğu gizlenir
+  el("view-player").classList.toggle("clip-on", on && !land);  // mikser düğmeleri, kanallar, döngü çubuğu gizlenir
+  el("view-player").classList.toggle("clip-land", land);
   if (!on) {
     el("player-clip-video").pause();
     return;
@@ -3522,7 +3527,7 @@ function playerClipUnload() {
     el("player-clip").style.removeProperty("--clip-ar");
   }
   if (el("view-switch")) el("view-switch").hidden = true;
-  el("view-player").classList.remove("clip-on");
+  el("view-player").classList.remove("clip-on", "clip-land");
 }
 
 async function playerClipLoad() {
@@ -3562,6 +3567,11 @@ function playerClipTick(time, force = false) {
 // Kitaplığa dönünce müzik sürer ama oynatıcı döngüsü (rAF) durur: video o an durdurulmazsa görünmeden oynamaya devam ederdi.
 afterViewChange = () => playerClipTick(engine.visualTime, true);
 on("view-switch-clip", "click", () => setPlayerClipPref(true));
+if (clipLandQuery) {
+  const onTurn = () => { if (playerClip.url) playerClipApply(); };
+  if (clipLandQuery.addEventListener) clipLandQuery.addEventListener("change", onTurn);
+  else if (clipLandQuery.addListener) clipLandQuery.addListener(onTurn);
+}
 on("view-switch-mixer", "click", () => setPlayerClipPref(false));
 on("player-clip-video", "click", () => openStage("full"));
 on("player-clip-full", "click", () => openStage("full"));

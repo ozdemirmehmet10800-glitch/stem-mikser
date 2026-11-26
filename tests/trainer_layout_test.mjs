@@ -36,7 +36,7 @@ check("oynatıcı sütunu sabit yükseklikte flex sütunu (alt çubuk dışarı 
 for (const cls of [".chordstrip", ".lyrics", ".mix-bar", ".channels", ".loop-bar"]) {
   check(`panel açıkken ${cls} gizlenir (yer panele ayrılır)`, new RegExp(`#view-player\\.trainer-on ${cls.replace(".", "\\.")}[,\\s{]`).test(css) || css.includes(`#view-player.trainer-on ${cls}`));
 }
-check("panel açıkken alt çubuk (.transport) GİZLENMEZ", !/trainer-on[^{]*\.transport/.test(css));
+check("panel açıkken alt çubuk (.transport) GİZLENMEZ", !/#view-player\.trainer-on[^{]*\.transport/.test(css));
 check("başlık yapışkan: panel kayarken oynat / kapat düğmeleri görünür", /\.trainer-head\s*\{[^}]*position:\s*sticky/.test(css.replace(/\s+/g, " ")));
 
 // --- panel içi oynat / duraklat

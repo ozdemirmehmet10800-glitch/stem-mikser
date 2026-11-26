@@ -11,7 +11,7 @@
 // Not: Pages iş akışı yalnız frontend/ değişince çalışır; boş commit dağıtımı yeniden tetiklemez. "Yayımla" adımı ara sıra GitHub
 // tarafında "No artifacts named github-pages" ile düşüyor (paketleme başarılı); yeniden tetiklemek yetiyor.
 
-const VERSION = "v88";
+const VERSION = "v89";
 const CACHE = `stem-mikser-${VERSION}`;
 // Kabuk cache'lerinin adı (stem-mikser-v<sayı>). Eski sürümler YALNIZ bu kalıpla silinir: uygulamanın kendi cache'leri
 // (stemcache.js: stem-mikser-stems-v1 = çevrimdışı şarkılar; paylaşılan dosya: stem-mikser-share-v1) farklı adlı ve
@@ -69,6 +69,7 @@ const SHELL = [
   "./js/lyrics.js",
   "./js/lyricsscreen.js",
   "./js/translation.js",
+  "./js/rureading.js",
   "./js/vinyl.js",
   "./js/fx.js",
   "./js/beatpulse.js",
