@@ -6,14 +6,14 @@ import { MESSAGES as SHARE_MESSAGES, SHARE_PARAM, cardView, classify, clearPendi
 import { el } from "../dom.js";
 import { isConfigured } from "../settings.js";
 
-let addSharedWish, collection, handleUpload, isOffline, matchWishes, refreshWishCard, showMessage, lastUploadedId, librarySongs, settings;   // app.js'ten (bind)
+let addSharedWish, collection, handleUpload, isOffline, uploadMany, matchWishes, refreshWishCard, showMessage, lastUploadedId, librarySongs, settings;   // app.js'ten (bind)
 
 //
 // sw.js POST /share-target'ı yakalayıp ilk dosyayı geçici cache'e koyuyor ve ?paylasim=1 ile buraya yolluyor. Dosya
 // önce BU KARTTA görünür; sunucuya (ve GPU'ya) yalnız "Yükle ve ayır"a basınca gidilir. "Şarkı ekle" düğmesi
 // bugünkü gibi dosyayı seçince doğrudan yükler (kart yalnız paylaşılan dosyada).
 
-export let sharePending = null;      // {file, name, size, note, seconds}
+export let sharePending = null;      // {file, name, size, note, seconds, files: [{file, name, size, type}], step}
 let shareBusy = false;
 
 // Kalite seçicisi: kitaplıktaki seçimin kopyası (aynı seçenekler, aynı seçili değer). Kart açılmadan da dolu kalır.
@@ -75,10 +75,12 @@ function probeDuration(file) {
   });
 }
 
-export async function showShareCard(pending, note) {
-  sharePending = { file: pending.file, name: pending.name, size: pending.size, note, seconds: null };
+export async function showShareCard(pending, note, files = null) {
+  const list = files && files.length ? files : [pending];
+  sharePending = { file: list[0].file, name: list[0].name, size: list[0].size, note, seconds: null, files: list, step: 0 };
   fillShareQuality();
   renderShareCard();
+  if (list.length > 1) return;                        // çoklu: tek tek süre okunmaz (sunucu 10 dk sınırını zaten uygular)
   const seconds = await probeDuration(pending.file);
   if (sharePending && sharePending.file === pending.file) {
     sharePending.seconds = seconds;
@@ -102,14 +104,27 @@ export async function confirmShare() {
   if (!sharePending || !sharePending.file || shareBusy) return;
   shareBusy = true;
   renderShareCard();
-  // handleUpload kaliteyi #upload-quality'den ilk satırlarda (await'ten önce) okuyor: kartın seçimini oraya geçici yaz,
-  // sonra eski değeri geri koy (kitaplıktaki seçim sessizce değişmesin).
-  const select = el("upload-quality");
-  const previous = select.value;
-  select.value = el("share-quality").value;
-  const run = handleUpload(sharePending.file);
-  select.value = previous;
-  const ok = await run;
+  const quality = el("share-quality").value;          // kartın seçimi; kitaplıktaki seçim değişmez
+  const files = sharePending.files && sharePending.files.length ? sharePending.files : [sharePending];
+  if (files.length > 1) {
+    // Çoklu paylaşım: sırayla yüklenir (her biri kartta "Yükleniyor… (2/5)"), bitince kart kapanır; özet kitaplıkta.
+    const pending = sharePending;
+    const tick = setInterval(() => {
+      const match = /^\((\d+)\/\d+\)/.exec(el("upload-status").textContent || "");
+      if (match && sharePending === pending && pending.step !== Number(match[1])) {
+        pending.step = Number(match[1]);
+        renderShareCard();
+      }
+    }, 400);
+    try {
+      await uploadMany(files.map((entry) => entry.file), { quality });
+    } finally {
+      clearInterval(tick);
+    }
+    await dropShare();
+    return;
+  }
+  const ok = await handleUpload(sharePending.file, quality);
   if (ok) {
     const wishId = sharePending && sharePending.wishId;
     if (wishId) {
@@ -132,7 +147,7 @@ export async function handleShareLaunch() {
   }
   const library = el("library-message");
   const say = (text, tone = "warn") => {
-    showMessage(isConfigured(settings()) ? library : el("settings()-message"), text, tone);
+    showMessage(isConfigured(settings()) ? library : el("settings-message"), text, tone);
   };
   try {
     if (kind === "empty") say(SHARE_MESSAGES.empty);
@@ -149,7 +164,7 @@ export async function handleShareLaunch() {
       matchWishes(librarySongs());
       await clearPending(window.caches);
     } else if (verdict.action === "card") {
-      await showShareCard(pending, verdict.note);
+      await showShareCard(pending, verdict.note, verdict.files);
       if (!isConfigured(settings())) {
         say("Paylaşılan dosya bekliyor. API adresini ve token'ı girip kaydet, sonra kitaplıkta yükleyebilirsin.", "warn");
       }
@@ -164,5 +179,5 @@ export async function handleShareLaunch() {
 }
 
 export function bind(deps) {
-  ({ addSharedWish, collection, handleUpload, isOffline, matchWishes, refreshWishCard, showMessage, lastUploadedId, librarySongs, settings } = deps);
+  ({ addSharedWish, collection, handleUpload, isOffline, uploadMany, matchWishes, refreshWishCard, showMessage, lastUploadedId, librarySongs, settings } = deps);
 }

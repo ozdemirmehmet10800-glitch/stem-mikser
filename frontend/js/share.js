@@ -12,6 +12,8 @@ import { parseSharedText } from "./wishlist.js";
 export const SHARE_PARAM = "paylasim";
 export const SHARE_CACHE = "stem-mikser-share-v1";
 export const SHARE_KEY = "share-pending/current";
+export const SHARE_EXTRA_PREFIX = "share-pending/extra-";   // 2., 3., ... paylaşılan dosya (sw.js ile AYNI)
+export const SHARE_MAX_FILES = 20;                          // bir paylaşımda en çok (sw.js ile AYNI)
 export const SHARE_MAX_BYTES = 30 * 1024 * 1024;      // sunucu MAX_UPLOAD_BYTES (yüklenen dosya)
 export const SHARE_VIDEO_MAX_BYTES = 400 * 1024 * 1024;   // paylaşılan KLİP bu boyuta kadar saklanır; telefonda sesi ayıklanıp yüklenir (mp4audio.js)
 export const SHARE_MAX_AGE_MS = 60 * 60 * 1000;       // bekleyen kayıt ömrü
@@ -95,27 +97,44 @@ export async function readPending(cachesApi, base, now = Date.now()) {
       title: String(body.title || ""), text: String(body.text || ""), url: String(body.url || ""),
     };
   }
+  const pending = { ...entryHeaders(hit), skipped: Number(header("x-share-skipped")) || 0 };
+  const count = Math.min(Math.max(Number(header("x-share-count")) || 1, 1), SHARE_MAX_FILES);
+  if (!(pending.time > 0) || now - pending.time > SHARE_MAX_AGE_MS) return { ...pending, state: "stale" };
+  await attachFile(hit, pending);
+  // 2., 3., ... dosyalar (çoklu paylaşım). Eksik olan atlanır.
+  pending.extras = [];
+  for (let index = 1; index < count; index += 1) {
+    const extra = await cache.match(new URL(`${SHARE_EXTRA_PREFIX}${index}`, base).href);
+    if (!extra) continue;
+    const entry = entryHeaders(extra);
+    await attachFile(extra, entry);
+    pending.extras.push(entry);
+  }
+  return pending;
+}
+
+function entryHeaders(hit) {
+  const header = (name) => hit.headers.get(name);
   let name = "";
   try {
     name = decodeURIComponent(header("x-share-name") || "");
   } catch {
     name = header("x-share-name") || "";
   }
-  const pending = {
+  return {
     state: header("x-share-state") === "large" ? "large" : "ok",
     name: name || "paylasilan-ses",
     size: Number(header("x-share-size")) || 0,
     type: header("content-type") || "",
-    skipped: Number(header("x-share-skipped")) || 0,
     time: Number(header("x-share-time")) || 0,
   };
-  if (!(pending.time > 0) || now - pending.time > SHARE_MAX_AGE_MS) return { ...pending, state: "stale" };
-  if (pending.state === "ok") {
-    const blob = await hit.blob();
-    pending.file = new File([blob], pending.name, { type: pending.type === "application/octet-stream" ? "" : pending.type });
-    pending.size = pending.size || blob.size;
-  }
-  return pending;
+}
+
+async function attachFile(hit, entry) {
+  if (entry.state !== "ok") return;
+  const blob = await hit.blob();
+  entry.file = new File([blob], entry.name, { type: entry.type === "application/octet-stream" ? "" : entry.type });
+  entry.size = entry.size || blob.size;
 }
 
 export async function clearPending(cachesApi) {
@@ -136,6 +155,19 @@ export function classify(pending) {
     if (!entry) return { action: "message", kind: "nowish", text: MESSAGES.nowish, clear: true };
     return { action: "wish", entry, clear: true };
   }
+  const entries = [pending, ...(pending.extras || [])];
+  const usable = entries.filter((entry) => entry.state === "ok" && entry.file && isAudio({ name: entry.name, type: entry.type }));
+  if (entries.length > 1 && usable.length) {
+    // Çoklu paylaşım: kullanılabilenler kartta, sırayla yüklenir; kullanılamayanlar notta sayılır.
+    const rejected = entries.length - usable.length;
+    const note = [
+      usable.length > 1 ? `${usable.length} şarkı: hepsi sırayla yüklenip ayrılacak.` : "",
+      rejected ? `${rejected} dosya atlandı (çok büyük ya da ses/klip değil).` : "",
+      pending.skipped > 0 ? `${pending.skipped} dosya atlandı (bir seferde en çok ${SHARE_MAX_FILES}).` : "",
+      usable.some((entry) => isVideo({ name: entry.name, type: entry.type })) ? "Klip dosyalarının yalnız sesi alınır." : "",
+    ].filter(Boolean).join(" ");
+    return { action: "card", note, files: usable };
+  }
   if (pending.state === "large") {
     return {
       action: "message", kind: "large", clear: true,
@@ -146,9 +178,9 @@ export function classify(pending) {
   if (!isAudio({ name: pending.name, type: pending.type })) {
     return { action: "message", kind: "notaudio", text: `"${pending.name}" ses ya da video (klip) dosyası gibi görünmüyor.`, clear: true };
   }
-  const skipped = pending.skipped > 0 ? `${pending.skipped} dosya atlandı (yalnız ilki alındı).` : "";
+  const skipped = pending.skipped > 0 ? `${pending.skipped} dosya atlandı (bir seferde en çok ${SHARE_MAX_FILES}).` : "";
   const note = [isVideo({ name: pending.name, type: pending.type }) ? "Video dosyası: yalnız sesi alınır, görüntü atılır." : "", skipped].filter(Boolean).join(" ");
-  return { action: "card", note };
+  return { action: "card", note, files: [pending] };
 }
 
 /** Süre biliniyorsa sunucu sınırını aşıyor mu? (kartta uyarı; sunucu zaten GPU'ya girmeden reddeder) */
@@ -159,7 +191,8 @@ export function durationWarning(seconds) {
 }
 
 /**
- * Onay kartının görünümü (saf; app.js yalnız uygular). `pending`: {file, name, size, note} ya da null.
+ * Onay kartının görünümü (saf; app.js yalnız uygular). `pending`: {file, name, size, note, files?, step?} ya da null.
+ * files: çoklu paylaşımda yüklenecekler (ad "X ve N şarkı daha", düğme "N şarkıyı yükle ve ayır"); step: yüklenen sıra (1..N).
  * Geçerli bir paylaşım kaydı (dosya) YOKSA kart GİZLİ ve "Yükle ve ayır" pasif: boş kart hiç görünmez, dosyasız istek
  * hiç gitmez. Dönen: {hidden, name, meta, note, goDisabled, cancelDisabled, qualityDisabled, goLabel, hint}.
  */
@@ -168,16 +201,20 @@ export function cardView({ pending, seconds = null, offline = false, configured 
     return { hidden: true, name: "", meta: "", note: "", goDisabled: true, cancelDisabled: true, qualityDisabled: true,
       goLabel: "Yükle ve ayır", hint: "" };
   }
-  const notes = [pending.note, durationWarning(seconds)].filter(Boolean);
+  const files = Array.isArray(pending.files) && pending.files.length ? pending.files : [pending];
+  const many = files.length > 1;
+  const notes = [pending.note, many ? "" : durationWarning(seconds)].filter(Boolean);
+  const total = files.reduce((sum, entry) => sum + (Number(entry.size) || 0), 0);
   return {
     hidden: false,
-    name: pending.name,
-    meta: [formatSize(pending.size), formatDuration(seconds)].filter(Boolean).join(" · "),
+    name: many ? `${files[0].name} ve ${files.length - 1} şarkı daha` : pending.name,
+    meta: many ? `${files.length} dosya · ${formatSize(total)}` : [formatSize(pending.size), formatDuration(seconds)].filter(Boolean).join(" · "),
     note: notes.join(" "),
     goDisabled: busy || offline || !configured,
     cancelDisabled: busy,
     qualityDisabled: busy,
-    goLabel: busy ? "Yükleniyor…" : "Yükle ve ayır",
+    goLabel: busy ? (many && pending.step ? `Yükleniyor… (${pending.step}/${files.length})` : "Yükleniyor…")
+      : many ? `${files.length} şarkıyı yükle ve ayır` : "Yükle ve ayır",
     hint: !configured ? "Önce Ayarlar'dan API adresini ve token'ı gir."
       : offline ? "İnternet yok; bağlanınca yükleyebilirsin."
       : 'Ayırma (GPU) yalnız "Yükle ve ayır"a basınca başlar.',

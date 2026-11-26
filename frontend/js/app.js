@@ -1548,10 +1548,41 @@ function schedulePoll() {
 
 let lastUploadedId = "";      // son başarılı yüklemenin şarkı kimliği (Eklenecekler'den yükleme "eklendi" işaretlesin)
 
-async function handleUpload(file) {
+// Birden çok şarkı (Şarkı ekle'de çoklu seçim ya da paylaş menüsünden birden çok dosya): SIRAYLA yüklenir; sunucu ayırmaları kendi
+// kuyruğunda tek tek yapar ("sırada"). Yüklemeler bitene kadar uygulama açık kalmalı; sonra ayırma sunucuda sürer.
+let uploadPrefix = "";             // "(2/5) ": sıralı yüklemede durum satırının başı
+let uploadChain = Promise.resolve();
+
+function uploadMany(files, { quality = null } = {}) {
+  const list = [...files];
+  const run = async () => {
+    let ok = 0;
+    const failed = [];
+    for (let index = 0; index < list.length; index += 1) {
+      uploadPrefix = list.length > 1 ? `(${index + 1}/${list.length}) ` : "";
+      if (await handleUpload(list[index], quality)) ok += 1;
+      else failed.push(list[index].name);
+    }
+    uploadPrefix = "";
+    if (list.length > 1) {
+      // Özet durum satırında kalır (kitaplık mesajı her yenilemede temizleniyor).
+      const status = el("upload-status");
+      status.hidden = false;
+      status.textContent = failed.length
+        ? `${ok}/${list.length} şarkı yüklendi. Yüklenemeyen: ${failed.join(", ")}.`
+        : `${ok} şarkı yüklendi; sunucuda sırayla ayrılıyor (her biri birkaç dakika). Uygulamayı kapatsan da devam eder.`;
+    }
+    return { ok, failed };
+  };
+  const result = uploadChain.then(run, run);       // yeni seçim, süren sıranın ARKASINA eklenir
+  uploadChain = result.catch(() => {});
+  return result;
+}
+
+async function handleUpload(file, qualityChoice = null) {
   // Dönen: true = sunucu aldı (ya da zaten vardı), false = yüklenemedi (paylaşım kartı kaydı korusun diye).
-  // Kalite İLK satırda, hiçbir await'ten önce okunur: paylaşım kartı seçimini #upload-quality'ye geçici yazıp hemen geri alıyor.
-  const quality = el("upload-quality") ? el("upload-quality").value : "hifi";
+  // Kalite verilmezse İLK satırda, hiçbir await'ten önce #upload-quality'den okunur.
+  const quality = qualityChoice || (el("upload-quality") ? el("upload-quality").value : "hifi");
   if (!requireOnline(el("library-message"), "şarkı yüklemek")) return false;
   const status = el("upload-status");
   const original = file;
@@ -1590,13 +1621,14 @@ async function handleUpload(file) {
     return false;
   }
   status.hidden = false;
-  status.textContent = `${clipNote}${file.name} yükleniyor… %0`;
+  const prefix = uploadPrefix;
+  status.textContent = `${prefix}${clipNote}${file.name} yükleniyor… %0`;
   try {
     const result = await api.uploadSong(file, (ratio) => {
-      status.textContent = `${clipNote}${file.name} yükleniyor… %${Math.round(ratio * 100)}`;
+      status.textContent = `${prefix}${clipNote}${file.name} yükleniyor… %${Math.round(ratio * 100)}`;
     }, quality);
     lastUploadedId = (result && result.id) || "";
-    status.textContent = clipNote + (result.existing
+    status.textContent = prefix + clipNote + (result.existing
       ? `${file.name} zaten işlenmiş, listede.`
       : `${file.name} alındı, işleniyor.`);
     await refreshLibrary();
@@ -1614,7 +1646,7 @@ async function handleUpload(file) {
 bindClipExtract({ captureFrame, loadMp4Audio, refreshClipChip, refreshClipSummary, refreshInfoClip, currentSong: () => currentSong });
 
 // ------------------------------------------------ paylaş menüsünden ekleme (Web Share Target)  [-> js/ui/shareui.js]
-bindShare({ addSharedWish, collection, handleUpload, isOffline, matchWishes, refreshWishCard, showMessage, lastUploadedId: () => lastUploadedId, librarySongs: () => librarySongs, settings: () => settings });
+bindShare({ addSharedWish, collection, handleUpload, isOffline, uploadMany, matchWishes, refreshWishCard, showMessage, lastUploadedId: () => lastUploadedId, librarySongs: () => librarySongs, settings: () => settings });
 
 // ---------------------------------------------------------------- oynatıcı
 
@@ -5505,8 +5537,8 @@ on("test-connection", "click", async () => {
 });
 
 on("upload-input", "change", (event) => {
-  const file = event.target.files && event.target.files[0];
-  if (file) handleUpload(file);
+  const files = event.target.files ? [...event.target.files] : [];
+  if (files.length) uploadMany(files);              // birden çok seçilebilir: sırayla yüklenir
   event.target.value = "";
 });
 

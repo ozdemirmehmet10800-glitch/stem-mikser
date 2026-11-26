@@ -36,8 +36,15 @@ for (const [file, want] of cases) check(`isAudio ${JSON.stringify(file)} = ${wan
 
 // --- sınıflandırma
 const ok = { state: "ok", name: "a.mp3", size: 1000, type: "audio/mpeg", skipped: 0, time: Date.now() };
-check("ok + 0 atlanan: kart, not yok", JSON.stringify(classify(ok)) === JSON.stringify({ action: "card", note: "" }));
-check("ok + 1 atlanan: '1 dosya atlandı (yalnız ilki alındı).'", classify({ ...ok, skipped: 1 }).note === "1 dosya atlandı (yalnız ilki alındı).");
+check("ok + 0 atlanan: kart, not yok, tek dosya listesi", (() => { const v = classify(ok); return v.action === "card" && v.note === "" && v.files.length === 1 && v.files[0] === ok; })());
+check("sınır yüzünden atlanan: '1 dosya atlandı (bir seferde en çok 20).'", classify({ ...ok, skipped: 1 }).note === "1 dosya atlandı (bir seferde en çok 20).");
+// çoklu paylaşım (2026-11-26): kullanılabilenler kartta, kullanılamayanlar notta
+const fileOf = (name, type = "audio/mpeg") => ({ state: "ok", name, size: 10, type, time: Date.now(), file: { name } });
+const multi = classify({ ...fileOf("a.mp3"), skipped: 0, extras: [fileOf("b.m4a", "audio/mp4"), { state: "large", name: "c.wav", size: 99e6, type: "audio/wav" }, fileOf("d.png", "image/png"), fileOf("e.mp4", "video/mp4")] });
+check("çoklu: 3 kullanılabilir (ses + klip), 2 atlandı, klip notu", multi.action === "card" && multi.files.map((f) => f.name).join() === "a.mp3,b.m4a,e.mp4"
+  && /3 şarkı: hepsi sırayla yüklenip ayrılacak\./.test(multi.note) && /2 dosya atlandı/.test(multi.note) && /yalnız sesi alınır/.test(multi.note), multi.note);
+const multiBad = classify({ state: "large", name: "x.wav", size: 99e6, type: "audio/wav", time: Date.now(), skipped: 0, extras: [fileOf("y.png", "image/png")] });
+check("çoklu ama hiçbiri kullanılamaz: eskisi gibi mesaj", multiBad.action === "message");
 check("ok ama ses değil: mesaj + silinir", (() => {
   const v = classify({ ...ok, name: "x.png", type: "image/png" });
   return v.action === "message" && v.kind === "notaudio" && v.clear && v.text.includes("x.png");

@@ -69,6 +69,12 @@ for (const file of modules) {
     }
   });
   check(`${file}: getter adları hep çağrılıyor (ad())`, bare.length === 0, bare.join(" "));
+  // Taşıma aracı bir kez yazı içindeki adı da değiştirmişti ("settings-message" -> "settings()-message"): düz tırnaklı yazılarda getter çağrısı olmamalı.
+  const leaked = [];
+  for (const m of src.matchAll(/"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'/g)) {
+    for (const n of getters) if (m[0].includes(`${n}()`)) leaked.push(m[0]);
+  }
+  check(`${file}: yazıların içine getter çağrısı karışmamış`, leaked.length === 0, leaked.join(" "));
   check(`${file}: bind'e verilen her ad modülde karşılanıyor`, plain.every((n) => bound.includes(n))
     && [...args.matchAll(/([\w$]+): \(\) => /g)].every((m) => bound.includes(m[1])));
   check(`${file}: çevrimdışı kabukta`, sw.includes(`"./js/ui/${file}"`));

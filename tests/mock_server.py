@@ -470,6 +470,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/songs":
             if not self._authorized():
                 return
+            # Govdeyi (yuklenen dosya) OKU: okunmadan cevap verilirse tarayici baglanti sifirlandi der (ERR_CONNECTION_RESET).
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
             # Sahte sunucu gercekten islemiyor; var olan sarkiyi dondururuz.
             songs = find_songs()
             if songs:

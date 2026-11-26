@@ -66,14 +66,28 @@ let pending = await share.readPending(caches, `${ORIGIN}/stem-mikser/`);
 check("ad (Türkçe harf, boşluk) bozulmadan geri okunur ve File olur", pending.state === "ok" && pending.name === "Şarkı Adı (1) ğüş.opus"
   && pending.file instanceof File && pending.file.name === pending.name && pending.file.size === 500 && pending.type === "audio/ogg");
 
-// --- birden çok dosya: ilki alınır, N atlandı
+// --- birden çok dosya (2026-11-26): hepsi saklanır (en çok 20), kartta sırayla yüklenir
 caches = fakeCaches(); sw = await loadSw({ caches });
 out = await sw.fetch(post([audio("a.mp3", 300), audio("b.mp3", 400), audio("c.m4a", 500, "audio/mp4")]));
 pending = await share.readPending(caches, `${ORIGIN}/stem-mikser/`);
-check("3 dosya: ilki saklanır, 2 atlandı", pending.name === "a.mp3" && pending.size === 300 && pending.skipped === 2
+check("3 dosya: üçü de saklanır, atlanan yok", pending.name === "a.mp3" && pending.size === 300 && pending.skipped === 0
+  && pending.extras.map((e) => `${e.name}:${e.size}`).join() === "b.mp3:400,c.m4a:500" && pending.extras.every((e) => e.file instanceof File)
   && out.responded.status === 303);
-check("tek bekleyen kayıt (yalnız ilk dosya cache'te)", (await (await caches.open("stem-mikser-share-v1")).keys()).length === 1);
-check("kart notu: '2 dosya atlandı (yalnız ilki alındı).'", share.classify(pending).note === "2 dosya atlandı (yalnız ilki alındı).");
+check("cache'te 3 kayıt (current + extra-1, extra-2)", (await (await caches.open("stem-mikser-share-v1")).keys()).length === 3);
+const multiVerdict = share.classify(pending);
+check("kart: 3 şarkı sırayla", multiVerdict.action === "card" && multiVerdict.files.length === 3 && /3 şarkı: hepsi sırayla/.test(multiVerdict.note), multiVerdict.note);
+const view = share.cardView({ pending: { ...pending, files: multiVerdict.files, note: multiVerdict.note } });
+check("kart görünümü: 'a.mp3 ve 2 şarkı daha', '3 şarkıyı yükle ve ayır'", view.name === "a.mp3 ve 2 şarkı daha" && view.goLabel === "3 şarkıyı yükle ve ayır"
+  && /^3 dosya · /.test(view.meta), `${view.name} | ${view.goLabel} | ${view.meta}`);
+check("sabit: SHARE_MAX_FILES sw.js == share.js", Number(pick(/const SHARE_MAX_FILES = (\d+);/)) === share.SHARE_MAX_FILES
+  && pick(/const SHARE_EXTRA_PREFIX = "([^"]+)"/) === share.SHARE_EXTRA_PREFIX);
+caches = fakeCaches(); sw = await loadSw({ caches });
+await sw.fetch(post(Array.from({ length: 23 }, (_, i) => audio(`s${i}.mp3`, 10))));
+pending = await share.readPending(caches, `${ORIGIN}/stem-mikser/`);
+check("23 dosya: 20 saklanır, 3 atlandı", pending.extras.length === 19 && pending.skipped === 3
+  && /3 dosya atlandı \(bir seferde en çok 20\)/.test(share.classify(pending).note));
+await share.clearPending(caches);
+check("temizleyince hepsi gider", (await (await caches.open("stem-mikser-share-v1")).keys()).length === 0);
 
 // --- yeni paylaşım eskisinin yerine geçer
 await sw.fetch(post([audio("yeni.wav", 800, "audio/wav")]));

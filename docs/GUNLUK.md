@@ -35,7 +35,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v95 (sahnede okunuş + çeviri; v94 söz arka planı şarkı başına; v93 açılış ekranı; v92 kod sadeleştirme; v91 karaoke; v90 Sözleri bul; v89 Rusça + okunuş, yatay ekran).
+- **Son sürüm:** SW v96 (çoklu şarkı ekleme; v95 sahnede okunuş + çeviri; v94 söz arka planı şarkı başına; v93 açılış ekranı; v92 kod sadeleştirme; v91 karaoke; v90 Sözleri bul; v89 Rusça + okunuş, yatay ekran).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -44,6 +44,28 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### Birden çok şarkıyı aynı anda ekleme (Şarkı ekle + paylaş menüsü)
+
+- **İstek:** (4) birden çok şarkıyı birden ekleyebilmek. Ayrıca "telefondaki şarkılar geceleri 04-11 arası kendiliğinden yüklensin" istendi:
+  PWA telefonun dosyalarını kendiliğinden okuyamaz ve belli saatte arka planda çalışamaz (Android/Chrome izin vermiyor); bunun yerine
+  yatmadan şarkıları seçip bırakmak aynı sonucu verir (yüklemeler bitince ayırma sunucuda sürer, sabaha hazır). Kullanıcıya anlatıldı.
+- **Ne:** "Şarkı ekle" artık çoklu seçim. Seçilenler SIRAYLA yüklenir ("(2/5) ad yükleniyor %40"); sonda durum satırında özet
+  ("5 şarkı yüklendi; sunucuda sırayla ayrılıyor... uygulamayı kapatsan da devam eder"). Paylaş menüsünden birden çok dosya: sw.js en
+  çok 20 dosyayı saklar (ilki `share-pending/current`, diğerleri `extra-N`), kartta "X ve N şarkı daha · N dosya", düğme "N şarkıyı
+  yükle ve ayır"; ses/klip olmayan ya da çok büyük dosyalar notta "atlandı". Kartın kalite seçimi hepsine uygulanır.
+- **Sunucu:** değişiklik yok. Ayırma zaten kuyruklu (separate max_containers=1): aynı anda gelen şarkılar "sırada" bekleyip tek tek
+  ayrılır; şarkı başı maliyet aynı (GPU ~4 dk).
+- **Yakalanan eski hata (sadeleştirmeden):** taşıma aracı paylaş modülünde bir yazının içindeki adı da değiştirmişti
+  (`el("settings-message")` -> `el("settings()-message")`; ayarlar boşken paylaşım mesajı görünmüyordu). Düzeltildi; `ui_modules_test`
+  artık yazı içine getter çağrısı karışmasını yakalıyor (denendi).
+- **Test sunucusu:** `mock_server.py` yükleme gövdesini okumadan cevap veriyordu (tarayıcıda bağlantı sıfırlanıyordu); artık okuyor.
+- **Denendi (tarayıcı, sahte sunucu):** 3 dosya çoklu seçim -> (1/3), (2/3), (3/3) sırayla, özet satırı; paylaş kartı 3 dosya -> kart
+  görünümü, hepsi yüklendi, kart kapandı, paylaşım kaydı temizlendi. **Testler:** share_test, sw_share_test (3 dosya, 23 dosyada 20 sınırı,
+  temizleme) güncellendi; 88 dosya yeşil. **SW:** v96. **Telefonda denenmedi.**
+- **Telefonda kontrol:** 1) "SW v96". 2) Kitaplık > Şarkı ekle > birden çok şarkı seç: sırayla yüklenmeli. 3) Dosya yöneticisinden 3 şarkı
+  seçip Paylaş > Stem Mikser: kartta "ve 2 şarkı daha", "3 şarkıyı yükle ve ayır". 4) Uygulamayı kapat, sonra aç: şarkılar "sırada/
+  ayrıştırılıyor" ilerlemeli.
 
 ### Sahne modunda okunuş ve çeviri
 

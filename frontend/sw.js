@@ -11,7 +11,7 @@
 // Not: Pages iş akışı yalnız frontend/ değişince çalışır; boş commit dağıtımı yeniden tetiklemez. "Yayımla" adımı ara sıra GitHub
 // tarafında "No artifacts named github-pages" ile düşüyor (paketleme başarılı); yeniden tetiklemek yetiyor.
 
-const VERSION = "v95";
+const VERSION = "v96";
 const CACHE = `stem-mikser-${VERSION}`;
 // Kabuk cache'lerinin adı (stem-mikser-v<sayı>). Eski sürümler YALNIZ bu kalıpla silinir: uygulamanın kendi cache'leri
 // (stemcache.js: stem-mikser-stems-v1 = çevrimdışı şarkılar; paylaşılan dosya: stem-mikser-share-v1) farklı adlı ve
@@ -24,7 +24,9 @@ const SHELL_CACHE_RE = /^stem-mikser-v\d+$/;
 // (tests/sw_share_test.mjs ikisini karşılaştırır).
 const SHARE_PATH = "share-target";
 const SHARE_CACHE = "stem-mikser-share-v1";   // uygulamanın kendi cache'i: activate silmez (SHELL_CACHE_RE'ye uymaz)
-const SHARE_KEY = "share-pending/current";    // tek bekleyen kayıt
+const SHARE_KEY = "share-pending/current";    // bekleyen paylaşımın İLK dosyası (+ x-share-count)
+const SHARE_EXTRA_PREFIX = "share-pending/extra-";   // 2., 3., ... dosyalar (extra-1, extra-2, ...)
+const SHARE_MAX_FILES = 20;                    // bir paylaşımda en çok bu kadar dosya saklanır, fazlası atlanır
 const SHARE_PARAM = "paylasim";
 const SHARE_MAX_BYTES = 30 * 1024 * 1024;     // sunucu sınırıyla aynı (MAX_UPLOAD_BYTES); ses dosyası üstü saklanmaz
 // Klip (video) paylaşımı: telefonda yalnız SESİ ayıklanıp yüklenir (js/mp4audio.js), bu yüzden paylaşılan klip bu sınıra kadar saklanır.
@@ -274,7 +276,8 @@ function shareRedirect(state) {
 const SHARE_TEXT_MAX = 2000;
 
 /**
- * POST /share-target: multipart içindeki İLK dosyayı `stem-mikser-share-v1` cache'ine koyar, uygulamaya yönlendirir.
+ * POST /share-target: multipart içindeki dosyaları (en çok SHARE_MAX_FILES) `stem-mikser-share-v1` cache'ine koyar, uygulamaya
+ * yönlendirir. İlki SHARE_KEY'de (x-share-count = saklanan sayı, x-share-skipped = sınır yüzünden atlanan), diğerleri extra-N'de.
  * Dosya yoksa ama title/text/url varsa (ör. YouTube Music'ten bir şarkı paylaşıldı) metni JSON olarak aynı tek kayda koyar ve
  * ?paylasim=metin'e yönlendirir; uygulama onu "Eklenecekler"e yazar (bağlantıya HİÇBİR istek atılmaz). Hiçbiri yoksa ?paylasim=bos,
  * işlenemezse ?paylasim=hata. Tek bekleyen kayıt (yenisi eskinin yerine geçer).
@@ -301,24 +304,28 @@ async function handleShare(request) {
       );
       return shareRedirect("metin");
     }
-    const [file] = files;
     const cache = await caches.open(SHARE_CACHE);
     for (const old of await cache.keys()) await cache.delete(old);
-    const isVideoFile = String(file.type || "").toLowerCase().startsWith("video/") || VIDEO_NAME_RE.test(file.name || "");
-    const large = file.size > (isVideoFile ? SHARE_VIDEO_MAX_BYTES : SHARE_MAX_BYTES);
-    await cache.put(
-      new URL(SHARE_KEY, self.location).href,
-      new Response(large ? null : file, {
-        headers: {
-          "content-type": file.type || "application/octet-stream",
-          "x-share-state": large ? "large" : "ok",
-          "x-share-name": encodeURIComponent(file.name || ""),
-          "x-share-size": String(file.size),
-          "x-share-skipped": String(files.length - 1),
-          "x-share-time": String(Date.now()),
-        },
-      })
-    );
+    const kept = files.slice(0, SHARE_MAX_FILES);
+    const time = String(Date.now());
+    for (let index = 0; index < kept.length; index += 1) {
+      const file = kept[index];
+      const isVideoFile = String(file.type || "").toLowerCase().startsWith("video/") || VIDEO_NAME_RE.test(file.name || "");
+      const large = file.size > (isVideoFile ? SHARE_VIDEO_MAX_BYTES : SHARE_MAX_BYTES);
+      const headers = {
+        "content-type": file.type || "application/octet-stream",
+        "x-share-state": large ? "large" : "ok",
+        "x-share-name": encodeURIComponent(file.name || ""),
+        "x-share-size": String(file.size),
+        "x-share-time": time,
+      };
+      if (index === 0) {
+        headers["x-share-count"] = String(kept.length);
+        headers["x-share-skipped"] = String(files.length - kept.length);
+      }
+      await cache.put(new URL(index === 0 ? SHARE_KEY : `${SHARE_EXTRA_PREFIX}${index}`, self.location).href,
+        new Response(large ? null : file, { headers }));
+    }
     return shareRedirect("1");
   } catch (error) {
     console.warn("[sw] paylaşım alınamadı:", error);
