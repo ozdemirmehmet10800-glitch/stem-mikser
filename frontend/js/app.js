@@ -94,6 +94,7 @@ import {
   CoverManager, autoCoverModel, autoCoverCss, drawAutoCover, fitSize, COVER_PX, searchTerms, mbSearchUrl, parseCandidates,
   caaFrontUrl, Throttle,
 } from "./cover.js";
+import { lyricsSearchTerms, searchLyrics, guessLanguage, formatDuration as foundLength } from "./lyricsfind.js";
 import { coverStore } from "./coverstore.js";
 import { encodeBackup, parseBackup } from "./coverbackup.js";
 import { summarizeBySong, formatSize as formatCacheSize, buildReport } from "./cachelist.js";
@@ -5358,13 +5359,14 @@ function refreshLyricsUi() {
   show("lyrics-extract", view.canExtract);
   show("lyrics-lang", view.canExtract);
   show("lyrics-paste", view.canPaste);
+  show("lyrics-find", view.canPaste || view.canEdit);
   show("lyrics-edit", view.canEdit);
   show("lyrics-realign", view.canRealign);
   show("lyrics-fix", view.canFix);
   show("lyrics-full-open", Boolean(lyricsDoc));      // sözü olmayan şarkıda görünmez
   refreshTrainerChip();
   refreshTranslateUi();
-  for (const id of ["lyrics-extract", "lyrics-lang", "lyrics-paste", "lyrics-edit", "lyrics-realign", "lyrics-fix"]) {
+  for (const id of ["lyrics-extract", "lyrics-lang", "lyrics-paste", "lyrics-find", "lyrics-edit", "lyrics-realign", "lyrics-fix"]) {
     el(id).disabled = off;
   }
   el("lyrics-full-open").disabled = false;           // tam ekran çevrimdışı da açılır (sözler cihazda)
@@ -6128,8 +6130,9 @@ function updateLyricsCount() {
   el("lyrics-save").disabled = Boolean(error) || lyricsStarting;
 }
 
-function openLyricsEditor(text) {
+function openLyricsEditor(text, { focus = true } = {}) {
   buildLyricsLangOptions();
+  el("lyrics-find-box").hidden = true;
   el("lyrics-text").value = text;
   el("lyrics-edit-lang").value = (lyricsDoc && lyricsDoc.language) || "auto";
   el("lyrics-save").textContent = lyricsDoc ? "Kaydet ve hizala" : "Hizala";
@@ -6137,11 +6140,13 @@ function openLyricsEditor(text) {
   pushLayer("lyrics-editor");
   refreshLyricsUi();
   updateLyricsCount();
-  el("lyrics-text").focus();
+  if (focus) el("lyrics-text").focus();
 }
 
 function closeLyricsEditorDom() {
   lyricsEditing = false;
+  lyricsFindGen += 1;                 // süren söz araması artık çizilmesin
+  el("lyrics-find-box").hidden = true;
   refreshLyricsUi();
 }
 
@@ -6164,6 +6169,89 @@ async function saveLyricsEditor() {
   const manual = lyricsDoc ? mapManual(lyricsDoc.lines, lines) : [];       // elle zamanlar çapa kalır
   const started = await startLyricsJob({ mode: "pasted", language, text: lines.join("\n"), manual });
   if (started) requestBack("lyrics-editor");
+}
+
+// ---- "Sözleri bul" (LRCLIB): yalnız kullanıcı basınca, yalnız ad + sanatçı gider. Seçilen metin düzenleme kutusuna gelir;
+// gönderim (yapıştır ve hizala) yine kullanıcının "Hizala"sıyla olur.
+
+let lyricsFindGen = 0;
+
+function openLyricsFinder() {
+  if (!currentSong) return;
+  openLyricsEditor(lyricsDoc ? linesToText(lyricsDoc.lines) : "", { focus: false });
+  const terms = lyricsSearchTerms(currentSong.title || "");
+  el("lyrics-q-title").value = terms.title;
+  el("lyrics-q-artist").value = terms.artist;
+  el("lyrics-find-results").textContent = "";
+  el("lyrics-find-search").disabled = false;
+  el("lyrics-find-box").hidden = false;
+  if (terms.title) findLyrics();
+}
+
+async function findLyrics() {
+  const box = el("lyrics-find-results");
+  if (isOffline()) {
+    box.textContent = "İnternet yok.";
+    return;
+  }
+  const query = { title: el("lyrics-q-title").value, artist: el("lyrics-q-artist").value };
+  if (!query.title.trim()) {
+    box.textContent = "Şarkı adını yaz.";
+    return;
+  }
+  const gen = (lyricsFindGen += 1);
+  box.textContent = "Aranıyor…";
+  el("lyrics-find-search").disabled = true;
+  try {
+    const found = await searchLyrics(query, { duration: engine.duration || Number(currentSong && currentSong.duration) || 0 });
+    if (gen !== lyricsFindGen) return;
+    renderFoundLyrics(found);
+  } catch (error) {
+    if (gen !== lyricsFindGen) return;
+    box.textContent = error && error.kind === "busy"
+      ? "Söz veritabanı şu an meşgul. Biraz sonra yeniden dene."
+      : "Arama yapılamadı (internet ya da servis).";
+  } finally {
+    if (gen === lyricsFindGen) el("lyrics-find-search").disabled = false;
+  }
+}
+
+function renderFoundLyrics(found) {
+  const box = el("lyrics-find-results");
+  box.textContent = "";
+  if (!found.length) {
+    box.textContent = "Bulunamadı. Adı ya da sanatçıyı değiştirip yeniden dene; olmazsa \"Sözleri çıkar\" sesi dinleyip çıkarır.";
+    return;
+  }
+  for (const candidate of found) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "cover-cand lyrics-cand";
+    button.setAttribute("aria-pressed", "false");
+    const text = document.createElement("span");
+    text.className = "cover-cand-text";
+    const line1 = document.createElement("b");
+    line1.textContent = [candidate.artist, candidate.title].filter(Boolean).join(" – ");
+    const line2 = document.createElement("small");
+    line2.textContent = [candidate.album, foundLength(candidate.duration), `${candidate.lines} satır`].filter(Boolean).join(" · ");
+    const line3 = document.createElement("small");
+    line3.className = "lyrics-cand-start";
+    line3.textContent = candidate.text.split("\n").slice(0, 2).join(" / ");
+    text.append(line1, line2, line3);
+    button.append(text);
+    button.addEventListener("click", () => pickFoundLyrics(candidate, button));
+    box.append(button);
+  }
+}
+
+function pickFoundLyrics(candidate, button) {
+  el("lyrics-text").value = candidate.text;
+  el("lyrics-edit-lang").value = guessLanguage(candidate.text);
+  updateLyricsCount();
+  for (const node of el("lyrics-find-results").querySelectorAll(".lyrics-cand")) {
+    node.setAttribute("aria-pressed", String(node === button));
+  }
+  el("lyrics-text").scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
 async function realignLyrics() {
@@ -6191,6 +6279,11 @@ on("lyrics-extract", "click", () => {
   startLyricsJob({ mode: "auto", language: el("lyrics-lang").value || "auto", replace: Boolean(lyricsDoc) });
 });
 on("lyrics-paste", "click", () => openLyricsEditor(""));
+on("lyrics-find", "click", openLyricsFinder);
+on("lyrics-find-search", "click", findLyrics);
+for (const id of ["lyrics-q-title", "lyrics-q-artist"]) {
+  on(id, "keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); findLyrics(); } });
+}
 on("lyrics-edit", "click", () => openLyricsEditor(lyricsDoc ? linesToText(lyricsDoc.lines) : ""));
 on("lyrics-realign", "click", realignLyrics);
 on("lyrics-fix", "click", () => {

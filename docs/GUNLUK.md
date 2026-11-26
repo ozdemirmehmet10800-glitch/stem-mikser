@@ -35,7 +35,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v89 (Rusça sözler + okunuş, yatay ekran düzeni).
+- **Son sürüm:** SW v90 (Sözleri bul: LRCLIB; önceki v89 Rusça sözler + okunuş, yatay ekran düzeni).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -44,6 +44,34 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### "Sözleri bul": doğru söz metni açık söz veritabanından (LRCLIB), sonra sese hizalama
+
+- **Neden:** Otomatik çıkarma (Whisper) sesi dinleyip tahmin eder; ölçümde kelimelerin ~%10-30'u yanlıştı. Doğru metin yapıştırılıp
+  hizalanınca sonuç neredeyse birebir. Metni artık elle aramak gerekmiyor.
+- **Ne:** Sözler panelinde **Sözleri bul** düğmesi. Basınca düzenleme kutusu açılır, üstünde şarkı adı ve sanatçı (başlıktan otomatik:
+  "Official Video", "slowed + reverb", "nightcore", "lyrics", "Turkish", parantez notları, dosya uzantısı atılır) ve arama kendiliğinden
+  başlar. En çok 6 sonuç: sanatçı - ad, albüm, süre, satır sayısı ve ilk iki satır. Birine dokununca sözler kutuya gelir ve dil kendiliğinden
+  seçilir (tr/en/ja/ru; emin değilse Otomatik). Kontrol edip **Hizala** (ya da "Kaydet ve hizala"): her zamanki yapıştır ve hizala.
+  Hiçbir şey kendiliğinden gönderilmez. Bulunamazsa adı/sanatçıyı değiştirip yeniden Ara; olmazsa "Sözleri çıkar" duruyor.
+- **Sıralama:** ad benzerliği > sanatçı > süre yakınlığı (slowed/nightcore'da süre farklı olabildiği için zayıf) > zamanlı sözler.
+  Enstrümantal ve sözü boş kayıtlar ile aynı metnin kopyaları atılır. Arama sırası: ad+sanatçı, serbest metin, yalnız ad.
+- **Gizlilik ve masraf:** LRCLIB'e yalnız sen bastığında, yalnız ad ve sanatçı gider (çerez/referrer yok). Ücretsiz, anahtarsız.
+  Hizalama her zamanki gibi şarkı başı ~0,003 $ GPU. Sunucu kodu DEĞİŞMEDİ (deploy yok). Sözler telifli: yalnız telefonda ve Volume'da,
+  depoya girmez; testler uydurma metin kullanır.
+- **Sınır:** Her şarkı veritabanında yok (popülerlerde iyi; Türkçe uyarlama/cover gibi kayıtlarda yanlış şarkı da çıkabilir, sanatçıya bakıp
+  seç). Bulunan metnin doğruluğu veritabanına bağlı.
+- **Denendi (tarayıcı, 375x812, gerçek LRCLIB):** "HAZBIN HOTEL - Bağımlı (Addict) - Turkish" -> ad "Bağımlı", sanatçı "HAZBIN HOTEL" ayrıştı;
+  "Addict" + "Hazbin Hotel" araması 1 sonuç, seçince 54 satır kutuya geldi, dil English, "Kaydet ve hizala" etkin; yana taşma yok.
+- **Ders:** Bu işte app.js'te iki hata çıktı (aynı ad iki kez tanımlıydı; bir dize satır sonuyla bölünmüştü) ve uygulama BOŞ açıldı; mevcut
+  testler app.js'i yüklemediği için yakalamadı. Yeni `tests/syntax_test.mjs` bütün modülleri ayrıştırıyor (iki hatayı da yakaladığı denendi).
+- **Testler:** 84 dosyanın hepsi yeşil (yeni `lyricsfind_test.mjs`, `syntax_test.mjs`). **SW:** v90. **Telefonda denenmedi.**
+- **Telefonda kontrol (4 adım):**
+  1. Ayarlar'da "Sürüm: SW v90" yazmalı.
+  2. Bir şarkıda Sözler > **Sözleri bul**: ad ve sanatçı dolu gelmeli, sonuçlar listelenmeli.
+  3. Doğru sonuca dokun: sözler kutuya gelmeli, dil seçili olmalı; "Hizala"ya bas.
+  4. Hizalama bitince satırlar sesle birlikte akmalı. Bulunamazsa adı değiştirip "Ara".
+
 
 ### Rusça sözler ve okunuşu; yatay ekran düzeni (klip solda, mikser sağda)
 

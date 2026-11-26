@@ -285,6 +285,7 @@
         <span class="lyrics-status" id="lyrics-status"></span>
         <div class="lyrics-actions" id="lyrics-actions">
           <select id="lyrics-lang" class="lyrics-lang" aria-label="Söz dili"></select>
+          <button type="button" class="chip" id="lyrics-find">Sözleri bul</button>
           <button type="button" class="chip" id="lyrics-extract">Sözleri çıkar</button>
           <button type="button" class="chip" id="lyrics-paste">Sözleri yapıştır</button>
           <button type="button" class="chip" id="lyrics-edit">Düzenle</button>
@@ -303,6 +304,15 @@
       <div class="lyrics-notices" id="lyrics-tr-notice" hidden></div>
       <small class="chords-note" id="chords-note" hidden></small>
       <div class="lyrics-editor" id="lyrics-editor" hidden>
+        <div class="lyrics-find" id="lyrics-find-box" hidden>
+          <p class="tag-sub">"Ara"ya basınca yalnız şarkı adı ve sanatçı açık söz veritabanı LRCLIB'e (lrclib.net) gönderilir. Başka hiçbir bilgi gitmez. Seçtiğin sözler aşağıdaki kutuya gelir; kontrol edip "Hizala"ya basınca sese oturtulur.</p>
+          <div class="cover-fields">
+            <input type="text" id="lyrics-q-title" placeholder="Şarkı adı" maxlength="120" autocomplete="off" spellcheck="false" aria-label="Aranacak şarkı adı">
+            <input type="text" id="lyrics-q-artist" placeholder="Sanatçı (isteğe bağlı)" maxlength="120" autocomplete="off" spellcheck="false" aria-label="Aranacak sanatçı">
+          </div>
+          <button type="button" class="btn btn-small btn-primary" id="lyrics-find-search">Ara</button>
+          <div class="cover-results lyrics-find-results" id="lyrics-find-results" aria-live="polite"></div>
+        </div>
         <textarea id="lyrics-text" rows="8" spellcheck="false" autocomplete="off"
                   aria-label="Şarkı sözleri metni"
                   placeholder="Sözleri buraya yapıştır; her satır ayrı satırda kalsın."></textarea>

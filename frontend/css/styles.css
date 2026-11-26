@@ -1483,6 +1483,14 @@ button.cc.more {
 .cover-cand-text { display: flex; flex-direction: column; min-width: 0; }
 .cover-cand-text b { font-size: 14px; word-break: break-word; }
 .cover-cand-text small { color: var(--text-dim); font-size: 12px; }
+/* "Sözleri bul" (söz düzenleme kutusunun üstünde) */
+.lyrics-find { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.lyrics-find[hidden] { display: none; }
+.lyrics-find .btn { align-self: flex-start; }
+.lyrics-find-results { max-height: 40vh; }
+.lyrics-cand { text-align: left; }
+.lyrics-cand[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.lyrics-cand-start { font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- Eklenecekler (istek listesi) ---------- */
 .wish-card {
