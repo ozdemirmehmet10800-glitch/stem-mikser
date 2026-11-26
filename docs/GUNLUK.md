@@ -35,7 +35,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v87 (genel optimizasyon).
+- **Son sürüm:** SW v88 (teknik denetim düzeltmeleri).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -44,6 +44,24 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### Teknik ve ayar denetimi
+
+- **Nasıl:** (1) Ayarlar'daki 14 anlık ayarın hepsi değiştirilip sayfa yeniden açıldı: hepsi korundu. (2) Uygulama 375x812'de gezildi (mikser
+  ön ayarları, Slowed/Nightcore aç-kapa, 8D kipleri, Yankı, Dalga, Dışa aktar, hız/ton, döngü, bilgi sayfası, Kapak bul, uyku, sahne + kilit,
+  Klip/Mikser, Listeler, Eklenecekler, Ayarlar): konsolda hata yok. (3) Kod taraması: çift kimlik yok, olay bağlanıp sayfada olmayan öğe yok,
+  önbellekler şarkı sayısıyla sınırlı (40).
+- **Bulunan ve düzeltilenler:**
+  - Klasik görünümde telefon genişliğinde oynatıcı yana taşıyordu (375 px ekranda sayfa 462 px; "Hi-Fi'a yükselt" ve "Başa sar" kesik).
+    Dar ekranda düğme üst satıra taşınıyor, alt çubuk daralabiliyor: artık tam 375 px.
+  - Tema ve "vurgu rengi kapaktan" klasik görünümde seçilebiliyordu ama hiçbir şey yapmıyordu (yalnız yeni görünümde çalışırlar).
+    Klasikte pasif ve yanında açıklama var.
+  - Ana ayar kaydı (API adresi, token, ses kalitesi, esnetici...) telefonun uygulama hafızası dolarsa hata verip yarıda kalıyordu, mesaj da
+    çıkmıyordu. Artık çökmüyor: ayar o oturumda geçerli, Kaydet'te "kaydedilemedi" uyarısı çıkar.
+- **Sorun olmayanlar (bilgi):** Sahne açıkken arka planda ekran değişirse sahnenin "Kapat"ı çalışmayabiliyor; ama buna yalnız programla
+  basılarak düşülebiliyor (kilitli sahne dokunuşları ve geri tuşunu yutuyor), gerçek kullanımda olmuyor. Dokunulmadı.
+- **Yeni test:** tests/audit_test.mjs (kota, klasik dar ekran, yalnız-yeni-görünüm ayarları, HTML/JS kimlik tutarlılığı).
+- **SW:** v88. Telefonda denenmedi.
 
 ### Genel optimizasyon (ölçüme dayalı)
 

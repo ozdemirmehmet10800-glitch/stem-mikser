@@ -88,7 +88,9 @@ export function loadSettings() {
   }
 }
 
-export function saveSettings(next) {
+// Hafıza dolu (kota) ya da depolama kapalıysa ATMAZ: ayar bu oturumda geçerli kalır, `unsaved` (sayılmayan alan) işaretlenir.
+// Önceden atıyordu: kayıt yarıda kalıyor, ses kalitesi gibi değişiklikler uygulanmıyor, ekrana da hiçbir şey çıkmıyordu.
+export function saveSettings(next, storage = globalThis.localStorage) {
   const current = loadSettings();
   const merged = { ...current, ...next };
   const clean = {
@@ -101,7 +103,11 @@ export function saveSettings(next) {
     lyricsBg: normalizeBg(merged.lyricsBg),
     lyricsRows: normalizeRows(merged.lyricsRows),
   };
-  localStorage.setItem(KEY, JSON.stringify(clean));
+  try {
+    storage.setItem(KEY, JSON.stringify(clean));
+  } catch {
+    Object.defineProperty(clean, "unsaved", { value: true, enumerable: false });
+  }
   return clean;
 }
 

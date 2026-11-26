@@ -871,8 +871,11 @@ input[type="range"]::-moz-range-thumb {
   .channel { grid-template-columns: 84px 1fr 36px 36px 36px; }
   .channel-db { display: none; }
   .topbar h1 { font-size: 24px; }
-  .master { max-width: 150px; }
+  .master { max-width: 150px; min-width: 0; }
+  .master input { min-width: 0; width: 100%; }
   .master-value { display: none; }
+  /* Klasik alt çubuk telefonda sığsın: sütunlar içeriğin en küçük genişliğinin altına da daralabilsin (sayfa yana taşıyordu). */
+  .transport-row { grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr); column-gap: 6px; }
   /* Panel 288 px; dar ekranda sol kenardan taşmasın. */
   .tempo-panel { width: min(288px, calc(100vw - 24px)); }
 }

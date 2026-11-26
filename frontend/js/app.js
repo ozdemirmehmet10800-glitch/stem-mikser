@@ -260,12 +260,17 @@ function syncDock() {
 
 // "Hi-Fi'a yükselt" düğmesi: klasik görünümde alt çubukta (eski yeri), yeni görünümde şarkı bilgisi satırının sağında. Dar ekranda alt
 // çubuğun ikinci satıra taşmasını önler (miksere bir satır daha yer kalır). Düğmenin kendisi ve davranışı aynı; yalnız DOM'daki yeri değişir.
+// Telefon genişliğinde (<= 720 px) "Hi-Fi'a yükselt" alt çubuğa sığmıyor: klasik görünümde sayfa yana taşıyordu (375 px'de 462 px).
+function narrowScreen() {
+  return typeof matchMedia === "function" && matchMedia("(max-width: 720px)").matches;
+}
+
 function placeReprocess() {
   const button = document.getElementById("reprocess");
   const row = document.getElementById("player-method-row");
   const right = document.querySelector(".transport-right");
   if (!button || !row || !right) return;
-  const target = isNewLook() ? row : right;
+  const target = isNewLook() || narrowScreen() ? row : right;
   if (button.parentElement === target) return;
   if (target === right) right.prepend(button);
   else row.append(button);
@@ -6205,6 +6210,7 @@ on("open-settings", "click", () => {
   el("setting-theme").value = (globalThis.StemLook && globalThis.StemLook.readTheme(localStorage)) || "dark";
   el("setting-songtheme").checked = songThemeEnabled();
   el("setting-spin").checked = applySpinSetting();
+  refreshLookOnlySettings();
   el("setting-clipkeep").checked = settingOn(safeStorage().storage, CLIP_KEEP_KEY);
   el("setting-eightd-speed").value = readEightD(safeStorage().storage).speed;
   el("setting-crossfade").value = String(readCrossfade(safeStorage().storage));
@@ -6239,7 +6245,8 @@ on("settings-form", "submit", (event) => {
   });
   api = new Api(settings);
   renderShareCard();
-  showMessage(el("settings-message"), "Kaydedildi.", "ok");
+  if (settings.unsaved) showMessage(el("settings-message"), "Telefonun uygulama hafızası dolu: ayar bu oturumda geçerli ama kaydedilemedi. Bir sonraki açılışta yeniden girmen gerekebilir.", "warn");
+  else showMessage(el("settings-message"), "Kaydedildi.", "ok");
   // Kullanıcı eylemi sonrası yeniden iste: ilk açılışta reddedilen izin Chrome'un
   // etkileşim ölçütüyle sonradan verilebiliyor. Sonuç tanı satırında.
   stemCache.requestPersistence().then(() => refreshAudioDiag());
@@ -7792,7 +7799,17 @@ on("setting-look", "change", () => {
   look.set(el("setting-look").checked ? look.NEW : look.CLASSIC, store, document);
   syncDock();
   refreshSongTheme();
+  refreshLookOnlySettings();
+  placeReprocess();
 });
+
+// Tema ve kapaktan vurgu rengi yalnız yeni görünümde çalışır (klasik görünüm eski renklerinde kalır): klasikte seçilebilir ama etkisizdi.
+function refreshLookOnlySettings() {
+  const on = isNewLook();
+  for (const id of ["setting-theme", "setting-songtheme"]) if (el(id)) el(id).disabled = !on;
+  if (el("look-only-note")) el("look-only-note").hidden = on;
+}
+if (typeof matchMedia === "function") matchMedia("(max-width: 720px)").addEventListener("change", () => placeReprocess());
 
 on("setting-theme", "change", () => {
   const look = globalThis.StemLook;
