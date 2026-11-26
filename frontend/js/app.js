@@ -2706,6 +2706,18 @@ function stageRefresh() {
 
 let stageWords = [];          // satırdaki kelime düğümleri (kelime zamanlaması varsa)
 
+// Satırın altında okunuş ve çeviri (söz panelindeki "Okunuş" / "Çeviri" düğmelerine uyar). Yalnız satır değişince ya da çeviri gelince.
+function stageRenderSubs(index) {
+  const line = lyricsDoc && index >= 0 ? lyricsDoc.lines[index] : null;
+  const sub = line ? TR.subsList([line], trMap, trShow, trLang())[0] : { ro: "", tr: "" };
+  for (const [id, text] of [["stage-ro", sub.ro], ["stage-tr", sub.tr]]) {
+    const node = el(id);
+    if (!node) continue;
+    if (node.textContent !== text) node.textContent = text;
+    node.hidden = !text;
+  }
+}
+
 // Söz satırı: kelime zamanlaması (line.w) varsa kelime kelime parlar, yoksa düz metin. Satır değişince yumuşak giriş (transform/opacity).
 function stageRenderLine(line) {
   const box = el("stage-line");
@@ -2789,6 +2801,7 @@ function stageTick(time) {
     stageLast.li = state.li;
     stageLast.wi = -2;
     stageRenderLine(state.li >= 0 ? lines[state.li] : null);
+    stageRenderSubs(state.li);
     el("stage-line-next").textContent = state.nextLi >= 0 ? lines[state.nextLi].text : "";
   }
   if (stageWords.length) {
@@ -4730,6 +4743,7 @@ function refreshLyricSubs(updateScreen = true) {
     tr.hidden = !sub.tr;
   }
   if (updateScreen && lyricsScreen && lyricsScreen.isOpen) lyricsScreen.setSubs(subs);
+  if (stageOpen) stageRenderSubs(stageLast.li);       // sahnedeki satırın okunuş / çevirisi de
 }
 
 function translationRecord() {

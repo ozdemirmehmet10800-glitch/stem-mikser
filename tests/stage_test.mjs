@@ -62,3 +62,26 @@ console.log("\ntümü geçti");
   console.log(`${ok3 ? "ok  " : "FAIL"} kelime kelime parlama: kelime zamanlaması (line.w) kullanılır`);
   if (!ok || !ok2 || !ok3) process.exit(1);
 }
+
+// Sahnede satırın okunuşu ve çevirisi (2026-11-26): söz panelindeki düğmelere uyar, satır değişince ve çeviri gelince yenilenir.
+{
+  const src = readFileSync(new URL("../frontend/js/app.js", import.meta.url), "utf8").replaceAll(String.fromCharCode(13), "");
+  const html = readFileSync(new URL("../frontend/index.html", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../frontend/css/styles.css", import.meta.url), "utf8");
+  const checks = [
+    ["sahne: okunuş ve çeviri satırları sözün altında, başta gizli",
+      /id="stage-line"><\/div>\s*<div class="stage-sub stage-ro" id="stage-ro" hidden><\/div>\s*<div class="stage-sub stage-tr" id="stage-tr" hidden><\/div>/.test(html)],
+    ["sahne: alt yazılar söz panelinin seçimiyle (trShow) ve aynı kaynaktan (subsList)",
+      /function stageRenderSubs\(index\) \{[\s\S]{0,300}TR\.subsList\(\[line\], trMap, trShow, trLang\(\)\)/.test(src)],
+    ["sahne: satır değişince yenilenir", /stageRenderLine\(state\.li >= 0 \? lines\[state\.li\] : null\);\s*stageRenderSubs\(state\.li\);/.test(src)],
+    ["sahne: çeviri gelince / düğmeye basınca yenilenir", /function refreshLyricSubs[\s\S]{0,900}if \(stageOpen\) stageRenderSubs\(stageLast\.li\);/.test(src)],
+    ["sahne: boş alt yazı gizli kalır", /\.stage-sub\[hidden\] \{ display: none; \}/.test(css)],
+    ["sahne: tam klipte alt yazılar küçülür", /\.stage\.clip-full \.stage-sub \{ font-size:/.test(css)],
+  ];
+  let bad = 0;
+  for (const [name, ok] of checks) {
+    console.log(`${ok ? "ok  " : "FAIL"} ${name}`);
+    if (!ok) bad += 1;
+  }
+  if (bad) process.exit(1);
+}

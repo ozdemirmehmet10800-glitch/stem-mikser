@@ -35,7 +35,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v94 (söz arka planı şarkı başına; v93 açılış ekranı; v92 kod sadeleştirme; v91 karaoke; v90 Sözleri bul; v89 Rusça + okunuş, yatay ekran).
+- **Son sürüm:** SW v95 (sahnede okunuş + çeviri; v94 söz arka planı şarkı başına; v93 açılış ekranı; v92 kod sadeleştirme; v91 karaoke; v90 Sözleri bul; v89 Rusça + okunuş, yatay ekran).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -44,6 +44,18 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### Sahne modunda okunuş ve çeviri
+
+- **İstek (kullanıcı ekran görüntüsü, klipli sahne):** söz satırının altına okunuş ve çeviri de gelsin.
+- **Ne:** Sahnede söz satırının altında iki satır: okunuş (italik) ve Türkçe çeviri. Kaynak söz paneliyle aynı (`TR.subsList`):
+  Rusçada okunuş telefonda üretilir, İngilizce/Japoncada sunucudan gelir; çeviri yapılmamışsa yalnız okunuş görünür. Söz panelindeki
+  "Okunuş" / "Çeviri" düğmelerine uyar. Satır değişince ve çeviri gelince yenilenir (her karede değil). Tam klip görünümünde küçülür.
+- **Denendi (tarayıcı, 300-390 px genişlik, klipli tam ekran sahne, Rusça sözler + çeviri):** "Привет, мой друг" altında
+  "Privet, moy drug" ve çeviri; söz satırı ile alt çubuk arasına sığıyor, üst üste binme yok. **Test:** `stage_test.mjs` +6 kontrol;
+  88 dosya yeşil. **SW:** v95. **Telefonda denenmedi.**
+- **Telefonda kontrol:** 1) "SW v95". 2) Rusça şarkıda Sözler > Çevir (bir kez). 3) Sahne'yi aç, çal: satırın altında okunuş ve çeviri.
+  4) Sözlerde "Okunuş"u kapat: sahnede de kaybolmalı.
 
 ### Tam ekran söz arka planı artık ŞARKI BAŞINA (bir şarkıya koyulan resim diğerlerini değiştirmiyor)
 
