@@ -45,6 +45,17 @@
 
 ## Kayıtlar (en yeni üstte)
 
+### Nothing Else Matters'ta sözler satır atlıyordu: yeni yöntemle yeniden hizalandı (kullanıcı onayıyla)
+
+- **Belirti (kullanıcı videosu, tam ekran sözler):** şarkı bir satırdan sonra aradaki satırları atlayıp aşağıdaki bir satırdan devam ediyordu.
+- **Neden:** şarkının yapıştırılmış sözleri Ekim'de ESKİ (global) hizalamayla üretilmişti; 13-18. satırlar 143,2-143,4 sn'ye, 23-26 ve 31-32
+  de tek ana yığılmıştı (sıfır süreli 12 satır). Ekran sıfır süreli satırları bir anda geçiyordu. PLAN.md'de (YAPIŞTIR-HİZALA v2) "NEM eski
+  yolla üretildi, yeniden hizalanmalı (kullanıcı onayıyla)" notu vardı; adım yapılmamıştı. Kod hatası yok.
+- **Tarama:** sözü olan 9 şarkının hepsi okundu (salt okuma): yığılma yalnız bu şarkıda.
+- **Düzeltme:** aynı metinle `POST /songs/{id}/lyrics` (mode pasted, en). Yeni yol "anchored": eşleşme %94,6, satırlar 67-380 sn'ye
+  yayıldı (şarkı 432 sn), sıfır süreli/yığılan/geri giden satır 0, düşük güven 0. 25,5 sn, ~0,0042 $ GPU. Metin değişmedi.
+- **Telefonda:** şarkıyı internet varken aç (yeni söz sürümü iner); satırlar sırayla akmalı, 2:23 civarında atlama olmamalı.
+
 ### Kod sadeleştirme: app.js 9.664 -> 7.468 satır (14 bölüm ayrı dosyaya), davranış aynı
 
 - **Yedek:** git etiketi `yedek-sadelestirme-oncesi-20261126` (push edildi) + `C:\Users\user\stem-mikser-yedek-sadelestirme-20261126.zip`.
