@@ -45,6 +45,24 @@
 
 ## Kayıtlar (en yeni üstte)
 
+### Hizalayıcı: tekrar eden kıtada sıkışan kopya düzeltildi; "холод по спине" yeniden hizalandı (kullanıcı onayıyla)
+
+- **Kullanıcıya dürüst not:** 26 Kasım'daki "diğer şarkılarda sorun yok" taraması yalnız TAM aynı ana yığılmayı (< 0,15 sn) arıyordu; bu
+  şarkıdaki sıkışma (satırlar 0,03 sn arayla, her biri 0,24 sn) o eşiğin dışında kaldı ve kaçtı. Yanlış/fazla emin ifadeydi; söylendi.
+  Kalıcı önlem: `tests/lyrics_health.py` (salt okunur, canlı kitaplığı iki kuralla tarar: yığılma < 0,15 sn, sıkışma: 2+ kelimelik satır
+  < 0,6 sn). Şu an 10 şarkının hepsi temiz.
+- **Neden:** metinde nakarat art arda iki kez yazılı; sıralı eşleştirme sesteki tek nakaratı İKİNCİ kopyaya bağladı, birinci kopya iki
+  çapa arasındaki 1,5 sn'ye sıkıştı.
+- **Düzeltme:** yeni `backend/lyricsfix.py` (app.py satır sayısı 9296 kaldı; lyrics imajına `add_local_file`, çağrı tek satırda,
+  bilgi `status.lyrics.match.squeeze_fix`). Serbest satır dizisinin penceresi satır başına 1 sn'den kısaysa ve hemen yanında AYNI metinli
+  eşleşmiş kopya varsa eşleşmeler sıkışan kopyaya taşınır; yeni plan daha iyi değilse geri alınır. Başka duruma dokunmaz.
+- **Ölçüm (GPU, salt okunur `lyrics_regress`):** холод: sıkışan 4 satır -> 0; 30-33 artık 151-164 sn (çapalı), 34-37 165-178 sn.
+  NEM ve Zeus: düzeltme hiç devreye girmedi, zamanlar önceki ölçümle BİREBİR (en büyük fark 0,0 sn); `tests/lyrics_regress.py` geçti.
+- **Canlı:** deploy 5,7 sn (imaj kurulmadı); şarkı aynı metinle yeniden hizalandı (0,0017 $). Toplam GPU (3 deneme + 1 hizalama) ~0,02 $.
+- **Test:** yeni `test_lyricsfix.py` (hatanın yapısını app.py'nin gerçek `_lyr_plan`'ıyla yeniden üretir; doğru eşleşmeye ve metni farklı
+  komşuya dokunmama); 90 dosya yeşil. Arayüz değişmedi (SW v97).
+- **Telefonda kontrol:** şarkıyı internet varken aç (yeni sözler iner); 2:30 civarında "Ночь так темна" dört satırı tek tek akmalı.
+
 ### Yükleme sırası sağlamlaştırıldı: ekran açık kalır, yarım kalan sıra sürer; "холод по спине"de satır atlamanın nedeni bulundu
 
 - **Ekran açık:** şarkılar yüklenirken ayrı bir ekran kilidi tutulur (çalmanınkine dokunmaz), sıra bitince bırakılır.

@@ -3381,7 +3381,7 @@ lyrics_image = (
         "HF_HOME": LYRICS_HF_HOME,
         "LD_LIBRARY_PATH": f"{_LYR_NVIDIA}/cudnn/lib:{_LYR_NVIDIA}/cublas/lib:"
                            f"{_LYR_NVIDIA}/cuda_runtime/lib",
-    })
+    }).add_local_file(str(pathlib.Path(__file__).with_name("lyricsfix.py")), "/root/lyricsfix.py")   # tekrar eden kıta düzeltmesi
 )
 
 
@@ -3942,7 +3942,7 @@ def _lyr_run_anchored(model, audio, active, duration: float, language: str, text
     ratio = len(pairs) / len(flat)
     if ratio < LYRICS_ANCHOR_MIN_RATIO and not manual:
         raise ValueError(f"eslesme orani dusuk: {ratio:.2f}")
-    plan = _lyr_plan(line_tokens, pairs, auto, manual, language)
+    pairs, fixes = (__import__("importlib.util").util.find_spec("lyricsfix") and __import__("lyricsfix").reassign_squeezed(line_tokens, pairs, lambda p: _lyr_plan(line_tokens, p, auto, manual, language), duration)) or (pairs, []); plan = _lyr_plan(line_tokens, pairs, auto, manual, language)  # sıkışan tekrar kopyası: backend/lyricsfix.py
     blocks = _lyr_blocks(plan, duration)
     keep = _lyr_fill_gaps(active, int(0.3 / LYRICS_HOP))
     out = [None] * len(texts)
@@ -3988,7 +3988,7 @@ def _lyr_run_anchored(model, audio, active, duration: float, language: str, text
         previous_start = line["start"]
     low = [i for i, line in enumerate(out) if line.get("c") == 0]
     info = {
-        "method": "anchored", "pasted_tokens": len(flat), "auto_tokens": len(auto),
+        "method": "anchored", "pasted_tokens": len(flat), "auto_tokens": len(auto), "squeeze_fix": fixes,
         "matched_tokens": len(pairs), "match_ratio": round(ratio, 3),
         "anchor_lines": sum(1 for p in plan if p["kind"] == "anchor"),
         "manual_lines": sum(1 for p in plan if p["kind"] == "manual"),
