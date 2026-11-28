@@ -56,6 +56,7 @@ import {
   prepareChords, displayLabel, mapSheet, buildGrid, renderMain, renderGap, renderGrid, soundingAt, wordIndexFor,
 } from "./chordsheet.js";
 import { WakeLock } from "./wakelock.js";
+import { enqueue as enqueueUploads, pending as pendingUploads, remove as removeUploads, isRetryable } from "./uploadqueue.js";
 import { StemCache, cacheTag } from "./stemcache.js";
 import { Metronome, SUBDIVISIONS } from "./metronome.js";
 import {
@@ -1549,41 +1550,81 @@ function schedulePoll() {
 let lastUploadedId = "";      // son başarılı yüklemenin şarkı kimliği (Eklenecekler'den yükleme "eklendi" işaretlesin)
 
 // Birden çok şarkı (Şarkı ekle'de çoklu seçim ya da paylaş menüsünden birden çok dosya): SIRAYLA yüklenir; sunucu ayırmaları kendi
-// kuyruğunda tek tek yapar ("sırada"). Yüklemeler bitene kadar uygulama açık kalmalı; sonra ayırma sunucuda sürer.
+// kuyruğunda tek tek yapar ("sırada"). Yükleme sürerken ekran açık kalır (ayrı ekran kilidi; çalmanınkine dokunmaz). Sıra telefonda
+// saklanır (js/uploadqueue.js): uygulama kapanır ya da internet giderse yarım kalan dosyalar, uygulama açılınca / internet gelince sürer.
 let uploadPrefix = "";             // "(2/5) ": sıralı yüklemede durum satırının başı
 let uploadChain = Promise.resolve();
+let uploadRunning = 0;
+let lastUploadFailure = "";        // son başarısız yüklemenin türü: offline | network | server | final (uploadqueue.isRetryable)
+const uploadWake = new WakeLock();
 
-function uploadMany(files, { quality = null } = {}) {
-  const list = [...files];
+function uploadMany(files, { quality = null, items = null } = {}) {
+  const list = items || [...files].map((file) => ({ id: null, file, name: file.name, quality }));
   const run = async () => {
+    uploadRunning += 1;
+    uploadWake.request();                            // yükleme bitene kadar ekran kapanmasın
     let ok = 0;
     const failed = [];
-    for (let index = 0; index < list.length; index += 1) {
-      uploadPrefix = list.length > 1 ? `(${index + 1}/${list.length}) ` : "";
-      if (await handleUpload(list[index], quality)) ok += 1;
-      else failed.push(list[index].name);
+    let waiting = 0;
+    try {
+      const queue = items ? list : await enqueueUploads(list.map((item) => item.file), quality);
+      for (let index = 0; index < queue.length; index += 1) {
+        const item = queue[index];
+        uploadPrefix = queue.length > 1 ? `(${index + 1}/${queue.length}) ` : "";
+        if (await handleUpload(item.file, item.quality || quality)) {
+          ok += 1;
+          await removeUploads([item.id]);
+        } else if (isRetryable(lastUploadFailure)) {
+          waiting = queue.length - index;            // internet/sunucu: bu ve sonrakiler sırada kalır, sonra sürer
+          break;
+        } else {
+          failed.push(item.name);
+          await removeUploads([item.id]);            // kalıcı hata (çok büyük, ses değil, iptal): sıradan çıkar
+        }
+      }
+    } finally {
+      uploadPrefix = "";
+      uploadRunning -= 1;
+      if (!uploadRunning) uploadWake.release();
     }
-    uploadPrefix = "";
-    if (list.length > 1) {
+    if (list.length > 1 || waiting) {
       // Özet durum satırında kalır (kitaplık mesajı her yenilemede temizleniyor).
       const status = el("upload-status");
       status.hidden = false;
-      status.textContent = failed.length
-        ? `${ok}/${list.length} şarkı yüklendi. Yüklenemeyen: ${failed.join(", ")}.`
-        : `${ok} şarkı yüklendi; sunucuda sırayla ayrılıyor (her biri birkaç dakika). Uygulamayı kapatsan da devam eder.`;
+      status.textContent = [
+        `${ok}/${list.length} şarkı yüklendi.`,
+        failed.length ? `Yüklenemeyen: ${failed.join(", ")}.` : "",
+        waiting ? `${waiting} şarkı sırada bekliyor; internet gelince ya da uygulamayı açınca kaldığı yerden sürer.` : "",
+        ok && !waiting && !failed.length ? "Sunucuda sırayla ayrılıyor (her biri birkaç dakika). Uygulamayı kapatsan da devam eder." : "",
+      ].filter(Boolean).join(" ");
     }
-    return { ok, failed };
+    return { ok, failed, waiting };
   };
   const result = uploadChain.then(run, run);       // yeni seçim, süren sıranın ARKASINA eklenir
   uploadChain = result.catch(() => {});
   return result;
 }
 
+// Yarım kalan sıra: açılışta ve internet gelince (ayarlar tamamsa, başka yükleme sürmüyorsa).
+async function resumeUploads() {
+  if (uploadRunning || isOffline() || !isConfigured(settings)) return;
+  const items = await pendingUploads();
+  if (!items.length || uploadRunning) return;
+  const status = el("upload-status");
+  status.hidden = false;
+  status.textContent = `Yarım kalan ${items.length} şarkı yükleniyor…`;
+  uploadMany([], { items });
+}
+
 async function handleUpload(file, qualityChoice = null) {
   // Dönen: true = sunucu aldı (ya da zaten vardı), false = yüklenemedi (paylaşım kartı kaydı korusun diye).
   // Kalite verilmezse İLK satırda, hiçbir await'ten önce #upload-quality'den okunur.
   const quality = qualityChoice || (el("upload-quality") ? el("upload-quality").value : "hifi");
-  if (!requireOnline(el("library-message"), "şarkı yüklemek")) return false;
+  lastUploadFailure = "final";                       // aşağıdaki erken dönüşler kalıcı hata; ağ hataları catch'te ayrılır
+  if (!requireOnline(el("library-message"), "şarkı yüklemek")) {
+    lastUploadFailure = "offline";
+    return false;
+  }
   const status = el("upload-status");
   const original = file;
   const clip = isVideo({ name: file.name, type: file.type });
@@ -1634,10 +1675,14 @@ async function handleUpload(file, qualityChoice = null) {
     await refreshLibrary();
     schedulePoll();
     if (clip && lastUploadedId) afterClipUpload(lastUploadedId, original, clipMeta, status);
+    lastUploadFailure = "";
     return true;
   } catch (error) {
     status.hidden = true;
     showMessage(el("library-message"), describeError(error));
+    const kind = error && error.kind;
+    const code = Number(error && error.status) || 0;
+    lastUploadFailure = kind === "offline" ? "offline" : kind === "network" ? "network" : code >= 500 ? "server" : "final";
     return false;
   }
 }
@@ -7524,6 +7569,8 @@ if (isConfigured(settings)) {
 fillShareQuality();
 renderShareCard();
 handleShareLaunch();
+setTimeout(resumeUploads, 2500);                     // yarım kalan yükleme sırası (kitaplık açıldıktan sonra)
+window.addEventListener("online", () => setTimeout(resumeUploads, 1500));
 if (collection.status === "corrupt") {
   pendingLibraryNote = "Favori/etiket verisi okunamadı; ham kopya ayrıca saklandı. Ayarlar'daki yedekten geri yükleyebilirsin.";
 } else if (collection.status === "newer") {

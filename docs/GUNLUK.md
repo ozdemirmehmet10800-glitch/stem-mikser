@@ -35,7 +35,7 @@
 - **Yapıldı:** Aşama 1 (yeni görünüm, sekme çubuğu, küçük oynatıcı), Aşama 2 (kapaklar; sunucu ucu canlıda), Aşama 3 (Eklenecekler: paylaş menüsü
   metin/bağlantı, Takeout zip/CSV, otomatik "eklendi"), Aşama 4'ten: mikrofon kapanınca çıkış rotası, listede sıradakini önceden indirme, sözlü -> sözsüz
   geçiş için koruma, mikserde dar ekran düzeni, ilk kurulumda Ayarlar'dan çıkış hatası.
-- **Son sürüm:** SW v96 (çoklu şarkı ekleme; v95 sahnede okunuş + çeviri; v94 söz arka planı şarkı başına; v93 açılış ekranı; v92 kod sadeleştirme; v91 karaoke; v90 Sözleri bul; v89 Rusça + okunuş, yatay ekran).
+- **Son sürüm:** SW v97 (yükleme sırası saklanır + ekran açık; v96 çoklu şarkı ekleme; v95 sahnede okunuş + çeviri; v94 söz arka planı şarkı başına; v93 açılış ekranı; v92 kod sadeleştirme; v91 karaoke; v90 Sözleri bul; v89 Rusça + okunuş, yatay ekran).
   sunucuyla yapıldı; **telefonda hiçbir şey denenmedi.**
 - **Sunucu:** yalnız bir salt okunur CPU ucu eklendi (kapak). GPU işi eklenmedi, mevcut şarkılara iş başlatılmadı, Volume'da hiçbir şey silinmedi/taşınmadı.
   Modal harcaması: iki başarısız imaj kurma denemesi (kısa CPU) + birkaç salt okunur istek; 2 $ sınırının çok altında (kesin rakam Modal panelinde).
@@ -44,6 +44,22 @@
   sahte sunucuda YENİDEN ÜRETEMEDİM (doğru çalışıyor); yalnız olası bir yarış durumunu kapattım, telefonda senin doğrulaman gerekiyor.
 
 ## Kayıtlar (en yeni üstte)
+
+### Yükleme sırası sağlamlaştırıldı: ekran açık kalır, yarım kalan sıra sürer; "холод по спине"de satır atlamanın nedeni bulundu
+
+- **Ekran açık:** şarkılar yüklenirken ayrı bir ekran kilidi tutulur (çalmanınkine dokunmaz), sıra bitince bırakılır.
+- **Yarım kalan sıra:** seçilen dosyalar önce telefona yazılır (yeni `js/uploadqueue.js`, IndexedDB `stem-mikser-uploads`). Yüklenen ya da
+  kalıcı hata veren (çok büyük, ses değil, iptal) sıradan çıkar; internet/sunucu hatasında sıra durur ve kalanlar saklı kalır. Uygulama
+  açılınca (2,5 sn sonra) ve internet gelince kaldığı yerden sürer ("Yarım kalan N şarkı yükleniyor…"). 24 saatten eski sıra kendiliğinden
+  silinir (unutulmuş sıra GPU açmasın). IndexedDB yoksa eskisi gibi yalnız bellekte.
+- **Denendi (tarayıcı, sahte sunucu):** 3 dosya -> yüklendi, sıra boş; sunucu kapalıyken 2 dosya -> "0/2 yüklendi, 2 sırada bekliyor",
+  ikisi saklı; sunucu açılıp sayfa yenilenince ikisi kendiliğinden yüklendi, sıra boş. **Test:** yeni `uploadqueue_test.mjs`; 89 dosya yeşil.
+  **SW:** v97. **Telefonda denenmedi.**
+- **Satır atlama (холод по спине):** sözlerde nakarat ("Ночь так темна ...") art arda iki kez yazılı (30-33, 34-37); hizalayıcı seste tek
+  kopyayı ikinciye bağladı, birinci kopya 1,5 sn'lik boşluğa sıkıştı (satır başı 0,24 sn) -> ekran 2:30'da dört satırı bir anda geçiyor.
+  Sunucu raporunda 171-212 sn arası "metinde karşılığı olmayan ses" var: ikinci tekrar büyük ihtimalle orada. Diğer 9 şarkıda böyle sıkışma
+  yok (taranarak). Düzeltme (tekrar eden kıtada sıkışan kopyayı öbürüyle değiştirme) sunucudaki hizalama kodunda; GPU denemesi gerektiği için
+  kullanıcı onayı bekleniyor. Hemen çözüm: "Zamanı düzelt" ile o dört satıra çalarken dokunmak (CPU, ücretsiz).
 
 ### Birden çok şarkıyı aynı anda ekleme (Şarkı ekle + paylaş menüsü)
 
